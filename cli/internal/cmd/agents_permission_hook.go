@@ -1344,11 +1344,11 @@ func loadPermissionHookCredentials(source string) ([]permissionHookCredential, e
 // ~/.claude/settings.json. It looks under servers.preloop.headers.Authorization
 // first (the documented location) and falls back to mcpServers.preloop.
 func claudeSettingsBearerToken() (string, bool) {
-	home, err := os.UserHomeDir()
+	_, err := os.UserHomeDir()
 	if err != nil {
 		return "", false
 	}
-	doc, err := loadJSONDocument(filepath.Join(home, ".claude", "settings.json"))
+	doc, err := loadJSONDocument(filepath.Join(claudeConfigHome(), "settings.json"))
 	if err != nil {
 		return "", false
 	}

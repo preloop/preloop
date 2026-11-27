@@ -817,6 +817,88 @@ class ManagedAgentEnrollmentSummary(BaseModel):
     last_restored_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
+    # Set only while the enrollment waits in ``pending_local_config``:
+    # ``created_at`` plus PRELOOP_PENDING_ENROLLMENT_TTL_HOURS.
+    expires_at: Optional[datetime] = None
+
+
+class OnboardingCreatedResources(BaseModel):
+    """What one onboarding run created, as opposed to reused.
+
+    Recorded under ``backup_metadata.created_resources`` of a pending
+    enrollment and sent to the rollback endpoint, so a cancelled, failed or
+    expired onboarding removes only its own resources.
+    """
+
+    agent_created: bool = False
+    # The onboarding reactivated a decommissioned agent instead of creating it.
+    agent_revived: bool = False
+    credential_ids: List[str] = Field(default_factory=list, max_length=200)
+    ai_model_ids: List[str] = Field(default_factory=list, max_length=200)
+    # Accepted and ignored: the account's MCP servers are never removed.
+    mcp_server_ids: List[str] = Field(default_factory=list, max_length=200)
+
+
+class OnboardingCleanupRemoved(BaseModel):
+    """Counts of what an onboarding cleanup removed."""
+
+    credentials: int = 0
+    ai_models: int = 0
+    agent: Literal["deleted", "decommissioned", "kept"] = "kept"
+
+
+class ManagedAgentOnboardingRollbackRequest(BaseModel):
+    """Request to undo a failed or cancelled onboarding."""
+
+    created_resources: OnboardingCreatedResources = Field(
+        default_factory=OnboardingCreatedResources
+    )
+    reason: Optional[str] = Field(default=None, max_length=500)
+
+
+class ManagedAgentOnboardingRollbackResponse(BaseModel):
+    """Result of an onboarding rollback."""
+
+    removed: OnboardingCleanupRemoved
+
+
+class ManagedAgentEnrollmentCancelRequest(BaseModel):
+    """Optional body of a pending-enrollment cancel."""
+
+    reason: Optional[str] = Field(default=None, max_length=500)
+
+
+class ManagedAgentEnrollmentCancelResponse(BaseModel):
+    """A cancelled pending enrollment and what its cleanup removed."""
+
+    enrollment: ManagedAgentEnrollmentSummary
+    removed: OnboardingCleanupRemoved
+
+
+class ManagedAgentManualSetupPending(BaseModel):
+    """The pending enrollment a manual setup guide belongs to."""
+
+    enrollment_id: str
+    status: str
+    created_at: datetime
+    expires_at: Optional[datetime] = None
+
+
+class ManagedAgentManualSetupResponse(BaseModel):
+    """Config changes a user applies by hand to route an agent via Preloop.
+
+    ``instructions`` has the ``manual_apply`` shape: ``files`` (each with
+    ``path``, ``format``, ``exists``, ``merge``, ``remove``, ``host_source``),
+    ``env``, ``settings_flag`` and ``limitations``. Every secret is the
+    literal placeholder ``<AGENT_KEY>``.
+    """
+
+    agent_id: str
+    agent_kind: Optional[str] = None
+    display_name: str
+    pending: Optional[ManagedAgentManualSetupPending] = None
+    instructions: Optional[dict] = None
+    resume_command: str
 
 
 class ManagedAgentDeviceLinkFields(BaseModel):

@@ -2870,16 +2870,25 @@ class TestAIDrivenApprovalFlow:
         result.model_used = "gpt-5.4-mini"
         return result
 
+    @pytest.mark.parametrize(
+        "threshold,confidence", [(0.8, 0.95), (0.8, 0.8), (0.0, 0.0), (1.0, 1.0)]
+    )
     async def test_high_confidence_approve(
-        self, approval_service, mock_db, ai_driven_policy
-    ):
+        self,
+        approval_service,
+        mock_db,
+        ai_driven_policy,
+        threshold: float,
+        confidence: float,
+    ) -> None:
         """Test AI auto-approves when confidence >= threshold and decision is approve."""
+        ai_driven_policy.ai_confidence_threshold = threshold
         mock_request = MagicMock(spec=ApprovalRequest)
         mock_request.id = uuid.uuid4()
         approved_request = MagicMock(spec=ApprovalRequest)
         approved_request.status = "approved"
 
-        ai_result = self._mock_ai_result(decision="approve", confidence=0.95)
+        ai_result = self._mock_ai_result(decision="approve", confidence=confidence)
 
         with (
             patch.object(

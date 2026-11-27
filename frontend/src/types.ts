@@ -885,6 +885,7 @@ export interface ManagedAgentSummary {
     | 'mcp_proxy_only'
     | 'gateway_only'
     | 'incomplete'
+    | 'waiting_for_local_config'
     | string;
   live_validation_supported: boolean;
   live_validation_passed: boolean | null;

@@ -142,7 +142,8 @@ export function reportStale(
   device: ExtensionCoverage,
   now = Date.now()
 ): boolean {
-  if (!device.reported_at) return true;
+  if (device.reported_at === undefined) return false;
+  if (device.reported_at === null) return true;
   return now - Date.parse(device.reported_at) > EXTENSION_REPORT_STALE_MS;
 }
 
@@ -924,6 +925,7 @@ export class ExtensionInventory extends LitElement {
     const one = devices.length === 1 ? devices[0] : null;
     return html`<details class="coverage" data-state=${page.completeness}>
       <summary>
+        ${this.agentKind && !this.fingerprint ? html`<span class="meta">Account coverage (all agent kinds)</span>` : nothing}
         ${badge}
         ${
           one
@@ -1045,7 +1047,7 @@ export class ExtensionInventory extends LitElement {
         >${page.items.length}${page.next_cursor ? '+' : ''}
         extensions${kinds ? html` (${kinds})` : nothing} · ${devices.length}
         ${devices.length === 1 ? 'device' : 'devices'}
-        reporting${
+        reporting${this.agentKind && !this.fingerprint ? ' across all agent kinds' : ''}${
           last
             ? html` · Last report
                 <span title=${last}>${formatRelativeTime(last)}</span>`
@@ -1486,7 +1488,7 @@ export class ExtensionInventory extends LitElement {
               !this.sourceFilter &&
               !this.search.trim()
               ? html`<p class="empty">${this.emptyText}</p>
-                  ${this.page.coverage?.length ? nothing : this.reportSteps()}`
+                  ${this.agentKind || !this.page.coverage?.length ? this.reportSteps() : nothing}`
               : this.page.coverage?.length ||
                   this.stateFilter ||
                   this.sourceFilter ||

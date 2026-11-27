@@ -130,8 +130,8 @@ func claudeEnrollmentForHook() (AgentConfig, *localEnrollmentState, bool) {
 			candidates = append(candidates, path)
 		}
 	}
-	if home, err := os.UserHomeDir(); err == nil {
-		candidates = append(candidates, filepath.Join(home, ".claude", "settings.json"))
+	if _, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates, filepath.Join(claudeConfigHome(), "settings.json"))
 	}
 	for _, configPath := range candidates {
 		agent := AgentConfig{Name: claudeCodeSubscriptionAgentName, ConfigPath: configPath}
@@ -143,11 +143,7 @@ func claudeEnrollmentForHook() (AgentConfig, *localEnrollmentState, bool) {
 }
 
 func claudeCredentialFilePath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return filepath.Join(".claude", ".credentials.json")
-	}
-	path := filepath.Join(home, ".claude", ".credentials.json")
+	path := filepath.Join(claudeConfigHome(), ".credentials.json")
 	if resolved, err := filepath.EvalSymlinks(path); err == nil {
 		path = resolved
 	}

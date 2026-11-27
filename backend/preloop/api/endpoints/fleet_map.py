@@ -26,6 +26,10 @@ from preloop.services.fleet_map import build_fleet_map
 from preloop.services.fleet_scope import parse_users
 from preloop.services.fleet_usage import build_fleet_usage
 
+from preloop.models.crud import fleet_identity
+from preloop.schemas.fleet_identity import FleetIdentities, FleetIdentityQuery
+from preloop.utils.permissions import require_permission
+
 router = APIRouter()
 
 
@@ -132,4 +136,27 @@ def read_fleet_usage(
         user=current_user,
         active_within_minutes=active_within_minutes,
         user_ids=parse_users(users),
+    )
+
+
+@router.post("/fleet/identities", response_model=FleetIdentities, tags=["Fleet"])
+@require_permission("view_device_fleet")
+def read_fleet_identities(
+    payload: FleetIdentityQuery,
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> FleetIdentities:
+    """Resolve names and current enrollment for account-owned device evidence."""
+    return FleetIdentities.model_validate(
+        {
+            "agents": fleet_identity.agent_identities(
+                db,
+                account_id=current_user.account_id,
+                ids=payload.agent_ids,
+                user=current_user,
+            ),
+            "observers": fleet_identity.observer_names(
+                db, account_id=current_user.account_id, ids=payload.observer_ids
+            ),
+        }
     )

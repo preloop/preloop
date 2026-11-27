@@ -50,6 +50,7 @@ DISPATCHABLE_TASKS: tuple[str, ...] = (
     "reconcile_security_maintenance",
     "expire_stale_approvals",
     "deactivate_ended_run_keys",
+    "expire_pending_enrollments",
     "prune_api_traffic",
     "run_data_backfills",
     "evaluate_spend_outliers",
@@ -1041,6 +1042,33 @@ async def deactivate_ended_run_keys() -> dict[str, Any]:
                     "Unverified sign-up cleanup failed: %s", type(error).__name__
                 )
             return result
+        finally:
+            db.close()
+
+    return await asyncio.to_thread(_sweep)
+
+
+async def expire_pending_enrollments() -> int:
+    """Expire manual-mode enrollments nobody resumed.
+
+    An onboarding that could not write the local agent config leaves a
+    ``pending_local_config`` enrollment. Past
+    ``PRELOOP_PENDING_ENROLLMENT_TTL_HOURS`` it is marked ``expired`` and the
+    credential, models and agent that onboarding created are removed
+    (``preloop.services.managed_agent_onboarding_cleanup``).
+
+    Returns:
+        The number of enrollments expired by this pass.
+    """
+    from preloop.services import managed_agent_onboarding_cleanup
+
+    def _sweep() -> int:
+        """Run one bounded pass with its own session."""
+        db = next(get_db_session())
+        try:
+            return managed_agent_onboarding_cleanup.run_pending_enrollment_expiry_once(
+                db
+            )
         finally:
             db.close()
 

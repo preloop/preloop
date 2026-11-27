@@ -34,11 +34,11 @@ func preflightClaudeSubscriptionLogin(agent AgentConfig, opts managedEnrollmentO
 	if token := resolveClaudePrimaryAPIKey(); token != "" && !isClaudeCodeOAuthAccessToken(token) {
 		return nil
 	}
-	home, err := os.UserHomeDir()
+	_, err = os.UserHomeDir()
 	if err != nil {
 		return err
 	}
-	data, readErr := os.ReadFile(filepath.Join(home, ".claude", ".credentials.json"))
+	data, readErr := os.ReadFile(filepath.Join(claudeConfigHome(), ".credentials.json"))
 	var credential *claudeOAuthCredential
 	if readErr == nil {
 		credential = parseClaudeOAuthCredentialBlob(string(data), 0)

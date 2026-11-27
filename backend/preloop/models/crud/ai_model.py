@@ -1181,8 +1181,20 @@ class CRUDAIModel(CRUDBase[AIModel]):
         if secret_ref is not None:
             db.delete(secret_ref)
 
-    def remove(self, db: Session, *, id: uuid.UUID) -> Optional[AIModel]:
-        """Delete an AIModel and any unreferenced credential secret."""
+    def remove(
+        self, db: Session, *, id: uuid.UUID, commit: bool = True
+    ) -> Optional[AIModel]:
+        """Delete an AIModel and any unreferenced credential secret.
+
+        Args:
+            db: Database session.
+            id: AI model id.
+            commit: When False, flush only so the caller can commit the
+                delete together with related writes.
+
+        Returns:
+            The deleted model, or ``None`` when it does not exist.
+        """
         obj = db.get(self.model, id)
         if obj is None:
             return None
@@ -1194,7 +1206,10 @@ class CRUDAIModel(CRUDBase[AIModel]):
         if secret_id is not None:
             self._delete_unreferenced_credential_secret(db, secret_id)
 
-        db.commit()
+        if commit:
+            db.commit()
+        else:
+            db.flush()
         return obj
 
     @staticmethod

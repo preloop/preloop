@@ -264,11 +264,11 @@ func writeClaudeSubscriptionCredential(bundle exportedModelCredential) (string, 
 // writeClaudeSubscriptionCredentialToSource honors the enrolled store. Unknown
 // enrollments retain active-Keychain semantics and fail closed on read errors.
 func writeClaudeSubscriptionCredentialToSource(bundle exportedModelCredential, source string) (string, error) {
-	home, err := os.UserHomeDir()
+	_, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	path := filepath.Join(home, ".claude", ".credentials.json")
+	path := filepath.Join(claudeConfigHome(), ".credentials.json")
 	if resolved, err := filepath.EvalSymlinks(path); err == nil {
 		path = resolved
 	}

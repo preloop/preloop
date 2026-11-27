@@ -48,6 +48,9 @@ export class DiscoveredAgentsPanel extends LitElement {
     status: 'new' | 'ignored'
   ) => Promise<DiscoveredAgentCandidate> = updateDiscoveryCandidate;
 
+  /** The Agents toolbar owns the inventory entry when embedded there. */
+  @property({ type: Boolean }) hideExtensions = false;
+
   @state() private extensionsActive = false;
   @state() private candidates: DiscoveredAgentCandidate[] = [];
   @state() private total = 0;
@@ -151,6 +154,7 @@ export class DiscoveredAgentsPanel extends LitElement {
 
   render(): TemplateResult | typeof nothing {
     if (!this.loaded) return nothing;
+    if (this.hideExtensions) return this.renderCandidates();
     return html`<sl-tab-group
       @sl-tab-show=${(event: CustomEvent<{ name: string }>) => {
         // Mount on first open and keep it: switching back must not reload.

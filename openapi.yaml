@@ -2198,6 +2198,33 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/agents/discovery-extensions/count:
+    get:
+      tags:
+      - Agent discovery
+      summary: Count Extensions
+      description: Return the account inventory count for the Agents page entry point.
+      operationId: count_extensions_api_v1_agents_discovery_extensions_count_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  type: integer
+                type: object
+                title: Response Count Extensions Api V1 Agents Discovery Extensions
+                  Count Get
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/agents/discovery-extensions:
     get:
       tags:
@@ -4762,7 +4789,13 @@ paths:
 
         The first time an enrollment reaches ``validated`` the agent counts as
 
-        onboarded and ``agent.onboarded`` is enqueued in the same transaction.'
+        onboarded and ``agent.onboarded`` is enqueued in the same transaction.
+
+        This is also how ``preloop agents onboard --resume`` completes a
+
+        ``pending_local_config`` enrollment; a resume that does not validate
+
+        leaves it pending. A cancelled or expired one is refused with 409.'
       operationId: validate_account_managed_agent_enrollment_api_v1_agents__agent_id__enrollments__enrollment_id__validate_post
       security:
       - bearerAuth: []
@@ -4840,6 +4873,167 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ManagedAgentEnrollmentSummary'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/agents/{agent_id}/enrollments/{enrollment_id}/cancel:
+    post:
+      tags:
+      - Account
+      summary: Cancel Account Managed Agent Enrollment
+      description: 'Cancel a pending manual setup and remove what its onboarding created.
+
+
+        Only a ``pending_local_config`` enrollment can be cancelled (409
+
+        otherwise). The credential and AI models that onboarding created are
+
+        removed, the agent is deleted when that onboarding created it and it was
+
+        never used, or decommissioned when it is left without a usable key, and
+
+        the enrollment becomes ``cancelled``. All of it commits together.'
+      operationId: cancel_account_managed_agent_enrollment_api_v1_agents__agent_id__enrollments__enrollment_id__cancel_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Agent Id
+      - name: enrollment_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Enrollment Id
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: '#/components/schemas/ManagedAgentEnrollmentCancelRequest'
+              - type: 'null'
+              title: Payload
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManagedAgentEnrollmentCancelResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/agents/{agent_id}/onboarding-rollback:
+    post:
+      tags:
+      - Account
+      summary: Rollback Account Managed Agent Onboarding
+      description: 'Undo a failed or aborted onboarding that left no pending enrollment.
+
+
+        Runs the same cleanup as cancelling a pending setup, for the resources
+
+        the CLI reports it created: listed credentials of this agent are revoked,
+
+        listed AI models nothing else uses are deleted, and the agent is deleted,
+
+        decommissioned or kept by the same rules. Ids that do not belong to the
+
+        account and the agent are ignored.'
+      operationId: rollback_account_managed_agent_onboarding_api_v1_agents__agent_id__onboarding_rollback_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Agent Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ManagedAgentOnboardingRollbackRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManagedAgentOnboardingRollbackResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/agents/{agent_id}/manual-setup:
+    get:
+      tags:
+      - Account
+      summary: Get Account Managed Agent Manual Setup
+      description: 'Return the config change a user applies by hand for one agent.
+
+
+        While the agent has a ``pending_local_config`` enrollment, the
+
+        instructions are the ones its onboarding stored. Otherwise a baseline is
+
+        generated for Claude Code, Codex CLI and Cursor from the server''s public
+
+        URL; other kinds have none. Secrets are always the placeholder
+
+        ``<AGENT_KEY>``.'
+      operationId: get_account_managed_agent_manual_setup_api_v1_agents__agent_id__manual_setup_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Agent Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManagedAgentManualSetupResponse'
         '422':
           description: Validation Error
           content:
@@ -6356,6 +6550,55 @@ paths:
                   type: boolean
                 title: Response Acknowledge Weekly Exception Api V1 Weekly Report
                   Deliveries  Delivery Id  Acknowledge  Exception Key  Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/account/approval-readiness:
+    get:
+      tags:
+      - Account
+      summary: Get Native Approval Readiness
+      description: Preview native approval routing without creating or changing a
+        workflow.
+      operationId: get_native_approval_readiness_api_v1_account_approval_readiness_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: agent_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Agent Id
+      - name: workflow_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Workflow Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalReadiness'
         '422':
           description: Validation Error
           content:
@@ -9020,6 +9263,44 @@ paths:
       security:
       - bearerAuth: []
       x-restricted-ci: deny
+  /api/v1/approval-requests/{request_id}/readiness:
+    get:
+      tags:
+      - Approval Requests
+      - approval_requests
+      summary: Get Pending Approval Route
+      description: Read the request's current workflow, including a completed escalation.
+      operationId: get_pending_approval_route_api_v1_approval_requests__request_id__readiness_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: request_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Request Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalReadiness'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/approval-bypasses/status:
     get:
       tags:
@@ -10939,6 +11220,41 @@ paths:
           description: Operation or resource denied for restricted CI credentials
         '503':
           description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/fleet/identities:
+    post:
+      tags:
+      - Fleet
+      summary: Read Fleet Identities
+      description: Resolve names and current enrollment for account-owned device evidence.
+      operationId: read_fleet_identities_api_v1_fleet_identities_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FleetIdentityQuery'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FleetIdentities'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
       x-restricted-ci: deny
   /api/v1/retention/settings:
     get:
@@ -32778,6 +33094,60 @@ components:
       - id
       title: ApprovalFlowExecutionSummary
       description: The flow run the gated call belonged to.
+    ApprovalReadiness:
+      properties:
+        enforced:
+          type: boolean
+          title: Enforced
+          default: true
+        workflow_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Workflow Name
+        workflow_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Workflow Id
+        recipients:
+          items:
+            type: string
+          type: array
+          title: Recipients
+        deciders:
+          items:
+            type: string
+          type: array
+          title: Deciders
+        destinations:
+          items:
+            type: string
+          type: array
+          title: Destinations
+        issues:
+          items:
+            type: string
+          type: array
+          title: Issues
+        timeout_seconds:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Timeout Seconds
+        ai_fallback:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ai Fallback
+        external:
+          type: boolean
+          title: External
+          default: false
+      type: object
+      title: ApprovalReadiness
+      description: Configured human route, independent of enforcement or notification
+        delivery.
     ApprovalRequestResponse:
       properties:
         tool_name:
@@ -42375,6 +42745,29 @@ components:
       - path
       title: FileSource
       description: Local marketplace catalog or directory.
+    FleetAgentIdentity:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        lifecycle_state:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Lifecycle State
+      type: object
+      required:
+      - id
+      - name
+      - lifecycle_state
+      title: FleetAgentIdentity
+      description: Current registry state, separate from collector assertions.
     FleetCodeActivityResponse:
       properties:
         active_within_minutes:
@@ -42592,6 +42985,43 @@ components:
       title: FleetCodeFlow
       description: A flow with code activity in the window, placed on the map by the
         client.
+    FleetIdentities:
+      properties:
+        agents:
+          items:
+            $ref: '#/components/schemas/FleetAgentIdentity'
+          type: array
+          title: Agents
+        observers:
+          additionalProperties:
+            type: string
+          type: object
+          title: Observers
+      type: object
+      required:
+      - agents
+      - observers
+      title: FleetIdentities
+      description: Names and enrollment state, with no credential contents.
+    FleetIdentityQuery:
+      properties:
+        agent_ids:
+          items:
+            type: string
+            format: uuid
+          type: array
+          maxItems: 1000
+          title: Agent Ids
+        observer_ids:
+          items:
+            type: string
+            format: uuid
+          type: array
+          maxItems: 1000
+          title: Observer Ids
+      type: object
+      title: FleetIdentityQuery
+      description: Only identifiers already present in the device projection are needed.
     FleetMapAction:
       properties:
         label:
@@ -49976,6 +50406,29 @@ components:
       - runner_state
       title: ManagedAgentDeviceSummary
       description: An explicitly associated device from the optional fleet projection.
+    ManagedAgentEnrollmentCancelRequest:
+      properties:
+        reason:
+          anyOf:
+          - type: string
+            maxLength: 500
+          - type: 'null'
+          title: Reason
+      type: object
+      title: ManagedAgentEnrollmentCancelRequest
+      description: Optional body of a pending-enrollment cancel.
+    ManagedAgentEnrollmentCancelResponse:
+      properties:
+        enrollment:
+          $ref: '#/components/schemas/ManagedAgentEnrollmentSummary'
+        removed:
+          $ref: '#/components/schemas/OnboardingCleanupRemoved'
+      type: object
+      required:
+      - enrollment
+      - removed
+      title: ManagedAgentEnrollmentCancelResponse
+      description: A cancelled pending enrollment and what its cleanup removed.
     ManagedAgentEnrollmentCreateRequest:
       properties:
         workstation_fingerprint:
@@ -50163,6 +50616,12 @@ components:
           type: string
           format: date-time
           title: Updated At
+        expires_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Expires At
       type: object
       required:
       - id
@@ -50262,6 +50721,73 @@ components:
       type: object
       title: ManagedAgentIdentityMutationCounts
       description: Row counts returned by rekey/merge dry-run and execute responses.
+    ManagedAgentManualSetupPending:
+      properties:
+        enrollment_id:
+          type: string
+          title: Enrollment Id
+        status:
+          type: string
+          title: Status
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        expires_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Expires At
+      type: object
+      required:
+      - enrollment_id
+      - status
+      - created_at
+      title: ManagedAgentManualSetupPending
+      description: The pending enrollment a manual setup guide belongs to.
+    ManagedAgentManualSetupResponse:
+      properties:
+        agent_id:
+          type: string
+          title: Agent Id
+        agent_kind:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Kind
+        display_name:
+          type: string
+          title: Display Name
+        pending:
+          anyOf:
+          - $ref: '#/components/schemas/ManagedAgentManualSetupPending'
+          - type: 'null'
+        instructions:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Instructions
+        resume_command:
+          type: string
+          title: Resume Command
+      type: object
+      required:
+      - agent_id
+      - display_name
+      - resume_command
+      title: ManagedAgentManualSetupResponse
+      description: 'Config changes a user applies by hand to route an agent via Preloop.
+
+
+        ``instructions`` has the ``manual_apply`` shape: ``files`` (each with
+
+        ``path``, ``format``, ``exists``, ``merge``, ``remove``, ``host_source``),
+
+        ``env``, ``settings_flag`` and ``limitations``. Every secret is the
+
+        literal placeholder ``<AGENT_KEY>``.'
     ManagedAgentMergeRequest:
       properties:
         duplicate_agent_id:
@@ -50398,6 +50924,28 @@ components:
       type: object
       title: ManagedAgentModelBindingSyncRequest
       description: Replace request for one managed agent's configured model bindings.
+    ManagedAgentOnboardingRollbackRequest:
+      properties:
+        created_resources:
+          $ref: '#/components/schemas/OnboardingCreatedResources'
+        reason:
+          anyOf:
+          - type: string
+            maxLength: 500
+          - type: 'null'
+          title: Reason
+      type: object
+      title: ManagedAgentOnboardingRollbackRequest
+      description: Request to undo a failed or cancelled onboarding.
+    ManagedAgentOnboardingRollbackResponse:
+      properties:
+        removed:
+          $ref: '#/components/schemas/OnboardingCleanupRemoved'
+      type: object
+      required:
+      - removed
+      title: ManagedAgentOnboardingRollbackResponse
+      description: Result of an onboarding rollback.
     ManagedAgentRegisterRequest:
       properties:
         display_name:
@@ -51765,6 +52313,65 @@ components:
       - reason
       title: OmittedKey
       description: A restriction not represented in the emitted settings.
+    OnboardingCleanupRemoved:
+      properties:
+        credentials:
+          type: integer
+          title: Credentials
+          default: 0
+        ai_models:
+          type: integer
+          title: Ai Models
+          default: 0
+        agent:
+          type: string
+          enum:
+          - deleted
+          - decommissioned
+          - kept
+          title: Agent
+          default: kept
+      type: object
+      title: OnboardingCleanupRemoved
+      description: Counts of what an onboarding cleanup removed.
+    OnboardingCreatedResources:
+      properties:
+        agent_created:
+          type: boolean
+          title: Agent Created
+          default: false
+        agent_revived:
+          type: boolean
+          title: Agent Revived
+          default: false
+        credential_ids:
+          items:
+            type: string
+          type: array
+          maxItems: 200
+          title: Credential Ids
+        ai_model_ids:
+          items:
+            type: string
+          type: array
+          maxItems: 200
+          title: Ai Model Ids
+        mcp_server_ids:
+          items:
+            type: string
+          type: array
+          maxItems: 200
+          title: Mcp Server Ids
+      type: object
+      title: OnboardingCreatedResources
+      description: 'What one onboarding run created, as opposed to reused.
+
+
+        Recorded under ``backup_metadata.created_resources`` of a pending
+
+        enrollment and sent to the rollback endpoint, so a cancelled, failed or
+
+        expired onboarding removes only its own resources.'
     OnboardingRequest:
       properties:
         email:
@@ -54418,6 +55025,16 @@ components:
           - type: string
           - type: 'null'
           title: Server Label
+        server_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Server Name
+        first_seen_agent_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: First Seen Agent Name
         tool_name:
           type: string
           title: Tool Name

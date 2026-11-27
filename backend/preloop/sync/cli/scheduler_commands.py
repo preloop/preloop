@@ -316,11 +316,13 @@ async def run_scheduler_async(
         misfire_grace_time=30,
     )
 
-    # Hourly hygiene: deactivate keys of runs that ended, and drop REST
-    # traffic rows past retention. Both passes are bounded.
+    # Hourly hygiene: deactivate keys of runs that ended, drop REST traffic
+    # rows past retention, and expire manual-mode enrollments nobody resumed.
+    # Every pass is bounded.
     for task_name, job_id in (
         ("deactivate_ended_run_keys", "run_key_maintenance"),
         ("prune_api_traffic", "api_traffic_retention"),
+        ("expire_pending_enrollments", "pending_enrollment_expiry"),
     ):
 
         async def _publish_hourly(name: str = task_name) -> None:
