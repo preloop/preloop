@@ -35265,6 +35265,11 @@ components:
           - type: 'null'
           title: Last Ignored Reason
           description: Most recent scope-related ignored delivery reason.
+        review_requests:
+          additionalProperties: true
+          type: object
+          title: Review Requests
+          description: Last label poll and up to ten recent explicit review outcomes.
         secret:
           type: string
           title: Secret
@@ -35319,6 +35324,11 @@ components:
           - type: 'null'
           title: Last Ignored Reason
           description: Most recent scope-related ignored delivery reason.
+        review_requests:
+          additionalProperties: true
+          type: object
+          title: Review Requests
+          description: Last label poll and up to ten recent explicit review outcomes.
       type: object
       required:
       - callback_configured

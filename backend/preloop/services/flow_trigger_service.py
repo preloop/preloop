@@ -2488,13 +2488,38 @@ class FlowTriggerService:
         if head and current_head != head and not request:
             return "pull_request_head_changed"
         if request:
+            from preloop.sync.event_normalizer import extract_filter_fields
             from preloop.utils.azure_devops import normalize_pull_request
 
-            event_data["payload"] = {
+            refreshed = {
                 **payload,
                 **normalize_pull_request(current, client.organization),
             }
+            # Comments carry only an identity; polling bypasses the webhook
+            # worker. Refresh the same top-level contract as an ordinary PR
+            # delivery, including stale fields extracted before this live read.
+            event_data["payload"] = {
+                **refreshed,
+                **extract_filter_fields(
+                    "azure_devops", "git.pullrequest.updated", refreshed
+                ),
+            }
         return None
+
+    def _record_azure_review_outcome(
+        self, event_data: Dict[str, Any], reason: str, flow: Optional[Flow] = None
+    ) -> None:
+        """Expose explicit request outcomes on the tracker without payload data."""
+        if (event_data.get("payload") or {}).get("azure_review_request"):
+            from preloop.models.crud import crud_azure_review_request
+
+            crud_azure_review_request.record_status(
+                self.db,
+                tracker_id=event_data["tracker_id"],
+                event=event_data,
+                reason=reason,
+                flow_id=flow.id if flow else None,
+            )
 
     async def process_event(self, event_data: Dict[str, Any]) -> Any:
         """Serialize Azure PR pushes and explicit requests before checking overlap."""
@@ -2545,6 +2570,7 @@ class FlowTriggerService:
         }:
             reason = await self._azure_pull_request_skip_reason(event_data)
             if reason:
+                self._record_azure_review_outcome(event_data, reason)
                 logger.info(
                     "Azure DevOps review skipped for tracker %s: %s", tracker_id, reason
                 )
@@ -2624,6 +2650,7 @@ class FlowTriggerService:
             )
 
             if not matching_flows:
+                self._record_azure_review_outcome(event_data, "no_matching_flow")
                 logger.warning(
                     f"No flows found matching source='{query_source}', type='{event_type}', "
                     f"account_id={account_id}, project_id={project_id}. "
@@ -2657,6 +2684,7 @@ class FlowTriggerService:
                     # Independent reviewer and ordinary event flows still run.
                     continue
                 if not flow.is_enabled:
+                    self._record_azure_review_outcome(flow_event, "flow_paused", flow)
                     logger.warning(
                         f"Skipping disabled flow '{flow.name}' ({flow.id}). "
                         f"To enable this flow, set is_enabled=true via the API or UI."
@@ -2685,6 +2713,9 @@ class FlowTriggerService:
                     continue
 
                 if not self._matches_trigger_config(flow, flow_event):
+                    self._record_azure_review_outcome(
+                        flow_event, "filter_mismatch", flow
+                    )
                     logger.info("Trigger config did not match: flow_id=%s", flow.id)
                     continue
 
@@ -2693,6 +2724,9 @@ class FlowTriggerService:
                     from preloop.services.azure_review_requests import request_enabled
 
                     if not request_enabled(flow, request):
+                        self._record_azure_review_outcome(
+                            flow_event, "request_disabled", flow
+                        )
                         continue
                     if (
                         event_data.get("_azure_review_flow_id")
@@ -2719,6 +2753,7 @@ class FlowTriggerService:
                         )
                         or accepted
                     )
+                    self._record_azure_review_outcome(event_data, "accepted", flow)
                 # An already recorded label is still accepted. Let polling retry
                 # removal after a transient provider failure without queuing again.
                 return (

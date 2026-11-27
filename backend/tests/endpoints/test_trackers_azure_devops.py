@@ -167,3 +167,17 @@ def test_status_exposes_only_the_ignored_delivery_reason() -> None:
         }
     }
     assert hooks._status(tracker)["last_ignored_reason"] == "repository_not_imported"
+
+
+def test_status_exposes_review_request_outcomes() -> None:
+    """Tracker status carries bounded polling outcomes without event payloads."""
+    tracker = _tracker()
+    tracker.meta_data = {
+        "azure_review_status": {
+            "last_poll_at": "2026-01-01T12:00:00+00:00",
+            "poll_error": None,
+            "recent": [{"number": 22, "reason": "filter_mismatch"}],
+        }
+    }
+    result = hooks.AzureDevOpsWebhookStatus(**hooks._status(tracker))
+    assert result.review_requests == tracker.meta_data["azure_review_status"]

@@ -10264,6 +10264,18 @@ export interface AzureDevOpsWebhookRegistration {
 
 export interface AzureDevOpsWebhookStatus {
   last_ignored_reason?: string | null;
+  review_requests?: {
+    last_poll_at?: string;
+    poll_error?: string | null;
+    recent?: Array<{
+      repository_id: string;
+      number: number;
+      kind: string;
+      flow_id: string | null;
+      reason: string;
+      at: string;
+    }>;
+  };
   callback_url: string | null;
   callback_configured: boolean;
   required_events: string[];
