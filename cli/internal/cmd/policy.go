@@ -90,20 +90,20 @@ type policyVersionListResponse struct {
 
 // PolicyImportResult represents the result of applying a policy.
 type PolicyImportResult struct {
-	Success           bool     `json:"success"`
-	PolicyName        string   `json:"policy_name"`
-	MCPServersCreated int      `json:"mcp_servers_created"`
-	MCPServersUpdated int      `json:"mcp_servers_updated"`
-	PoliciesCreated   int      `json:"policies_created"`
-	PoliciesUpdated   int      `json:"policies_updated"`
-	ToolsCreated      int      `json:"tools_created"`
-	ToolsUpdated      int      `json:"tools_updated"`
-	ToolsSkipped      int      `json:"tools_skipped"`
+	Success           bool   `json:"success"`
+	PolicyName        string `json:"policy_name"`
+	MCPServersCreated int    `json:"mcp_servers_created"`
+	MCPServersUpdated int    `json:"mcp_servers_updated"`
+	PoliciesCreated   int    `json:"policies_created"`
+	PoliciesUpdated   int    `json:"policies_updated"`
+	ToolsCreated      int    `json:"tools_created"`
+	ToolsUpdated      int    `json:"tools_updated"`
+	ToolsSkipped      int    `json:"tools_skipped"`
 	// PolicyVersion is the version the server recorded for this apply. It
 	// is nil for a dry run, when recording failed, and on older servers.
 	PolicyVersion *int     `json:"policy_version"`
-	Warnings          []string `json:"warnings,omitempty"`
-	Errors            []string `json:"errors,omitempty"`
+	Warnings      []string `json:"warnings,omitempty"`
+	Errors        []string `json:"errors,omitempty"`
 }
 
 // policyCmd represents the policy command group.
