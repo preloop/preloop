@@ -100,6 +100,34 @@ func formatAllowedModelsList(allowed []string) string {
 	return strings.Join(allowed[:maxListed], ", ") + ", ..."
 }
 
+// allowedModelMode is what to do when the routed model is outside the
+// agent's allowed models.
+type allowedModelMode int
+
+const (
+	// allowedModelNote prints the mismatch and changes nothing.
+	allowedModelNote allowedModelMode = iota
+	// allowedModelAsk asks whether to add the model.
+	allowedModelAsk
+	// allowedModelAdd adds it: the review already showed that it would.
+	allowedModelAdd
+)
+
+// selectedModelOutsideAllowedModels reports whether alias is outside the
+// allowed models of an existing managed agent. It only reads.
+func selectedModelOutsideAllowedModels(client *api.Client, managedAgentID, alias string, model *aiModelResponse) bool {
+	alias = strings.TrimSpace(alias)
+	if client == nil || strings.TrimSpace(managedAgentID) == "" || alias == "" {
+		return false
+	}
+	governance, err := fetchManagedAgentGovernance(client, managedAgentID)
+	if err != nil {
+		return false
+	}
+	allowed := governanceAllowedModels(governance.Config)
+	return len(allowed) > 0 && !allowedModelsCoverSelection(allowed, alias, model)
+}
+
 // ensureSelectedModelAllowed warns when the chosen gateway alias is outside the
 // managed agent's allowed_models policy, which would make the live check (and
 // every later request) fail with a 403. Interactive runs may append the alias;
@@ -113,6 +141,24 @@ func ensureSelectedModelAllowed(
 	input io.Reader,
 	output io.Writer,
 	interactive bool,
+) error {
+	mode := allowedModelNote
+	if interactive {
+		mode = allowedModelAsk
+	}
+	return ensureSelectedModelAllowedMode(client, managedAgentID, alias, model, input, output, mode)
+}
+
+// ensureSelectedModelAllowedMode is ensureSelectedModelAllowed with the
+// third choice a reviewed plan needs: add the model without asking.
+func ensureSelectedModelAllowedMode(
+	client *api.Client,
+	managedAgentID string,
+	alias string,
+	model *aiModelResponse,
+	input io.Reader,
+	output io.Writer,
+	mode allowedModelMode,
 ) error {
 	if output == nil {
 		output = io.Discard
@@ -140,27 +186,29 @@ func ensureSelectedModelAllowed(
 		alias,
 		formatAllowedModelsList(allowed),
 	) //nolint:errcheck
-	if !interactive {
+	if mode == allowedModelNote {
 		fmt.Fprintln(
 			output,
 			"  Gateway requests for this model will be denied until the allowed models are updated in the Preloop console.",
 		) //nolint:errcheck
 		return nil
 	}
-	confirmed, err := confirmActionDefaultYes(
-		input,
-		output,
-		fmt.Sprintf("Add %s to the allowed models? (Y/n): ", alias),
-	)
-	if err != nil {
-		return fmt.Errorf("failed to read allowed-models confirmation: %w", err)
-	}
-	if !confirmed {
-		fmt.Fprintln(
+	if mode == allowedModelAsk {
+		confirmed, err := confirmActionDefaultYes(
+			input,
 			output,
-			"  Left the allowed models unchanged; gateway requests for this model will be denied.",
-		) //nolint:errcheck
-		return nil
+			fmt.Sprintf("Add %s to the allowed models? (Y/n): ", alias),
+		)
+		if err != nil {
+			return fmt.Errorf("failed to read allowed-models confirmation: %w", err)
+		}
+		if !confirmed {
+			fmt.Fprintln(
+				output,
+				"  Left the allowed models unchanged; gateway requests for this model will be denied.",
+			) //nolint:errcheck
+			return nil
+		}
 	}
 	updated := make([]interface{}, 0, len(allowed)+1)
 	for _, entry := range allowed {

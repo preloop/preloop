@@ -63,11 +63,44 @@ type disclosure struct {
 	Agents []string
 }
 
-// onboardSelection is every choice a person can make about a run.
+// onboardSelection is every choice a person can make about a run. Each one
+// has a flag, and the review's "change" path edits the same fields.
 type onboardSelection struct {
+	// Name is the display name (--name); valid for a run over one agent.
+	Name string
+	// Model is the managed model alias for every agent (--model).
+	Model string
+	// ModelRouting is false under --no-model-routing: MCP only.
+	ModelRouting bool
+	// AgentControl is false under --no-agent-control.
+	AgentControl bool
+	// Approvals is nil when not chosen: off on a first onboarding, and in
+	// an interactive review of an agent that has gates, what is installed.
+	Approvals *bool
+	// ReportExtensions sends the extension report after the agents are set
+	// up. On unless --no-report-extensions or PRELOOP_DISCOVERY_REPORT=0.
+	ReportExtensions bool
+	// Runner is nil when not chosen: off unless account policy requires it.
+	Runner *bool
 	// Explain prints the full custody and plan text instead of the compact
 	// review, and the detailed result after each agent.
 	Explain bool
+	// Plain rules out anything that needs cursor control.
+	Plain bool
+
+	// Per-agent choices made in the review, keyed by the agent's id.
+	names    map[string]string
+	models   map[string]string
+	excluded map[string]bool
+}
+
+// defaultOnboardSelection is what a run does when nothing was chosen.
+func defaultOnboardSelection() onboardSelection {
+	return onboardSelection{
+		ModelRouting:     true,
+		AgentControl:     true,
+		ReportExtensions: reportExtensionsDefault(false, false),
+	}
 }
 
 // agentPlan is the plan for one agent, in the terms the review shows.
@@ -98,6 +131,11 @@ type agentPlan struct {
 	Blocked string
 
 	state *enrollmentPlanState
+	// pending is a manual setup already waiting for this agent: applying
+	// checks it instead of starting another.
+	pending *manualResumeState
+	// planErr is why no plan could be worked out.
+	planErr error
 }
 
 func (p agentPlan) capabilityState(id string) capabilityState {
@@ -246,7 +284,7 @@ func planManagedEnrollment(
 	// (--yes / --dry-run / PRELOOP_CONFIRM) keep the degrade behavior; the
 	// preview note explains how to resolve it.
 	selectedOpenClawModel := strings.EqualFold(agent.Name, "OpenClaw") && strings.TrimSpace(opts.PreferredModel) != ""
-	managedGatewayEnabled := supportsManagedGateway(agent) || selectedOpenClawModel
+	managedGatewayEnabled := (supportsManagedGateway(agent) || selectedOpenClawModel) && !opts.NoModelRouting
 	gatewayHints := managedGatewayResolutionHints{
 		PreferredModelAlias: strings.TrimSpace(opts.PreferredModel),
 	}
@@ -394,7 +432,7 @@ func planManagedEnrollment(
 		custody[0] = gatewayCredentialCustody(&managedGatewayUpstream{SourceAgent: "account-ai-model", CredentialType: plannedUpstream.CredentialType})
 	}
 	var plannedOpenClaw *openClawParsedConfig
-	if isOpenClawAgent(agent) && !selectedOpenClawModel {
+	if isOpenClawAgent(agent) && !selectedOpenClawModel && !opts.NoModelRouting {
 		plannedOpenClaw, err = parseOpenClawConfig(agent.ConfigPath)
 		if err != nil {
 			return nil, err
@@ -512,7 +550,11 @@ func describeEnrollmentPlan(state *enrollmentPlanState) agentPlan {
 	if !routed {
 		routing.State = capabilityStateUnavailable
 		routing.Reason = "not supported for this agent"
-		if state.managedGatewayEnabled {
+		switch {
+		case state.opts.NoModelRouting:
+			routing.State = capabilityStateOff
+			routing.Reason = ""
+		case state.managedGatewayEnabled:
 			routing.Reason = "no usable model credential found"
 		}
 	}
@@ -524,6 +566,9 @@ func describeEnrollmentPlan(state *enrollmentPlanState) agentPlan {
 	control := capability{ID: capabilityAgentControl, State: capabilityStateUnavailable}
 	if supportsAgentControlChannel(agent) {
 		control.State = capabilityStateOn
+		if state.opts.NoAgentControl {
+			control.State = capabilityStateOff
+		}
 	}
 	approvals := capability{ID: capabilityApprovals, State: capabilityStateUnavailable}
 	if isApprovalHookSupportedAgent(agent) {

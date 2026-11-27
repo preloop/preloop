@@ -177,21 +177,37 @@ func fetchDiscoverySalt(client *api.Client) (string, error) {
 	return resp.Salt, nil
 }
 
+// discoveryReportSummary counts what one report carried.
+type discoveryReportSummary struct {
+	Agents     int
+	Extensions int
+	// ContentUploaded is the number of extensions whose redacted text was
+	// uploaded after the report.
+	ContentUploaded int
+}
+
 // sendDiscoveryReport fetches the salt and posts the report. Called only
-// after the user opted in.
+// after the user opted in, or from onboarding with the report row on.
 func sendDiscoveryReport(client *api.Client, agents []AgentConfig, w io.Writer, deviceRef string, projects ...string) error {
+	_, err := sendDiscoveryReportSummary(client, agents, w, deviceRef, projects...)
+	return err
+}
+
+// sendDiscoveryReportSummary is sendDiscoveryReport that also says how much
+// was sent.
+func sendDiscoveryReportSummary(client *api.Client, agents []AgentConfig, w io.Writer, deviceRef string, projects ...string) (summary discoveryReportSummary, err error) {
 	if client == nil {
-		return errors.New("discovery reporting needs a Preloop login or token (PRELOOP_TOKEN); run 'preloop login' or pass --token")
+		return summary, errors.New("discovery reporting needs a Preloop login or token (PRELOOP_TOKEN); run 'preloop login' or pass --token")
 	}
 	salt, err := fetchDiscoverySalt(client)
 	if err != nil {
-		return err
+		return summary, err
 	}
 	machineID := strings.TrimSpace(deviceRef)
 	if machineID == "" {
 		machineID, err = readMachineID()
 		if err != nil {
-			return fmt.Errorf("could not determine a workstation id: %w", err)
+			return summary, fmt.Errorf("could not determine a workstation id: %w", err)
 		}
 	}
 	home, _ := os.UserHomeDir()
@@ -200,11 +216,17 @@ func sendDiscoveryReport(client *api.Client, agents []AgentConfig, w io.Writer, 
 	deps.NoExtensionDetails = inventoryNoExtensionDetails
 	deps.ExtensionProjects = projects
 	if err := addDiscoveryExtensions(&report, salt, home, deps); err != nil {
-		return err
+		return summary, err
+	}
+	summary.Agents = len(report.Candidates)
+	for _, candidate := range report.Candidates {
+		if candidate.Extensions != nil {
+			summary.Extensions += len(*candidate.Extensions)
+		}
 	}
 	var resp discoveryReportResponse
 	if err := postInventoryReport(client, report, &resp); err != nil {
-		return fmt.Errorf("failed to send discovery report: %w", err)
+		return summary, fmt.Errorf("failed to send discovery report: %w", err)
 	}
 	disclosure := "inventory metadata, extension identifiers, descriptions and hashes"
 	if resp.DetailsOmitted || inventoryNoExtensionDetails {
@@ -223,12 +245,13 @@ func sendDiscoveryReport(client *api.Client, agents []AgentConfig, w io.Writer, 
 		// device has reported, and tells the collector which ones it lacks.
 		content = sendExtensionContent(client, w, report, salt, home, projects)
 	}
+	summary.ContentUploaded = content.Uploaded
 	if content.Uploaded > 0 {
 		fmt.Fprintf(w, "Reported %d agent(s) to Preloop (%d new). Sent %s, and the redacted text of %d extension(s) for review; credentials found in that text were replaced before upload.\n", resp.Received, resp.Created, disclosure, content.Uploaded) //nolint:errcheck
-		return nil
+		return summary, nil
 	}
 	fmt.Fprintf(w, "Reported %d agent(s) to Preloop (%d new). Sent %s; no file bodies, hook arguments or credential files.\n", resp.Received, resp.Created, disclosure) //nolint:errcheck
-	return nil
+	return summary, nil
 }
 
 var (

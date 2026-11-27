@@ -39,6 +39,8 @@ type manualRigServer struct {
 	probeBody       string
 	probeCalls      int
 	probeKeys       []string
+	// reportStatus, when set, is the status the discovery report gets.
+	reportStatus int
 }
 
 func newManualRigServer(t *testing.T) *manualRigServer {
@@ -229,6 +231,15 @@ func (r *manualRigServer) handle(w http.ResponseWriter, req *http.Request) {
 		reply(200, map[string]interface{}{
 			"removed": map[string]interface{}{"credentials": 1, "ai_models": 0, "agent": "deleted"},
 		})
+	case req.Method == http.MethodGet && path == prefix+"/agents/discovery-salt":
+		reply(200, map[string]interface{}{"salt": "synthetic-discovery-salt-0123456789abcdef", "algorithm": "hmac-sha256"})
+	case req.Method == http.MethodPost && path == prefix+"/agents/discovery-reports":
+		if r.reportStatus != 0 {
+			reply(r.reportStatus, map[string]interface{}{"detail": "synthetic report failure"})
+			return
+		}
+		candidates, _ := body["candidates"].([]interface{})
+		reply(200, map[string]interface{}{"received": len(candidates), "created": len(candidates)})
 	case req.Method == http.MethodGet && strings.HasPrefix(path, prefix+"/agents/") && strings.Count(strings.TrimPrefix(path, prefix+"/agents/"), "/") == 0:
 		id := strings.TrimPrefix(path, prefix+"/agents/")
 		for _, agent := range r.agents {

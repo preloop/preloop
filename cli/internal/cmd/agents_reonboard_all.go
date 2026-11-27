@@ -13,7 +13,6 @@ package cmd
 
 import (
 	"fmt"
-	"io"
 	"strings"
 
 	"github.com/preloop/preloop/cli/internal/api"
@@ -74,57 +73,6 @@ func onboardingRefreshReasons(agent AgentConfig) []string {
 		reasons = append(reasons, "Agent Control plugin or config is missing or outdated.")
 	}
 	return reasons
-}
-
-// reonboardPrompt is the per-agent question for an already-onboarded agent.
-func reonboardPrompt(writer io.Writer, agent AgentConfig) string {
-	name := resolveAgentDisplayName(agent)
-	if agent.ReonboardRecommended {
-		fmt.Fprintf(writer, "%s is onboarded but outdated:\n", name) //nolint:errcheck
-		for _, reason := range agent.DriftReasons {
-			fmt.Fprintf(writer, "  - %s\n", reason) //nolint:errcheck
-		}
-		return fmt.Sprintf("Update %s (%s): MCP config, hooks and agent-control plugin, then re-test? (Y/n): ", agent.Name, name)
-	}
-	return fmt.Sprintf("%s (%s) is onboarded and current. Re-onboard to refresh its MCP config, hooks and plugins, then re-test? (Y/n): ", agent.Name, name)
-}
-
-// announceAutoReonboard prints what --yes is about to refresh.
-func announceAutoReonboard(writer io.Writer, agent AgentConfig) {
-	if !agent.IsOnboarded {
-		return
-	}
-	name := resolveAgentDisplayName(agent)
-	if agent.ReonboardRecommended {
-		fmt.Fprintf(writer, "Updating outdated %s: %s\n", name, strings.Join(agent.DriftReasons, " ")) //nolint:errcheck
-		return
-	}
-	fmt.Fprintf(writer, "Refreshing %s (already onboarded).\n", name) //nolint:errcheck
-}
-
-// declinedOnboardingOutcome records a declined prompt in the summary.
-func declinedOnboardingOutcome(agent AgentConfig) agentOnboardingOutcome {
-	if agent.IsOnboarded {
-		reason := "re-onboarding declined; existing enrollment kept"
-		if agent.ReonboardRecommended {
-			reason += " (outdated)"
-		}
-		return agentOnboardingOutcome{Agent: agent, Status: agentOnboardingStatusUnchanged, Reason: reason}
-	}
-	return agentOnboardingOutcome{Agent: agent, Status: "skipped", Reason: "onboarding declined"}
-}
-
-// outcomesFromBestEffort converts the --all path's enrolled/failed lists into
-// summary outcomes so it prints the same per-agent table as the other paths.
-func outcomesFromBestEffort(enrolled []AgentConfig, failures []agentOnboardingFailure) []agentOnboardingOutcome {
-	outcomes := make([]agentOnboardingOutcome, 0, len(enrolled)+len(failures))
-	for _, agent := range enrolled {
-		outcomes = append(outcomes, classifyAgentOnboardingOutcome(agent, nil))
-	}
-	for _, failure := range failures {
-		outcomes = append(outcomes, classifyAgentOnboardingOutcome(failure.Agent, failure.Err))
-	}
-	return outcomes
 }
 
 // appendServerOnlyDeviceAgents adds a summary row for every active agent the

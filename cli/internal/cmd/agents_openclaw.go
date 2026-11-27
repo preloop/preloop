@@ -345,6 +345,19 @@ type managedEnrollmentOptions struct {
 	// created 0700 and the files 0600.
 	ManualOutputDir string
 	Tags            map[string]string
+	// NoModelRouting onboards MCP only (`--no-model-routing`): no model
+	// credential is read or imported and no AI model is created.
+	NoModelRouting bool
+	// NoAgentControl skips the Agent Control file, plugin and sidecar
+	// (`--no-agent-control`). The enrollment still counts as applied.
+	NoAgentControl bool
+	// Reviewed marks a plan a person confirmed in the review (or accepted
+	// with --yes). Questions that used to follow the confirmation then take
+	// the answer they already take under --yes instead of being asked.
+	Reviewed bool
+	// AddAllowedModel makes apply add the routed model to the agent's
+	// allowed models without asking: the review showed that line.
+	AddAllowedModel bool
 	// Explain prints the full custody and plan text before the confirmation
 	// and the detailed result after it (`--explain`), instead of the compact
 	// review, the step lines and the receipt.
@@ -4813,6 +4826,10 @@ func managedAgentControlSidecarDir() (string, error) {
 
 func managedRuntimeControlReadinessError(agent AgentConfig, validation map[string]interface{}) error {
 	if !isHermesAgent(agent) && !isOpenClawAgent(agent) && !isClaudeCodeAgent(agent) {
+		return nil
+	}
+	if validation["control_channel_declined"] == true {
+		// --no-agent-control: the person chose not to have the channel.
 		return nil
 	}
 	if validation["control_plugin_verified"] == true && validation["control_channel_configured"] == true {

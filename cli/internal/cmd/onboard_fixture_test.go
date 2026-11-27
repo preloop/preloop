@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -77,6 +78,34 @@ func newCursorFixture(t *testing.T) onboardFixture {
 		MCPServers: map[string]MCPDef{"docs": {Command: "docs-server"}},
 	}
 	return f
+}
+
+// newThreeAgentFixture is one home with Claude Code (subscription login),
+// Codex CLI (API key) and Cursor. It returns the agents in discovery order.
+func newThreeAgentFixture(t *testing.T) (onboardFixture, []AgentConfig) {
+	t.Helper()
+	f := newClaudeSubscriptionFixture(t)
+	t.Setenv("OPENAI_API_KEY", "")
+	codex := filepath.Join(f.home.home, ".codex", "config.toml")
+	mustWriteRecoveryFile(t, codex, "model = \"gpt-5.1-codex\"\nmodel_provider = \"openai\"\n")
+	mustWriteRecoveryFile(t, filepath.Join(f.home.home, ".codex", "auth.json"), `{"OPENAI_API_KEY":"sk-synthetic-openai-key-0001"}`)
+	cursor := filepath.Join(f.home.home, ".cursor", "mcp.json")
+	mustWriteRecoveryFile(t, cursor, `{"mcpServers":{}}`)
+	present := string(agentRuntimeStatePresent)
+	return f, []AgentConfig{
+		{Name: "Claude Code", ConfigPath: f.home.settings, RuntimeState: present},
+		{Name: "Codex CLI", ConfigPath: codex, RuntimeState: present},
+		{Name: "Cursor", ConfigPath: cursor, RuntimeState: present},
+	}
+}
+
+// outcomeLines is the outcome list of a run as text: agent, status, reason.
+func outcomeLines(outcomes []agentOnboardingOutcome) string {
+	var out strings.Builder
+	for _, outcome := range outcomes {
+		fmt.Fprintf(&out, "%s\t%s\t%s\n", outcome.Agent.Name, outcome.Status, outcome.Reason)
+	}
+	return out.String()
 }
 
 // newReadOnlySettingsFixture is the subscription fixture with a settings
