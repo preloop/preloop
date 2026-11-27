@@ -44,6 +44,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Runner-proxied local models can load and reason beyond the former 60-second
+  silence and 600-second request limits. Server settings now default to 600
+  seconds of model silence and 3600 seconds total, capped by the flow's remaining
+  budget. Updated runners send liveness keepalives, honor server-provided limits,
+  and cancel local work on expiry. Errors name the limit; OSS Helm proxy settings
+  and hosted harness client waits accommodate long requests. Upgrade the CLI
+  alongside the server for the full fix. See
+  [long model requests](docs/guide/runner-local-models.md#long-model-requests).
+
 - The "Allow this flow to run on your runner?" approval now says what it
   allows: the runner and its device (hostname, OS), the harness and model, the
   flow (linked), what triggered the run, the repositories and directory it

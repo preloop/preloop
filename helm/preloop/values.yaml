@@ -332,6 +332,13 @@ healthMonitor:
       memory: "64Mi"
 
 # Gateway resources
+# Limits sent to native runners with each local-model request (seconds).
+# API, gateway and workers must use the same values.
+runnerModels:
+  idleSeconds: 60  # Runner liveness; minimum 30, keepalives every 10 seconds.
+  silentSeconds: 600  # Local model first byte and between response bytes.
+  totalSeconds: 3600  # Also capped by the calling flow's remaining budget.
+
 gateway:
   # Where in-cluster callers reach the model gateway (rendered as
   # PRELOOP_MODEL_GATEWAY_URL_K8S on the API, worker and agent-launching
@@ -369,8 +376,9 @@ gateway:
     # Seconds. Generous rather than exact: the cost of waiting is an idle
     # connection, the cost of being short is a failed request plus whatever
     # tokens the upstream already billed.
-    readTimeout: 900
-    sendTimeout: 900
+    # Rendered read/send timeouts are at least runnerModels.totalSeconds + 15.
+    readTimeout: 3615
+    sendTimeout: 3615
     # Connecting to an in-cluster service either works immediately or is a
     # real fault; no reason to wait on it.
     connectTimeout: 10
