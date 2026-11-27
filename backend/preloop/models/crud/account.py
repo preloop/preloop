@@ -14,6 +14,21 @@ from .base import CRUDBase
 class CRUDAccount(CRUDBase[Account]):
     """CRUD operations for Account model."""
 
+    def set_runner_discovery_policy(
+        self, db: Session, *, account_id: Any, policy: dict[str, Any]
+    ) -> None:
+        """Serialize policy updates and preserve unrelated account metadata."""
+        account = db.scalar(
+            select(Account)
+            .where(Account.id == account_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if account is None:
+            raise ValueError("Account not found")
+        account.meta_data = {**(account.meta_data or {}), "runner_discovery": policy}
+        db.commit()
+
     def create(
         self, db: Session, *, obj_in: Dict[str, Any], commit: bool = True
     ) -> Account:

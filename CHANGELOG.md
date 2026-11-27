@@ -55,6 +55,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Expanded execution log entries keep their state through streamed updates,
+  refreshes, status changes and scrolling. Session history and raw transcript
+  events also retain explicit expand/collapse choices.
+- A manually resized flow prompt keeps its height while typing, leaving the
+  field, and refreshing the editor's form state.
+- Execution history shows the recorded harness and model instead of the flow's
+  current harness. Runs without recorded selection remain unknown; runner leases
+  retain the dispatched model after the lease is released.
 - Runner-proxied local models can load and reason beyond the former 60-second
   silence and 600-second request limits. Server settings now default to 600
   seconds of model silence and 3600 seconds total, capped by the flow's remaining

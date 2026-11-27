@@ -122,8 +122,8 @@ class CRUDDiscoveredAgentCandidate(CRUDBase[DiscoveredAgentCandidate]):
     ) -> list[UpsertOutcome]:
         """Insert new candidates and bump ``last_seen_at`` on known ones.
 
-        A re-report changes nothing but ``last_seen_at``: status, managed
-        agent link and the first report's details stay as they were. The
+        A re-report refreshes ``last_seen_at`` and reported enrollment: status,
+        managed agent link and the first report's details stay as they were. The
         ``xmax = 0`` test tells a fresh insert from a conflict update in the
         same statement, so two reports racing for one key still produce
         exactly one ``created`` outcome.
@@ -171,10 +171,13 @@ class CRUDDiscoveredAgentCandidate(CRUDBase[DiscoveredAgentCandidate]):
                 .on_conflict_do_update(
                     constraint="uq_discovered_agent_candidate_key",
                     set_={
+                        "reported_enrolled": pg_insert(
+                            self.model
+                        ).excluded.reported_enrolled,
                         "last_seen_at": func.greatest(
                             self.model.last_seen_at,
                             pg_insert(self.model).excluded.last_seen_at,
-                        )
+                        ),
                     },
                 )
                 .returning(

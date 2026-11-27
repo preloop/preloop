@@ -699,6 +699,8 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert opening_prompt.down_revision == extension_details.revision
     extension_content = script.get_revision("20270102_extension_content")
     assert extension_content.down_revision == opening_prompt.revision
+    extension_search = script.get_revision("20270103_extension_search")
+    assert extension_search.down_revision == extension_content.revision
     native_approval_session = script.get_revision("20270103_native_approval_session")
-    assert native_approval_session.down_revision == extension_content.revision
+    assert native_approval_session.down_revision == extension_search.revision
     assert script.get_heads() == [native_approval_session.revision]

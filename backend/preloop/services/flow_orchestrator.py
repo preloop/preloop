@@ -60,7 +60,7 @@ from preloop.agents.verification import (
     VERIFICATION_MARKER,
 )
 from preloop.services.flow_failure_messages import (
-    AGENT_REPORTED_FAILURE,
+    agent_reported_failure_message,
     AGENT_TOOL_LOOP,
 )
 from preloop.services.flow_failure_category import (
@@ -4205,6 +4205,12 @@ class FlowExecutionOrchestrator:
         self.ai_model = model
         self._harness_fell_back = True
         if self.execution_log is not None:
+            crud_flow_execution.record_runtime_selection(
+                self.execution_log,
+                agent_type=HARNESS_SERVER_FALLBACK_AGENT_TYPE,
+                model_identifier=model.model_identifier,
+                ai_model_id=model.id,
+            )
             self.execution_log.routing_reason = ROUTING_FELL_BACK_TO_SERVER
             self.execution_log.billing_mode = BILLING_MODE_METERED
             self.db.add(self.execution_log)
@@ -4391,6 +4397,27 @@ class FlowExecutionOrchestrator:
                 from preloop.services.host_exec import PULL_REQUEST_UNAVAILABLE
 
                 raise ValueError(PULL_REQUEST_UNAVAILABLE)
+            from preloop.services.host_exec import (
+                NETWORK_UNAVAILABLE,
+                account_has_network_runner,
+                host_exec_network_conflict,
+                host_exec_requires_network,
+            )
+
+            conflict = host_exec_network_conflict(self.flow.agent_config, clone_config)
+            if conflict:
+                raise ValueError(conflict)
+
+            if host_exec_requires_network(
+                self.flow.agent_config
+            ) and not account_has_network_runner(
+                self.db,
+                account_id=self.flow.account_id,
+                runner_pool=self.flow.runner_pool,
+                profile=profile or "",
+                agent_type=effective_agent_type,
+            ):
+                raise ValueError(NETWORK_UNAVAILABLE)
             host_agent_type = (
                 effective_agent_type.strip().lower()
                 if isinstance(effective_agent_type, str)
@@ -9862,8 +9889,8 @@ class FlowExecutionOrchestrator:
                         )
                         final_status = "FAILED"
                         error_message = result.error_message or (
-                            AGENT_REPORTED_FAILURE.format(
-                                field=signal_field, value=signal_value
+                            agent_reported_failure_message(
+                                result_artifact, signal_field, signal_value
                             )
                         )
                     elif (
@@ -10352,14 +10379,13 @@ class FlowExecutionOrchestrator:
         if status == "SUCCEEDED":
             from preloop.services.flow_execution_outcome import result_failure_signal
 
-            signal = result_failure_signal(
-                kwargs.get("result", getattr(self.execution_log, "result", None))
-            )
+            reported = kwargs.get("result", getattr(self.execution_log, "result", None))
+            signal = result_failure_signal(reported)
             if signal is not None:
                 field, value = signal
                 status = "FAILED"
-                kwargs["error_message"] = AGENT_REPORTED_FAILURE.format(
-                    field=field, value=value
+                kwargs["error_message"] = agent_reported_failure_message(
+                    reported, field, value
                 )
                 kwargs["failure_category"] = "agent_reported_failure"
 

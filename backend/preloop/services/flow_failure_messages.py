@@ -11,6 +11,31 @@ NATIVE_RESULT_SCHEMA_REQUIRED = (
 AGENT_REPORTED_FAILURE = (
     "Agent reported an explicit failure in result.json ({field}={value!r})."
 )
+#: Longest agent-written summary carried into an execution's error message.
+AGENT_SUMMARY_MAX_CHARS = 1000
+
+
+def agent_reported_failure_message(result: object, field: str, value: object) -> str:
+    """Return the agent-reported failure message, with the agent's summary.
+
+    Args:
+        result: The agent's result.json document.
+        field: The field that classified the failure (``status``/``verdict``).
+        value: That field's value.
+
+    Returns:
+        ``AGENT_REPORTED_FAILURE`` followed by the agent's own ``summary``
+        (or ``reason``/``error``/``message``) when it wrote one.
+    """
+    message = AGENT_REPORTED_FAILURE.format(field=field, value=value)
+    if isinstance(result, dict):
+        for key in ("summary", "reason", "error", "message"):
+            text = result.get(key)
+            if isinstance(text, str) and text.strip():
+                summary = text.strip()[:AGENT_SUMMARY_MAX_CHARS]
+                return f"{message} {summary}"
+    return message
+
 
 AGENT_TOOL_LOOP = (
     "Execution stopped after detecting a repeated tool loop: {tools} repeated "

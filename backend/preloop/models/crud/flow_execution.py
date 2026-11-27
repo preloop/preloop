@@ -43,6 +43,7 @@ from preloop.models.models.flow_execution import (
     RESUME_ROOT_SQL,
     STOP_COVERAGE_KEY,
     TRIGGER_SUBJECT_KEY,
+    ROUTING_RECORD_KEY,
     FlowExecution,
 )
 from preloop.models.models.flow import Flow
@@ -287,6 +288,29 @@ def _parse_iso(value: Any) -> Optional[datetime]:
 
 class CRUDFlowExecution(CRUDBase[FlowExecution]):
     """CRUD operations for FlowExecution model."""
+
+    def record_runtime_selection(
+        self,
+        execution: models.FlowExecution,
+        *,
+        agent_type: str,
+        model_identifier: Optional[str],
+        ai_model_id: Optional[Any],
+    ) -> None:
+        """Stage dispatch facts in the existing routing record for the next commit.
+
+        Preserve the admission decision, which retries and continuations use.
+        A lease's requested alias survives release of its temporary assignment.
+        """
+        details = dict(getattr(execution, "trigger_event_details", None) or {})
+        routing = dict(details.get(ROUTING_RECORD_KEY) or {})
+        routing["executed"] = {
+            "agent_type": agent_type,
+            "ai_model_id": str(ai_model_id) if ai_model_id is not None else None,
+            "model_identifier": model_identifier,
+        }
+        details[ROUTING_RECORD_KEY] = routing
+        execution.trigger_event_details = details
 
     def add_published_pr(
         self, db: Session, *, execution_id: uuid.UUID, publication: dict[str, str]
@@ -2401,6 +2425,9 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                     FlowExecution.queued_reason,
                     FlowExecution.routing_reason,
                     FlowExecution.billing_mode,
+                    FlowExecution.agent_type,
+                    FlowExecution.ai_model_id,
+                    FlowExecution.recorded_model_identifier,
                     # Why a row in this tree changed state, which for a
                     # cascading stop (#689) is the only place the tree can
                     # say "stopped with its parent" rather than "stopped".
@@ -2885,6 +2912,9 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                     # and whether it ran on a seat. Same per-row reason.
                     FlowExecution.routing_reason,
                     FlowExecution.billing_mode,
+                    FlowExecution.agent_type,
+                    FlowExecution.ai_model_id,
+                    FlowExecution.recorded_model_identifier,
                     FlowExecution.runner_id,
                     FlowExecution.agent_session_reference,
                     FlowExecution.retry_of_execution_id,

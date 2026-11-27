@@ -280,14 +280,17 @@ export function executionModelAliasLabel(model: ExecutionModelUsage): string {
  */
 export function renderExecutionModel(
   execution: ExecutionModelSource,
-  options: { aliasOnly?: boolean } = {}
+  options: { aliasOnly?: boolean; harness?: string } = {}
 ): TemplateResult {
   const models = executionModels(execution);
+  const harness = options.harness
+    ? html`<span class="execution-model-harness">${options.harness} ·</span>`
+    : '';
   if (models.length === 0) {
     return html`<span
       class="execution-model is-empty"
-      title="No gateway usage recorded for this run"
-      >-</span
+      title=${[options.harness, 'No model recorded for this run'].filter(Boolean).join(' · ')}
+      >${harness}-</span
     >`;
   }
   const [primary, ...rest] = models;
@@ -296,8 +299,8 @@ export function renderExecutionModel(
     : primary.model_alias;
   return html`<span
     class="execution-model"
-    title=${executionModelTitle(execution)}
-    ><span class="execution-model-alias">${alias}</span>${
+    title=${[options.harness, executionModelTitle(execution)].filter(Boolean).join(' · ')}
+    >${harness}<span class="execution-model-alias">${alias}</span>${
       primary.provider_name && !options.aliasOnly
         ? html`<span class="execution-model-provider"
             >${primary.provider_name}</span
@@ -420,6 +423,7 @@ export const executionModelCss = `
   }
   /* The provider qualifies the alias, so it never competes with it. */
   .execution-model-provider,
+  .execution-model-harness,
   .execution-model-more,
   .execution-model.is-empty {
     color: var(--console-meta-color);

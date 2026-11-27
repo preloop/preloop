@@ -1,7 +1,7 @@
 """Link native hook approvals to the origin session they already record.
 
 Revision ID: 20270103_native_approval_session
-Revises: 20270102_extension_content
+Revises: 20270103_extension_search
 
 Approvals raised by a local native tool hook were stored with no
 ``runtime_session_id`` although the hook endpoint had already verified the
@@ -21,7 +21,7 @@ from typing import Sequence, Union
 from alembic import op
 
 revision: str = "20270103_native_approval_session"
-down_revision: Union[str, None] = "20270102_extension_content"
+down_revision: Union[str, None] = "20270103_extension_search"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
