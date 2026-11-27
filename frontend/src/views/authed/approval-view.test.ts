@@ -1101,6 +1101,61 @@ describe('ApprovalView', () => {
     );
   });
 
+  it('describes a runner owner consent request and collapses its ids', async () => {
+    fetchStub = createFetchStub({
+      request: pendingRequest({
+        tool_name: 'owner_consent',
+        tool_args: { execution_id: 'exec-1', runner_id: 'runner-1' },
+        agent_reasoning: null,
+        summary:
+          'Allow flow "Nightly review" to run Codex CLI (example-model) on Work laptop (laptop.example.com, macOS)? Scheduled run.',
+        rule_context: {
+          runner_flow: {
+            runner: {
+              name: 'Work laptop',
+              device: { hostname: 'laptop.example.com', os: 'macOS' },
+            },
+            harness: 'Codex CLI',
+            model: 'example-model',
+            flow: {
+              id: 'flow-1',
+              name: 'Nightly review',
+              href: '/console/flows/flow-1',
+            },
+            trigger: { kind: 'schedule', label: 'Scheduled run' },
+            scope: 'this_run',
+            scope_label: 'Approving allows this run only.',
+          },
+        },
+      }),
+    });
+    const element = (await fixture(
+      html`<approval-view .requestId=${'req-1'}></approval-view>`
+    )) as ApprovalView;
+    await waitUntil(() => !(element as any).loading, 'still loading');
+    await element.updateComplete;
+
+    const root = element.shadowRoot!;
+    expect(root.textContent).to.contain('What will run');
+    expect(root.querySelector('h1')!.textContent).to.contain('Runner approval');
+    expect(root.textContent).to.not.contain('before the tool can be executed');
+    const block = root.querySelector('runner-flow-approval-context') as any;
+    expect(block).to.exist;
+    await block.updateComplete;
+    expect(block.shadowRoot.textContent).to.contain('laptop.example.com');
+    expect(block.shadowRoot.textContent).to.contain('Codex CLI');
+    const ids = root.querySelector(
+      'details.runner-flow-ids'
+    ) as HTMLDetailsElement;
+    expect(ids).to.exist;
+    expect(ids.open).to.equal(false);
+    expect(ids.querySelector('args-diff')).to.exist;
+    // The ids are no longer the headline "Arguments" section.
+    expect(
+      Array.from(root.querySelectorAll('h2')).map((h) => h.textContent)
+    ).to.not.include('Arguments');
+  });
+
   it('renders the resolved state for an approved request', async () => {
     fetchStub = createFetchStub({
       request: pendingRequest({

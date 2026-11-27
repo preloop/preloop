@@ -58,6 +58,7 @@ import '../../components/list-selection';
 import '../../components/list-bar-swap';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import '../../components/approval-rule-context-block';
+import '../../components/runner-flow-approval-context';
 import '../../components/attribution-line';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
@@ -2168,6 +2169,14 @@ export class ApprovalsView extends AuthedElement {
                         compact
                         .ruleContext=${request.rule_context}
                       ></approval-rule-context-block>
+                      ${
+                        request.rule_context.runner_flow
+                          ? html`<runner-flow-approval-context
+                              compact
+                              .context=${request.rule_context.runner_flow}
+                            ></runner-flow-approval-context>`
+                          : ''
+                      }
                     </div>
                   `
                 : ''

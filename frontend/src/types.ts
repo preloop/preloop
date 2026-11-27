@@ -2885,6 +2885,37 @@ export interface ApprovalRuleContext {
   also_matched_rule_ids?: string[];
   /** Detector attributes for model I/O holds (never a full prompt). */
   detector_summary?: Record<string, unknown>;
+  /** Runner owner consent: what the owner is asked to let run. */
+  runner_flow?: RunnerFlowApprovalContext;
+}
+
+/**
+ * Snapshot behind "Allow this flow to run on your runner?", built by
+ * `services/runner_flow_consent_context.py`. Every field is optional:
+ * missing facts are omitted, never guessed.
+ */
+export interface RunnerFlowApprovalContext {
+  runner?: {
+    name?: string;
+    device?: { hostname?: string; os?: string; arch?: string };
+  };
+  harness?: string;
+  model?: string;
+  flow?: { id?: string; name?: string; href?: string };
+  trigger?: {
+    kind?: string;
+    label?: string;
+    actor?: string;
+    source?: string;
+    event?: string;
+  };
+  repositories?: Array<{ repository: string; branch?: string }>;
+  directory?: string;
+  publication?: { can_push?: boolean; label?: string };
+  limits?: { timeout_seconds?: number };
+  /** `this_run` today: one approval admits one execution. */
+  scope?: string;
+  scope_label?: string;
 }
 
 /** Mode of a time-boxed approval bypass. */
