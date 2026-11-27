@@ -14,7 +14,8 @@ import (
 )
 
 func TestStandaloneMCPInventoryScopesAndPrivacy(t *testing.T) {
-	home := extensionHome(t)
+	// Force identifier redaction on every OS, not only Windows fixture paths.
+	home := testenv.SetHome(t, filepath.Join(t.TempDir(), "codex"))
 	project := t.TempDir()
 	secret := "synthetic-private-value"
 	server := map[string]any{"command": "/private/example/server", "args": []string{"--token", secret}, "env": map[string]string{"TOKEN": secret}}
@@ -25,6 +26,7 @@ func TestStandaloneMCPInventoryScopesAndPrivacy(t *testing.T) {
 	writeInventoryFixture(t, home, ".claude.json", string(registry))
 	writeInventoryFixture(t, project, ".mcp.json", `{"mcpServers":{"project-server":{"url":"https://example.com/mcp?token=`+secret+`"}}}`)
 	writeInventoryFixture(t, home, ".codex/config.toml", "[mcp_servers.codex-server]\ncommand = '/private/example/server'\nargs = ['--token', '"+secret+"']\nenabled = false\n[mcp_servers.codex-server.env]\nTOKEN = '"+secret+"'\n")
+	var codexPolicyID string
 	for _, agent := range []string{"claude-code", "codex-cli"} {
 		exts, codes := collectInventoryExtensions(home, agent, "synthetic-salt", false, project)
 		want := map[string]string{"user-server": "user", "project-server": "project", "local-server": "project"}
@@ -52,6 +54,12 @@ func TestStandaloneMCPInventoryScopesAndPrivacy(t *testing.T) {
 			if agent == "codex-cli" && ext.Enabled != "false" {
 				t.Error("disabled Codex server reported enabled")
 			}
+			if agent == "codex-cli" {
+				if !ext.IDHashed {
+					t.Error("private home-path segment was not hashed")
+				}
+				codexPolicyID = ext.ID
+			}
 		}
 		raw, _ := json.Marshal(exts)
 		for _, private := range []string{secret, "/private/example", "--token", "https://example.com", home, project} {
@@ -68,7 +76,9 @@ func TestStandaloneMCPInventoryScopesAndPrivacy(t *testing.T) {
 	if err != nil || !strings.Contains(stdout, "project-server") {
 		t.Fatalf("MCP kind filter failed: %v", err)
 	}
-	policy := writePolicyFile(t, []map[string]any{{"agent_kind": "codex", "extension_kind": "mcp_server", "extension_id": "codex-server", "approval_state": "unapproved"}})
+	// Exported policies use the reported identity, which may be hashed when
+	// the name contains a home-path segment (including Windows drive letters).
+	policy := writePolicyFile(t, []map[string]any{{"agent_kind": "codex", "extension_kind": "mcp_server", "extension_id": codexPolicyID, "approval_state": "unapproved"}})
 	_, _, err = runExtensions(t, "check", "--agent", "codex-cli", "--policy-file", policy)
 	if ProcessExitCode(err) != 3 {
 		t.Fatalf("MCP policy check exit = %d, want 3", ProcessExitCode(err))
