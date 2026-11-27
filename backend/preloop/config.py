@@ -385,6 +385,24 @@ class Settings(BaseSettings):
         description="Dedicated read-only operator credential for plugin fleet status",
     )
     nats_url: str = Field("nats://localhost:4222", description="NATS server URL")
+    runner_model_idle_seconds: float = Field(
+        60,
+        ge=30,
+        allow_inf_nan=False,
+        description="Runner liveness limit; request keepalives arrive every 10 seconds",
+    )
+    runner_model_silent_seconds: float = Field(
+        600,
+        gt=0,
+        allow_inf_nan=False,
+        description="Local model silence limit before headers and between response bytes",
+    )
+    runner_model_total_seconds: float = Field(
+        3600,
+        gt=0,
+        allow_inf_nan=False,
+        description="Total runner model request limit, capped by remaining flow time",
+    )
     preloop_url: str = Field("http://localhost:8000", description="Preloop URL")
     model_endpoint_allowed_cidrs: str = Field(
         "",

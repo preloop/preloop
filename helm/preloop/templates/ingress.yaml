@@ -35,8 +35,8 @@ metadata:
     last and therefore win.
   */}}
   {{- $annotations := dict
-        "nginx.ingress.kubernetes.io/proxy-read-timeout" $proxy.readTimeout
-        "nginx.ingress.kubernetes.io/proxy-send-timeout" $proxy.sendTimeout
+        "nginx.ingress.kubernetes.io/proxy-read-timeout" (include "preloop.gatewayReadTimeout" .)
+        "nginx.ingress.kubernetes.io/proxy-send-timeout" (include "preloop.gatewaySendTimeout" .)
         "nginx.ingress.kubernetes.io/proxy-connect-timeout" $proxy.connectTimeout
         "nginx.ingress.kubernetes.io/proxy-body-size" $proxy.bodySize }}
   {{- $annotations = merge (deepCopy (.Values.ingress.annotations | default dict)) $annotations }}
@@ -110,8 +110,8 @@ metadata:
     `gateway.proxy` budget so a slow first token still cannot 504 at 60s.
   */}}
   {{- $gatewayAnnotations := dict
-        "nginx.ingress.kubernetes.io/proxy-read-timeout" $proxy.readTimeout
-        "nginx.ingress.kubernetes.io/proxy-send-timeout" $proxy.sendTimeout
+        "nginx.ingress.kubernetes.io/proxy-read-timeout" (include "preloop.gatewayReadTimeout" .)
+        "nginx.ingress.kubernetes.io/proxy-send-timeout" (include "preloop.gatewaySendTimeout" .)
         "nginx.ingress.kubernetes.io/proxy-connect-timeout" $proxy.connectTimeout
         "nginx.ingress.kubernetes.io/proxy-body-size" $proxy.bodySize
         "nginx.ingress.kubernetes.io/proxy-buffering" "off" }}

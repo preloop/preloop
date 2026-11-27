@@ -94,6 +94,7 @@ preloop agents discover --json           # machine-readable, no prompts
 preloop agents discover --inventory      # offline known-app inventory JSON
 preloop agents discover --inventory --all-users # elevated, offline local-profile inventory
 preloop agents discover --report --all-users    # elevated, opt-in local-profile report
+preloop agents discover --report --no-extension-content   # report without uploading extension text
 preloop agents discover --no-onboard-prompt
 preloop agents onboard <agent>           # onboard one agent ("enroll" is an alias)
 preloop agents onboard --all -y          # everything discovered, no prompts
@@ -140,6 +141,64 @@ preloop agents onboard --unattended \
   --apps claude_code,codex \
   --url https://preloop.example.com
 ```
+
+### Native approvals are opt-in
+
+`preloop agents onboard Cursor` connects MCP and session reporting without
+installing native permission gates. The same explicit opt-in applies to
+Claude Code, Codex CLI and Copilot CLI, including discovery and `--yes`:
+use `--approvals` to install native gates. Re-onboarding without that flag
+removes earlier native gates while retaining session reporting and unrelated
+hooks.
+
+With `--approvals`, recognized read-only native tools (Read, Grep, Glob, LS
+and the harness's dedicated read/list/search equivalents) do not require a
+human unless an explicit rule says otherwise. Rules and the host's own deny
+still win, including on first use. Arbitrary shell commands and MCP tools
+are not classified as native reads by their names. Mutating and unknown
+native calls still escalate when the host has not allowed them. An outage
+still denies: reachable-service defaults do not change fail-closed availability.
+
+If a human approval has only email notifications, or no notification channel,
+the native hook returns immediately with a denial explaining how to find the
+request in **Console > Approvals** or pause the local gate. The tool has not
+run. The request remains available in the console until decided or expired;
+retrying the tool is a new permission check. The Approvals page shows a warning
+with the affected request, including after expiry. Configure mobile or chat
+notifications before depending on interactive approvals.
+
+### Console lifecycle and local recovery
+
+**Pause** in the console blocks remote Preloop access and releases the local
+native-tool gate to the editor's own permissions. **Resume** restores that gate.
+**Decommission** and **Remove** revoke remote access and also release the local
+gate, with instructions to run `preloop agents offboard <agent>`. They cannot
+edit files on your machine. Offboarding restores those files and removes the
+hooks; `restore` and `offboard` work from local enrollment state even if the
+server-side agent was removed.
+
+For an explicit administrative kill switch, send
+`PATCH /api/v1/agents/<id>` with `{"lifecycle_action":"suspend_block"}` using
+an account credential with `manage_agents`. That suspension blocks native
+calls as well as remote access until resumed. This is a cooperative local
+hook, not an OS security boundary: a machine owner can still explicitly pause
+or offboard it. Flow execution credentials never inherit lifecycle release.
+Unknown or independently revoked credentials and unreachable servers still
+deny; only a server-recorded lifecycle instruction releases a hook.
+
+To recover a Cursor installation that still has its local enrollment backup,
+run these in a normal terminal (also supported by CLI v1.0.2):
+
+```bash
+preloop agents pause Cursor
+preloop agents restore Cursor --yes
+preloop agents offboard Cursor --yes --remove-model=no --remove-mcp-servers=no
+```
+
+The first command stops the local wait immediately. The second restores the
+backup and removes Preloop hooks. The third clears enrollment state and
+archives the remote entry if it still exists, keeping account models and MCP
+servers. Reload Cursor after restoring its files.
 
 ### If approvals cannot reach Preloop
 

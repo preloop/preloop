@@ -7,6 +7,8 @@ import json
 import hmac
 import threading
 import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -24,8 +26,93 @@ MAX_REQUEST_BYTES = 1024 * 1024
 MAX_FRAME_BYTES = 64 * 1024
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 MAX_ACTIVE_REQUESTS = 4
-IDLE_SECONDS = 60
-TOTAL_SECONDS = 600
+
+
+def timeout_message(kind: str, seconds: float) -> str:
+    """Describe a timeout without exposing an upstream response body."""
+    value = f"{seconds:g}"
+    if kind == "silent":
+        return (
+            f"local model sent no data for {value} s "
+            f"(RUNNER_MODEL_SILENT_SECONDS={value})"
+        )
+    if kind == "idle":
+        return (
+            f"runner sent no frames for {value} s (RUNNER_MODEL_IDLE_SECONDS={value})"
+        )
+    return f"model request exceeded {value} s (effective RUNNER_MODEL_TOTAL_SECONDS)"
+
+
+def runner_model_flow_budget(db: Any, auth_context: Any) -> float | None:
+    """Read the calling flow's remaining budget before releasing its DB session.
+
+    Args:
+        db: Gateway's current database session.
+        auth_context: Authenticated credential context, never request JSON.
+
+    Returns:
+        Remaining seconds, or None for a caller outside a flow execution.
+
+    Raises:
+        ModelGatewayAPIError: The bound execution is absent or already terminal.
+    """
+    from preloop.models.crud import crud_flow, crud_flow_execution
+    from preloop.services.approval_park import consumed_seconds_from_details
+    from preloop.services.flow_execution_limits import TERMINAL_STATUSES
+
+    key = getattr(auth_context, "api_key", None)
+    context = getattr(key, "context_data", None)
+    execution_id = (
+        context.get("flow_execution_id") if isinstance(context, dict) else None
+    )
+    if not execution_id:
+        return None
+    execution = crud_flow_execution.get(
+        db, id=execution_id, account_id=str(auth_context.account_id)
+    )
+    flow = crud_flow.get(db, id=execution.flow_id) if execution else None
+    if (
+        not flow
+        or str(flow.account_id) != str(auth_context.account_id)
+        or execution.status in TERMINAL_STATUSES
+    ):
+        raise ModelGatewayAPIError(
+            provider="openai",
+            status_code=504,
+            code="runner_proxy_timeout",
+            message="Flow execution is no longer active; model request cancelled",
+        )
+    # Match the orchestrator's bounds and park/conversation accounting.
+    seconds = max(
+        60, min(86400, flow.timeout_seconds or settings.flow_execution_max_wait_seconds)
+    )
+    details = execution.trigger_event_details or {}
+    consumed = consumed_seconds_from_details(details)
+    if details.get("_conversation_id"):
+        from uuid import UUID
+        from preloop.services.flow_conversations import consumed_seconds
+
+        consumed = consumed_seconds(db, UUID(details["_conversation_id"]), execution.id)
+    if consumed:
+        seconds = max(0 if details.get("_conversation_id") else 60, seconds - consumed)
+    anchor = execution.launch_requested_at or execution.start_time
+    if anchor is None:
+        return 0
+    if anchor.tzinfo is None:
+        anchor = anchor.replace(tzinfo=timezone.utc)
+    return max(0, seconds - (datetime.now(timezone.utc) - anchor).total_seconds())
+
+
+@dataclass
+class ActiveRequest:
+    """Per-request deadlines; keepalives update liveness only."""
+
+    deadline: float
+    last_frame: float
+    last_data: float
+    idle: float
+    silent: float
+    expiry: asyncio.TimerHandle | None = None
 
 
 def normalize_local_base_url(value: str) -> str:
@@ -79,7 +166,7 @@ class RunnerModelConnection:
         self.pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self.messages: dict[str, Msg] = {}
         self.closed = False
-        self.active: dict[str, float] = {}
+        self.active: dict[str, ActiveRequest] = {}
         self.tasks: set[asyncio.Task[None]] = set()
         self.nc: Any = None
         self.subscription: Any = None
@@ -114,12 +201,11 @@ class RunnerModelConnection:
                 )
                 return
             now = time.monotonic()
-            for key, started in list(self.active.items()):
-                if now - started > TOTAL_SECONDS:
-                    self.active.pop(key, None)
+            for key, state in list(self.active.items()):
+                if now >= state.deadline:
+                    await self._abort(key, "total")
             if operation == "cancel":
-                self.active.pop(request_id, None)
-                await self.websocket.send_json(raw)
+                await self._abort(request_id)
                 if message.reply:
                     await message.respond(b'{"done":true}')
                 return
@@ -141,30 +227,79 @@ class RunnerModelConnection:
                 normalize_local_base_url(raw["base_url"])
                 # Reserve before yielding to the database worker, so concurrent
                 # authorizations cannot all observe the same available slot.
-                self.active[request_id] = now
+                limits = raw.get("timeouts") or {}
+                total = min(
+                    settings.runner_model_total_seconds,
+                    float(
+                        limits.get("total_seconds", settings.runner_model_total_seconds)
+                    ),
+                )
+                if not 0 < total <= settings.runner_model_total_seconds:
+                    raise ValueError("invalid total timeout")
+                state = ActiveRequest(
+                    deadline=now + total,
+                    last_frame=now,
+                    last_data=now,
+                    idle=settings.runner_model_idle_seconds,
+                    silent=settings.runner_model_silent_seconds,
+                )
+                self.active[request_id] = state
+                state.expiry = asyncio.get_running_loop().call_later(
+                    total, self._schedule_expiry, request_id
+                )
+                raw["timeouts"] = {
+                    "idle_seconds": state.idle,
+                    "silent_seconds": state.silent,
+                    "total_seconds": total,
+                }
                 if not await asyncio.to_thread(self._authorized, raw):
                     raise ValueError("unregistered model")
             elif operation != "next" or request_id not in self.active:
                 raise ValueError("unknown request")
             future = asyncio.get_running_loop().create_future()
             self.pending[request_id] = future
+            state = self.active.get(request_id)
+            if state is None or time.monotonic() >= state.deadline:
+                await self._abort(request_id, "total")
+                await message.respond(json.dumps(self._timeout_reply("total")).encode())
+                return
+            # Consumer back-pressure is charged to total, not model silence.
+            state.last_frame = state.last_data = time.monotonic()
+            if operation == "start":
+                raw["timeouts"]["total_seconds"] = state.deadline - time.monotonic()
             await self.websocket.send_json(raw)
-            reply = await asyncio.wait_for(future, IDLE_SECONDS)
+            while not future.done():
+                now = time.monotonic()
+                kind, deadline = min(
+                    (
+                        ("total", state.deadline),
+                        ("idle", state.last_frame + state.idle),
+                        ("silent", state.last_data + state.silent),
+                    ),
+                    key=lambda item: item[1],
+                )
+                if deadline <= now:
+                    await self._abort(request_id, kind)
+                    break
+                try:
+                    await asyncio.wait_for(asyncio.shield(future), deadline - now)
+                except TimeoutError:
+                    # A keepalive may have moved the idle deadline while waiting.
+                    continue
+            reply = future.result()
             if reply.get("done") or reply.get("error"):
-                self.active.pop(request_id, None)
+                await self._abort(request_id)
             await message.respond(json.dumps(reply).encode())
+        except asyncio.CancelledError:
+            await self._abort(request_id)
+            raise
         except (ValueError, KeyError, TypeError):
-            self.active.pop(request_id, None)
+            await self._abort(request_id)
             await message.respond(
                 b'{"status":403,"error":"runner_model_not_allowed","done":true}'
             )
-        except TimeoutError:
-            self.active.pop(request_id, None)
-            await message.respond(
-                b'{"status":504,"error":"runner_proxy_timeout","done":true}'
-            )
         except Exception:
-            self.active.pop(request_id, None)
+            await self._abort(request_id)
             await message.respond(
                 b'{"status":503,"error":"runner_offline","done":true}'
             )
@@ -172,6 +307,45 @@ class RunnerModelConnection:
             if owned:
                 self.pending.pop(request_id, None)
                 self.messages.pop(request_id, None)
+
+    @staticmethod
+    def _timeout_reply(kind: str) -> dict[str, Any]:
+        """Keep the timeout error code stable across protocol versions."""
+        return {
+            "status": 504,
+            "error": "runner_proxy_timeout",
+            "timeout": kind,
+            "done": True,
+        }
+
+    def _schedule_expiry(self, request_id: str) -> None:
+        """Expire even a request whose consumer never pulls another frame."""
+        task = asyncio.create_task(self._abort(request_id, "total"))
+        self.tasks.add(task)
+        task.add_done_callback(self.tasks.discard)
+
+    async def _abort(self, request_id: str, kind: str | None = None) -> None:
+        """Release a slot, wake a pending RPC and stop the host's local request."""
+        state = self.active.pop(request_id, None)
+        if state is not None and state.expiry is not None:
+            state.expiry.cancel()
+        future = self.pending.get(request_id)
+        if future is not None and not future.done():
+            future.set_result(self._timeout_reply(kind) if kind else {"done": True})
+        if state is not None:
+            try:
+                await asyncio.wait_for(
+                    self.websocket.send_json(
+                        {
+                            "type": "model_request",
+                            "operation": "cancel",
+                            "request_id": request_id,
+                        }
+                    ),
+                    timeout=1,
+                )
+            except Exception:
+                pass  # Disconnect already cancels all local calls.
 
     def _authorized(self, raw: dict[str, Any]) -> bool:
         """Recheck stored model/account binding before handing work to the host."""
@@ -216,6 +390,12 @@ class RunnerModelConnection:
             or not 200 <= raw.get("status", 200) <= 599
             or not isinstance(raw.get("data", ""), str)
             or type(raw.get("done", False)) is not bool
+            or type(raw.get("keepalive", False)) is not bool
+            or type(raw.get("model_activity", False)) is not bool
+            or (
+                raw.get("timeout") is not None
+                and raw["timeout"] not in ("idle", "silent", "total")
+            )
             or (
                 raw.get("error") is not None
                 and (not isinstance(raw["error"], str) or len(raw["error"]) > 128)
@@ -229,7 +409,13 @@ class RunnerModelConnection:
                 {"status": 502, "error": "runner_frame_too_large", "done": True}
             )
         else:
-            future.set_result(raw)
+            state = self.active.get(str(raw.get("request_id")))
+            if state is not None:
+                state.last_frame = time.monotonic()
+                if raw.get("model_activity") or raw.get("data"):
+                    state.last_data = state.last_frame
+            if not raw.get("keepalive"):
+                future.set_result(raw)
 
     async def close(self) -> None:
         """Fail RPCs and cancel authorizations before closing the subscription."""
@@ -252,6 +438,9 @@ class RunnerModelConnection:
                 pass
         if self.tasks:
             await asyncio.gather(*self.tasks, return_exceptions=True)
+        for state in self.active.values():
+            if state.expiry is not None:
+                state.expiry.cancel()
         self.active.clear()
         if self.nc is not None:
             await self.nc.close()
@@ -260,7 +449,20 @@ class RunnerModelConnection:
 class RunnerModelStream:
     """Synchronous gateway iterator with a private NATS I/O event loop."""
 
-    def __init__(self, model: Any, body: dict[str, Any]) -> None:
+    def __init__(
+        self, model: Any, body: dict[str, Any], *, total_seconds: float | None = None
+    ) -> None:
+        self.total_seconds = min(
+            settings.runner_model_total_seconds,
+            total_seconds
+            if total_seconds is not None
+            else settings.runner_model_total_seconds,
+        )
+        self.timeouts = {
+            "idle_seconds": settings.runner_model_idle_seconds,
+            "silent_seconds": settings.runner_model_silent_seconds,
+            "total_seconds": self.total_seconds,
+        }
         self.subject = runner_model_subject(str(model.account_id), str(model.runner_id))
         self.request_id = str(uuid4())
         self.start_frame = {
@@ -270,6 +472,7 @@ class RunnerModelStream:
             "model_id": str(model.id),
             "base_url": model.api_endpoint,
             "body": body,
+            "timeouts": self.timeouts.copy(),
         }
         if len(json.dumps(self.start_frame).encode()) > MAX_REQUEST_BYTES:
             raise ModelGatewayAPIError(
@@ -295,18 +498,23 @@ class RunnerModelStream:
                 allow_reconnect=False,
             )
         reply = await self.nc.request(
-            self.subject, json.dumps(frame).encode(), timeout=IDLE_SECONDS + 2
+            self.subject,
+            json.dumps(frame).encode(),
+            timeout=max(0.001, self.total_seconds - (time.monotonic() - self.started))
+            + 2,
         )
         return json.loads(reply.data)
 
     def read(self) -> dict[str, Any]:
         """Pull one bounded frame, mapping broker failures to gateway errors."""
-        if time.monotonic() - self.started > TOTAL_SECONDS:
+        remaining = self.total_seconds - (time.monotonic() - self.started)
+        if remaining <= 0:
             self.close()
             raise ModelGatewayAPIError(
                 provider="openai",
                 status_code=504,
-                message="Runner model deadline exceeded",
+                code="runner_proxy_timeout",
+                message=timeout_message("total", self.total_seconds),
             )
         frame = (
             self.start_frame
@@ -317,6 +525,8 @@ class RunnerModelStream:
                 "request_id": self.request_id,
             }
         )
+        if self.first:
+            frame["timeouts"] = {**self.timeouts, "total_seconds": remaining}
         self.first = False
         if not self.thread_started:
             self.thread.start()
@@ -324,7 +534,7 @@ class RunnerModelStream:
         future = None
         try:
             future = asyncio.run_coroutine_threadsafe(self._rpc(frame), self.loop)
-            reply = future.result(timeout=IDLE_SECONDS + 5)
+            reply = future.result(timeout=remaining + 5)
         except Exception as exc:
             if future is not None:
                 future.cancel()
@@ -364,7 +574,11 @@ class RunnerModelStream:
                 provider="openai",
                 status_code=status if status >= 400 else 502,
                 code=code,
-                message=(
+                message=timeout_message(
+                    reply["timeout"], self.timeouts[reply["timeout"] + "_seconds"]
+                )
+                if reply.get("timeout") in {"idle", "silent", "total"}
+                else (
                     "Runner is offline or unavailable"
                     if code == "runner_offline"
                     else "Runner model request failed: " + code
@@ -437,9 +651,15 @@ class RunnerModelStream:
                 self.loop.close()
 
 
-def runner_completion(model: Any, body: dict[str, Any], *, stream: bool) -> Any:
+def runner_completion(
+    model: Any,
+    body: dict[str, Any],
+    *,
+    stream: bool,
+    total_seconds: float | None = None,
+) -> Any:
     """Dispatch only chat completion provider I/O through the runner tunnel."""
-    tunnel = RunnerModelStream(model, body)
+    tunnel = RunnerModelStream(model, body, total_seconds=total_seconds)
     if stream:
         return tunnel
     try:

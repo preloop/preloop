@@ -376,3 +376,40 @@ def test_batched_reads_preserve_team_permissions_and_bypass_scope(
         lambda *args: account_hooks.Decision(effect="deny"),
     )
     assert crud.deciders(db_session, users) == []
+
+
+@pytest.mark.parametrize(
+    "destinations, expected",
+    [
+        ([], True),
+        (["Email"], True),
+        (["Mobile push"], False),
+        (["Email", "Slack"], False),
+    ],
+)
+def test_native_delivery_warning_explains_unreachable_approval(
+    monkeypatch: pytest.MonkeyPatch, destinations: list[str], expected: bool
+) -> None:
+    """Email-only routing needs immediate local recovery guidance."""
+    from unittest.mock import patch
+    from preloop.schemas.approval_readiness import ApprovalReadiness
+
+    workflow = models.ApprovalWorkflow(id=UUID(int=3), approval_mode="standard")
+    with (
+        patch("preloop.models.db.session.get_session_factory"),
+        patch(
+            "preloop.models.crud.crud_account.get",
+            return_value=models.Account(id=UUID(int=1)),
+        ),
+        patch.object(readiness.crud_approval_workflow, "get", return_value=workflow),
+        patch.object(
+            readiness,
+            "describe_readiness",
+            return_value=ApprovalReadiness(destinations=destinations),
+        ),
+    ):
+        warning = readiness.native_delivery_warning(str(UUID(int=1)), workflow.id, None)
+    assert bool(warning) is expected
+    if warning:
+        assert "preloop agents pause" in warning
+        assert "Console > Approvals" in warning

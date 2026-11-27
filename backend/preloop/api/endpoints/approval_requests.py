@@ -420,6 +420,9 @@ class ApprovalRequestStats(BaseModel):
     avg_response_minutes: Optional[int] = Field(
         None, description="Mean request-to-decision time of decided requests."
     )
+    has_native_delivery_warning: bool = Field(
+        False, description="A native approval lacked a mobile or chat destination."
+    )
     tools: list[str] = Field(
         default_factory=list, description="Tool names seen, for the filter."
     )

@@ -215,6 +215,12 @@ curl -X POST "https://preloop.example.com/api/v1/approval-requests/$REQUEST_ID/a
 
 Always on. The notification bell shows pending requests; clicking one opens the full request with arguments, timeline, and Approve/Decline buttons. Updates arrive over WebSocket: new requests and status changes appear without a refresh.
 
+The bell's notification feed contains events received during the current browser
+session. Needs attention also lists durable open findings, including extension
+findings when the server exposes device fleet. Those findings remain until
+resolved or dismissed, so an empty notification feed can coexist with an attention
+count. The bell repeats the attention count and links to the list.
+
 ---
 
 ## Testing Your Setup

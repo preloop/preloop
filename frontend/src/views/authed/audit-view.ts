@@ -1,4 +1,5 @@
 import { REST_API_PREFIX } from '../../api-path';
+import { fleetFindingTitle } from '../../device-fleet-api';
 import { humaniseAction } from '../../utils/outcome-label';
 import { ConsoleStatus } from '../../controllers/console-status';
 import { formatUsd, formatUsdExact } from '../../utils/money';
@@ -1426,6 +1427,23 @@ export class AuditView extends AuthedElement {
       case 'authentication':
         return `Login: ${event.details?.username || 'unknown'}`;
       case 'configuration_change': {
+        if (
+          event.resource_type === 'fleet_finding' &&
+          event.details?.rule === 'unapproved_extension'
+        ) {
+          const title = fleetFindingTitle({
+            rule: event.details.rule,
+            evidence: event.details.evidence,
+            title: 'Extension finding',
+          });
+          const states: Record<string, string> = {
+            open: 'Finding open',
+            resolved: 'Finding resolved',
+            unknown: 'Finding unknown',
+            suppressed: 'Finding suppressed',
+          };
+          return `${title} · ${states[event.details.state] || 'Finding updated'}`;
+        }
         const ct = event.details?.config_type || event.resource_id || 'unknown';
         const act = String(event.details?.action || 'changed').replace(
           /_/g,

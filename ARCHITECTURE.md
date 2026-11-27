@@ -73,7 +73,7 @@ graph LR
 | [Model gateway](docs/architecture/gateway.md) | OpenAI-, Anthropic- and Gemini-compatible ingress (`/openai/v1`, `/anthropic/v1`, `/gemini/v1beta`), accounting, budgets, terminal provider refusals, and runtime session identity. |
 | [Governance](docs/architecture/governance.md) | Subject-scoped allowed models, tool access rules, and tool output filters. |
 | [Account access rules](docs/architecture/account-access-rules.md) | Closed policy syntax, audited CRUD/snapshots, committed H4 invalidation, and H3 resource sharing integration. Includes the portable exact-resource selector and resource requirement contract. Core owns atomic storage, reference validation and generation invalidation; Enterprise owns preview authorization and enforcement of independent local gates. |
-| [Approvals](docs/architecture/approvals.md) | Tool configuration, human-in-the-loop approval workflows, [external consent hand-off](docs/guide/webhooks.md#external-approval-hand-off), `ask_user`, and native-tool permission-check. |
+| [Approvals](docs/architecture/approvals.md) | Tool configuration, human-in-the-loop approval workflows, [external consent hand-off](docs/guide/webhooks.md#external-approval-hand-off), `ask_user`, and native-tool permission-check with opt-in hooks, read-only defaults and explicit lifecycle release. |
 | [Claude Code enrollment](docs/guide/clients/claude-code.md) | Gateway disclosures, server-observed route state, approval waits, owned artifacts and audited credential revocation. |
 | [Managed bundles](docs/architecture/managed-bundles.md) | Account-scoped bundle revisions, verified Claude Code extension overlays and durable control expectations for optional evidence-based fleet generation. |
 | [Agent Control](docs/architecture/agent-control.md) | Native Talk prompt delivery and resume routing, host checkout selection, connection-bound sidecar capabilities, immutable launch directories, operator notes delivered at model/tool boundaries through the gateway, carrying permission hooks, or native lifecycle/model-input hooks; non-carrying approval hooks leave notes pending, CLI/desktop enrollment, mobile/watch voice contact, persistent flow execution, and opt-in herdr terminal location and state observations. |
@@ -96,7 +96,7 @@ graph LR
 | [Subscription credential recovery](docs/guide/clients/subscription-recovery.md) | Shared OAuth lineage repair, healthy-secret preservation, onboarding validation, and local-store recovery before offboarding. |
 | [Managed tracker OAuth storage](docs/architecture/managed-oauth-storage.md) | Provider-neutral storage contract for managed tracker OAuth credentials. |
 | [Runners and remote sessions](docs/architecture/runners.md) | Private runner capabilities, owner consent, native host-profile publication and continuation, remote harness sessions and workspace policy. |
-| [Runner-proxied local models](docs/architecture/runner-local-models.md) | Local models proxied through a private runner (#1833). |
+| [Runner-proxied local models](docs/architecture/runner-local-models.md) | Local models proxied through a private runner (#1833), with request keepalives and configurable deadlines bounded by the flow. |
 | [Identity, membership and SSO](docs/architecture/identity.md) | Canonical person identities, users, teams, edition overlays, enterprise sign-on persistence, session assurance and offboarding. |
 | [Chat connections](docs/architecture/chat.md) | Chat provider setup (including single-tenant Teams REST transport), authenticated operations, durable chat-triggered flow replies, and bindings to shared interactive conversations. |
 | [Discovery source observations](docs/architecture/discovery.md) | Versioned discovery evidence: storage, correlation boundary and presentation. |
@@ -119,9 +119,9 @@ inventory retention, and `extension_approval_pin` pins a decision to reviewed
 content hashes. CRUD owns reconciliation, approval joins and the single
 `effective_state` derivation (`content_changed` when a pinned approval meets an
 unpinned hash). Only complete
-app scans prove absence; older reports cannot replace newer inventory. Extension
-files, commands and source URLs remain on the device. See the
-[discovery reporting guide](docs/guide/agent-discovery-reporting.md#extensions).
+app scans prove absence; older reports cannot replace newer inventory. The
+inventory record carries no extension file, command or source URL. See the
+[discovery reporting guide](docs/guide/agent-discovery-reporting.md#extensions). Extension content for review is a separate, on-by-default upload after a report: redacted on the device (`cli/internal/redact`), verified against the inventory hash and stored encrypted per account in `extension_content` ([content contract](docs/guide/agent-discovery-reporting.md#extension-content)).
 It also covers collector versions and coverage gaps; [session identity](docs/architecture/gateway.md#runtime-session-identity) covers subagent lineage.
 Unmatched MCP tool calls read account policy defaults. With approve-once enabled,
 the account-owned `tool_registry_entry` records a decision per proxy server UUID

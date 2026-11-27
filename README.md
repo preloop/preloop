@@ -54,6 +54,8 @@ preloop agents discover
 
 ## Watch it work
 
+Native tool approval hooks are opt-in with `preloop agents onboard <agent> --approvals`; recognized reads run without a human unless a rule requires one. See [defaults and recovery](docs/guide/cli.md#native-approvals-are-opt-in).
+
 Onboarding, the MCP firewall, human approvals, and cutting session cost. Recorded against a real stack, no slideware.
 
 <p align="center">

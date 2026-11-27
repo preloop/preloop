@@ -178,3 +178,27 @@ def test_human_stats_require_positive_vote_evidence(
     )
     assert stats["human_approved"] == 0
     assert stats["human_declined"] == 0
+
+
+def test_delivery_warning_survives_expiry_and_is_account_scoped(
+    db_session: Session, account: models.Account
+) -> None:
+    """The warning includes history even when the pending page is empty."""
+    account_id = str(account.id)
+    assert not crud_approval_request.stats_by_account(
+        db_session, account_id=account_id
+    )["has_native_delivery_warning"]
+    rows = crud_approval_request.get_multi_by_account(
+        db_session, account_id=account_id, status="expired"
+    )
+    crud_approval_request.update(
+        db_session,
+        db_obj=rows[0],
+        obj_in={"tool_args": {"_preloop_native_delivery_warning": "Email only"}},
+    )
+    assert crud_approval_request.stats_by_account(db_session, account_id=account_id)[
+        "has_native_delivery_warning"
+    ]
+    assert not crud_approval_request.stats_by_account(
+        db_session, account_id=str(uuid.uuid4())
+    )["has_native_delivery_warning"]

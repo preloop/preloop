@@ -8,12 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -34,11 +36,27 @@ type runnerLocalModel struct {
 }
 
 type runnerModelRequest struct {
-	RequestID string          `json:"request_id"`
-	Operation string          `json:"operation"`
-	ModelID   string          `json:"model_id"`
-	BaseURL   string          `json:"base_url"`
-	Body      json.RawMessage `json:"body"`
+	RequestID string               `json:"request_id"`
+	Operation string               `json:"operation"`
+	ModelID   string               `json:"model_id"`
+	BaseURL   string               `json:"base_url"`
+	Body      json.RawMessage      `json:"body"`
+	Timeouts  *runnerModelTimeouts `json:"timeouts,omitempty"`
+}
+
+type runnerModelTimeouts struct {
+	IdleSeconds   float64 `json:"idle_seconds"`
+	SilentSeconds float64 `json:"silent_seconds"`
+	TotalSeconds  float64 `json:"total_seconds"`
+}
+
+var errRunnerModelSilent = errors.New("local model silence deadline")
+
+func runnerModelDuration(seconds float64, fallback time.Duration) time.Duration {
+	if seconds <= 0 || math.IsNaN(seconds) || math.IsInf(seconds, 0) || seconds >= float64(math.MaxInt64)/float64(time.Second) {
+		return fallback
+	}
+	return max(time.Nanosecond, time.Duration(seconds*float64(time.Second)))
 }
 
 func normalizeRunnerModelURL(value string) (string, error) {
@@ -74,31 +92,34 @@ func runnerLocalHTTPClient(timeout time.Duration) *http.Client {
 			}
 			return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, network, net.JoinHostPort(host, port))
 		},
-		ResponseHeaderTimeout: 60 * time.Second,
-		DisableKeepAlives:     true,
+		// The per-read silence timer also covers response headers. Discovery
+		// uses the client's short overall timeout instead.
+		DisableKeepAlives: true,
 	}
 	return &http.Client{Transport: transport, Timeout: timeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 }
 
 type runnerModelCall struct {
-	cancel context.CancelFunc
-	next   chan struct{}
+	cancel       context.CancelFunc
+	silentCancel func()
+	next         chan struct{}
 }
 
 type runnerModelProxy struct {
-	ctx         context.Context
-	cancel      context.CancelFunc
-	mu          sync.Mutex
-	calls       map[string]*runnerModelCall
-	allowed     map[string]runnerLocalModel
-	frames      chan map[string]any
-	idleTimeout time.Duration
+	ctx               context.Context
+	cancel            context.CancelFunc
+	mu                sync.Mutex
+	calls             map[string]*runnerModelCall
+	allowed           map[string]runnerLocalModel
+	frames            chan map[string]any
+	idleTimeout       time.Duration
+	keepaliveInterval time.Duration
 }
 
 func newRunnerModelProxy(allowed []runnerLocalModel) *runnerModelProxy {
 	ctx, cancel := context.WithCancel(context.Background())
-	proxy := &runnerModelProxy{ctx: ctx, cancel: cancel, idleTimeout: 60 * time.Second,
+	proxy := &runnerModelProxy{ctx: ctx, cancel: cancel, idleTimeout: 60 * time.Second, keepaliveInterval: 10 * time.Second,
 		calls: map[string]*runnerModelCall{}, allowed: map[string]runnerLocalModel{}, frames: make(chan map[string]any, 4)}
 	for _, model := range allowed {
 		proxy.allowed[model.ID] = model
@@ -143,8 +164,14 @@ func (p *runnerModelProxy) handle(request runnerModelRequest) {
 		go p.emit(p.ctx, request.RequestID, 429, "", true, "runner_busy")
 		return
 	}
-	ctx, cancel := context.WithTimeout(p.ctx, 10*time.Minute)
-	call = &runnerModelCall{cancel: cancel, next: make(chan struct{}, 1)}
+	total := 10 * time.Minute
+	if request.Timeouts != nil {
+		total = runnerModelDuration(request.Timeouts.TotalSeconds, total)
+	}
+	ctx, deadlineCancel := context.WithTimeout(p.ctx, total)
+	ctx, cancelCause := context.WithCancelCause(ctx)
+	cancel := func() { cancelCause(context.Canceled); deadlineCancel() }
+	call = &runnerModelCall{cancel: cancel, silentCancel: func() { cancelCause(errRunnerModelSilent) }, next: make(chan struct{}, 1)}
 	p.calls[request.RequestID] = call
 	go func() {
 		defer func() { cancel(); p.mu.Lock(); delete(p.calls, request.RequestID); p.mu.Unlock() }()
@@ -164,46 +191,93 @@ func (p *runnerModelProxy) forward(ctx context.Context, call *runnerModelCall, r
 		p.emit(ctx, request.RequestID, 403, "", true, "runner_model_not_allowed")
 		return
 	}
+	silent := p.idleTimeout
+	var activity atomic.Bool
+	if request.Timeouts != nil {
+		silent = runnerModelDuration(request.Timeouts.SilentSeconds, silent)
+		done := make(chan struct{})
+		defer close(done)
+		go p.keepalive(ctx, done, request.RequestID, &activity)
+	}
+	// Cancellation and both deadlines must also be reported when waiting
+	// for pull credit, not only when an upstream Read returns an error.
+	defer func() {
+		kind := ""
+		switch {
+		case errors.Is(context.Cause(ctx), errRunnerModelSilent):
+			kind = "silent"
+		case errors.Is(context.Cause(ctx), context.DeadlineExceeded):
+			kind = "total"
+		}
+		if kind != "" && request.Timeouts != nil {
+			select {
+			case p.frames <- map[string]any{"type": "model_response", "request_id": request.RequestID, "status": 504, "done": true, "error": "runner_proxy_timeout", "timeout": kind}:
+			default:
+				// A stalled socket must not retain the active slot. The server
+				// independently enforces the same deadline if this cannot queue.
+			}
+		}
+	}()
+	emitError := func(status int, code string) {
+		if request.Timeouts != nil && ctx.Err() != nil {
+			return // The deferred timeout frame names the actual cause.
+		}
+		if errors.Is(context.Cause(ctx), context.Canceled) {
+			return
+		}
+		if ctx.Err() != nil {
+			// Legacy servers do not understand timeout fields. Preserve their
+			// error codes without blocking cleanup behind a stalled socket.
+			select {
+			case p.frames <- map[string]any{"type": "model_response", "request_id": request.RequestID, "status": status, "done": true, "error": code}:
+			default:
+			}
+			return
+		}
+		p.emit(ctx, request.RequestID, status, "", true, code)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, approved.BaseURL+"/chat/completions", bytes.NewReader(request.Body))
 	if err != nil {
 		p.emit(ctx, request.RequestID, 502, "", true, "runner_upstream_error")
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	client := runnerLocalHTTPClient(10 * time.Minute)
+	// The request context owns the total deadline; no hidden client cap.
+	client := runnerLocalHTTPClient(0)
 	defer client.CloseIdleConnections()
-	idle := time.AfterFunc(p.idleTimeout, call.cancel)
-	defer idle.Stop()
+	idle := time.AfterFunc(silent, call.silentCancel)
 	response, err := client.Do(req)
+	idle.Stop()
 	if err != nil {
-		p.emit(p.ctx, request.RequestID, 502, "", true, "runner_upstream_unavailable")
+		emitError(502, "runner_upstream_unavailable")
 		return
 	}
 	defer response.Body.Close()
+	activity.Store(true)
+	reader := &runnerModelReader{reader: response.Body, timeout: silent, cancel: call.silentCancel, activity: &activity}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		p.emit(ctx, request.RequestID, response.StatusCode, "", true, "runner_upstream_error")
 		return
 	}
 	if !body.Stream {
-		data, readErr := io.ReadAll(io.LimitReader(response.Body, runnerModelFrameLimit+1))
+		data, readErr := io.ReadAll(io.LimitReader(reader, runnerModelFrameLimit+1))
 		if readErr != nil || len(data) > runnerModelFrameLimit {
-			p.emit(p.ctx, request.RequestID, 502, "", true, "runner_response_limit")
+			emitError(502, "runner_response_limit")
 			return
 		}
 		p.emit(ctx, request.RequestID, response.StatusCode, string(data), true, "")
 		return
 	}
-	scanner := bufio.NewScanner(io.LimitReader(response.Body, runnerModelResponseLimit+1))
+	scanner := bufio.NewScanner(io.LimitReader(reader, runnerModelResponseLimit+1))
 	scanner.Buffer(make([]byte, 4096), runnerModelFrameLimit)
 	total := 0
 	for {
-		idle.Reset(p.idleTimeout)
 		if !scanner.Scan() {
 			code := ""
 			if scanner.Err() != nil {
 				code = "runner_upstream_read_error"
 			}
-			p.emit(p.ctx, request.RequestID, 502, "", true, code)
+			emitError(502, code)
 			return
 		}
 		line := scanner.Text()
@@ -221,6 +295,48 @@ func (p *runnerModelProxy) forward(ctx context.Context, call *runnerModelCall, r
 		case <-call.next:
 		case <-ctx.Done():
 			return
+		}
+	}
+}
+
+// Each timer covers only a blocking upstream read. Time spent waiting for
+// consumer pull credit is covered by the total deadline instead.
+type runnerModelReader struct {
+	reader   io.Reader
+	timeout  time.Duration
+	cancel   func()
+	activity *atomic.Bool
+}
+
+func (r *runnerModelReader) Read(data []byte) (int, error) {
+	timer := time.AfterFunc(r.timeout, r.cancel)
+	n, err := r.reader.Read(data)
+	timer.Stop()
+	if n > 0 {
+		r.activity.Store(true)
+	}
+	return n, err
+}
+
+func (p *runnerModelProxy) keepalive(ctx context.Context, done <-chan struct{}, requestID string, activity *atomic.Bool) {
+	ticker := time.NewTicker(p.keepaliveInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-done:
+			return
+		case <-ticker.C:
+			progress := activity.Swap(false)
+			select {
+			case p.frames <- map[string]any{"type": "model_response", "request_id": requestID, "keepalive": true, "model_activity": progress}:
+			default:
+				// Keepalives never block response data or grow the frame queue.
+				if progress {
+					activity.Store(true)
+				}
+			}
 		}
 	}
 }

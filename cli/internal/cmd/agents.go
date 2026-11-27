@@ -948,8 +948,9 @@ func init() {
 	agentsDiscoverCmd.Flags().BoolP("force", "f", false, "alias for --yes")
 	agentsDiscoverCmd.Flags().Bool("skip-live-validate", false, "do not run a direct gateway route/accounting probe after onboarding")
 	agentsDiscoverCmd.Flags().String("device-ref", "", "opaque administrative device reference to hash for opt-in discovery reporting")
+	agentsDiscoverCmd.Flags().BoolVar(&discoveryNoExtensionContent, "no-extension-content", false, "with --report: do not upload redacted extension content (SKILL.md text, hook commands, plugin files) for review")
 	agentsDiscoverCmd.Flags().BoolVar(&inventoryNoExtensionDetails, "no-extension-details", false, "omit authored extension descriptions and descriptive metadata from inventory")
-	agentsDiscoverCmd.Flags().Bool("report", false, "opt in: send salted hashes of what was found to Preloop (also PRELOOP_DISCOVERY_REPORT=1); see docs/guide/agent-discovery-reporting.md")
+	agentsDiscoverCmd.Flags().Bool("report", false, "opt in: send salted hashes of what was found to Preloop, followed by the redacted text of installed extensions for review unless --no-extension-content is given (also PRELOOP_DISCOVERY_REPORT=1); see docs/guide/agent-discovery-reporting.md")
 	_ = agentsDiscoverCmd.Flags().MarkDeprecated("add", "use 'preloop agents onboard [agent]'")
 	agentsEnrollCmd.Flags().Bool("unattended", false, "enroll explicitly selected apps using single-use provisioning authority")
 	agentsEnrollCmd.Flags().String("enrollment-token-file", "", "protected one-time enrollment authority JSON file")
@@ -1272,31 +1273,8 @@ func promptToOnboardCandidates(
 		if err != nil {
 			return outcomes, err
 		}
-		// Offer the native tool-approvals hook for supported agents when the
-		// caller's enrollment flow skips its own interactive prompts (the
-		// discover-driven path); callers whose enrollment prompts interactively
-		// pass askApprovals=false so the user is only asked once.
+		// Discovery never opts into native gates. Only onboard --approvals does.
 		approvals := false
-		if askApprovals {
-			if autoApprove || nonInteractiveAutoConfirm() {
-				// --yes / non-interactive accepts the prompt's default answer
-				// (Yes) for supported agents — previously it silently skipped
-				// the hook, so `onboard --all -y` onboarded without approvals.
-				approvals = isApprovalHookSupportedAgent(agent)
-				if approvals {
-					fmt.Fprintf(
-						writer,
-						"Routing %s's native tool calls through Preloop approvals (accepted default; offboard and re-onboard to remove the hook).\n",
-						resolveAgentDisplayName(agent),
-					)
-				}
-			} else {
-				approvals, err = promptForApprovalsOptIn(bufferedReader, writer, agent)
-				if err != nil {
-					return outcomes, fmt.Errorf("failed to read approvals confirmation: %w", err)
-				}
-			}
-		}
 		outcome := classifyAgentOnboardingOutcome(agent, enroll(agent, approvals))
 		if outcome.Status == agentOnboardingStatusFailed {
 			// Keep the batch going: one broken agent environment must not
@@ -1651,8 +1629,7 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 			return nil
 		}
 
-		// askApprovals=false: executeManagedEnrollment prompts for the
-		// approvals hook itself when this path runs interactively.
+		// The explicit --approvals choice is carried in opts.
 		outcomes, err := promptToOnboardCandidatesTiered(input, os.Stdout, client, candidates, autoApprove, false, func(a AgentConfig, _ bool) error {
 			agentOpts := opts
 			agentOpts.SkipConfirmation = autoApprove
@@ -2690,7 +2667,8 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 	}
 
 	if state != nil && state.OffboardArchived && detail == nil {
-		return fmt.Errorf("offboard partially completed; cannot resolve managed record for remaining cleanup; enrollment retry state retained")
+		// A console removal must not strand a partially completed local restore.
+		state.OffboardArchived = false
 	}
 	recovery := subscriptionRestoreNotApplicable
 	partial := func(err error) error {

@@ -1,6 +1,7 @@
 import { REST_API_PREFIX } from '../../../api-path';
 import '../../../components/runner-policy-settings';
 import '../../../components/sso-settings';
+import '../../../components/extension-content-setting';
 import '@shoelace-style/shoelace/dist/components/tab-group/tab-group.js';
 import '@shoelace-style/shoelace/dist/components/tab/tab.js';
 import '@shoelace-style/shoelace/dist/components/tab-panel/tab-panel.js';
@@ -429,6 +430,12 @@ export class AccountView extends LitElement {
           )}
         </div>
         ${this._renderAudioStorageSettings()}
+      </div>
+      <div class="card" id="extension-content">
+        <div class="current-row">
+          <span class="plan-name">Extension content</span>
+        </div>
+        <extension-content-setting></extension-content-setting>
       </div>
     `;
   }

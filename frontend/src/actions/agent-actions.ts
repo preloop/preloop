@@ -35,7 +35,7 @@ export const AGENT_LIFECYCLE_WORDING: Record<
     verb: 'pause',
     verbPast: 'paused',
     detail:
-      'Requests are blocked while paused. Resume restores the agent without re-onboarding it.',
+      'Preloop access is blocked while paused; local native tools return to the editor’s own permissions. Resume restores Preloop gating.',
   },
   resume: {
     title: 'Resume',
@@ -48,7 +48,7 @@ export const AGENT_LIFECYCLE_WORDING: Record<
     verb: 'decommission',
     verbPast: 'decommissioned',
     detail:
-      "Decommissioning revokes the agent's runtime credentials. The agent and its history stay in the list, and resuming it restores its own unexpired keys.",
+      'Decommissioning revokes remote access and releases the local native-tool gate. Run preloop agents offboard on the agent’s machine to restore its configuration. History stays in Preloop.',
   },
 };
 
@@ -152,7 +152,7 @@ export function agentActions(
         variant: 'default',
         loading: busy,
         tooltip:
-          'Pause this agent. Requests are blocked while paused; Resume restores it without re-onboarding.',
+          'Pause Preloop access and release the local native-tool gate. Resume restores gating.',
         available: (item) => !isAgentStopped(item),
         onClick: ctx.onLifecycle
           ? () => ctx.onLifecycle!(agent, 'suspend')
