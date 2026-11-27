@@ -35,7 +35,11 @@ def test_start_directory_is_refused_before_delivery_to_old_sidecar() -> None:
         )
 
 
-def test_project_choices_match_host_and_repository() -> None:
+@pytest.mark.parametrize(
+    "directory",
+    ["/work/example", "C:/work/example", r"C:\work\example", r"\\host\share\example"],
+)
+def test_project_choices_match_host_and_repository(directory: str) -> None:
     """An identical slug on another tracker host is not the same checkout."""
     project = SimpleNamespace(
         id="project",
@@ -53,10 +57,10 @@ def test_project_choices_match_host_and_repository() -> None:
             MagicMock(),
             "account",
             [
-                {"path": "/work/example", "remote": "git.example.com/team/example"},
+                {"path": directory, "remote": "git.example.com/team/example"},
                 {"path": "/other/example", "remote": "other.example.com/team/example"},
             ],
-        ) == [{"project_id": "project", "name": "Example", "path": "/work/example"}]
+        ) == [{"project_id": "project", "name": "Example", "path": directory}]
 
 
 def test_current_checkout_supersedes_stale_remote_at_same_path() -> None:

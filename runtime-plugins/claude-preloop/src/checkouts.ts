@@ -11,6 +11,7 @@ export type Checkout = { path: string; remote: string };
 /** Normalize a git origin without sending credentials, query strings or fragments. */
 export function remoteIdentity(remote: string): string | undefined {
   const value = remote.trim();
+  if (path.posix.isAbsolute(value) || path.win32.isAbsolute(value) || /^[A-Za-z]:/.test(value)) return undefined;
   try {
     const url = new URL(value.includes("://") ? value : value.replace(/^([^@]+@)?([^:]+):/, "ssh://$2/"));
     if (!["https:", "http:", "ssh:"].includes(url.protocol)) return undefined;

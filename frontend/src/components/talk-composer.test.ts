@@ -1343,3 +1343,78 @@ describe('Talk native startup recovery', () => {
     el.remove();
   });
 });
+
+describe('Talk start options recovery', () => {
+  afterEach(() => sinon.restore());
+
+  it('retries a transient options failure before sending a new prompt', async () => {
+    localStorage.setItem('accessToken', 'test-token');
+    let loads = 0;
+    let sends = 0;
+    sinon.stub(window, 'fetch').callsFake(async (input) => {
+      if (String(input).endsWith('/start-options')) {
+        if (++loads === 1) throw new Error('Temporary options failure');
+        return new Response(
+          JSON.stringify({
+            projects: [],
+            recent_directories: ['/tmp/recovered'],
+            capabilities: { start_directory: true, command_session: true },
+          })
+        );
+      }
+      sends++;
+      return new Response(JSON.stringify({ command_id: 'recovered-command' }), {
+        status: 202,
+      });
+    });
+    const el = await fixture<TalkComposer>(
+      html`<talk-composer
+        .agent=${agent({ agent_kind: 'claude_code' })}
+        .sessionId=${null}
+      ></talk-composer>`
+    );
+    await waitUntil(() =>
+      el.shadowRoot!.textContent!.includes('Temporary options failure')
+    );
+    const input = textarea(el);
+    input.value = 'Example task';
+    input.dispatchEvent(new CustomEvent('sl-input', { bubbles: true }));
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })
+    );
+    await waitUntil(() => sends === 1, 'start options were not retried');
+    expect(loads).to.equal(2);
+    expect(el.workingDirectory).to.equal('/tmp/recovered');
+    el.remove();
+  });
+
+  it('clears choices and directory when switching agent hosts', async () => {
+    localStorage.setItem('accessToken', 'test-token');
+    sinon.stub(window, 'fetch').callsFake(async (input) => {
+      if (String(input).includes('/next-host/'))
+        throw new Error('Next host unavailable');
+      return new Response(
+        JSON.stringify({
+          projects: [],
+          recent_directories: ['/tmp/previous-host'],
+          capabilities: { start_directory: true, command_session: true },
+        })
+      );
+    });
+    const el = await fixture<TalkComposer>(
+      html`<talk-composer
+        .agent=${agent({ agent_kind: 'claude_code' })}
+        .sessionId=${null}
+      ></talk-composer>`
+    );
+    await waitUntil(() => el.workingDirectory === '/tmp/previous-host');
+    el.agent = agent({ id: 'next-host', agent_kind: 'claude_code' });
+    await el.updateComplete;
+    expect(el.workingDirectory).to.equal('');
+    const picker = el.shadowRoot!.querySelector(
+      'talk-start-picker'
+    ) as HTMLElement & { options: unknown };
+    expect(picker.options).to.equal(null);
+    el.remove();
+  });
+});

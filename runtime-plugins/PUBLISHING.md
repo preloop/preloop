@@ -450,3 +450,8 @@ npm install -g @preloop-ai/codex-plugin@0.1.1
 does not select a release candidate by tag. Until the release containing this
 change is advertised, use the approved release installation process or a local
 `make install-local` build when verifying the CLI.
+
+Claude plugin 0.1.2 requires Claude Code 2.1.330 or newer for prompt UUID
+correlation. This is the verified bundled version. An older or unversioned
+`claude_executable` is refused with an update instruction; remove that override
+to use the bundled executable. Older PATH binaries fall back to the bundle.

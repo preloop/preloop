@@ -142,18 +142,23 @@ export class TalkComposer extends LitElement {
   @property({ attribute: false }) workingDirectory = '';
   @state() private startOptions: TalkStartOptions | null = null;
   private commandTimers = new Map<string, number>();
+  private directoryLoadId = 0;
 
   private async loadDirectories(): Promise<void> {
     const agentId = this.agent?.id;
     if (!agentId) return;
+    const loadId = ++this.directoryLoadId;
     try {
       const options = await getTalkStartOptions(agentId);
-      if (this.agent?.id !== agentId) return;
+      if (this.agent?.id !== agentId || loadId !== this.directoryLoadId) return;
+      this.controlError = null;
       this.startOptions = options;
       if (!this.workingDirectory)
         this.workingDirectory =
           options.recent_directories[0] || options.default_directory || '';
     } catch (error) {
+      if (this.agent?.id !== agentId || loadId !== this.directoryLoadId) return;
+      this.startOptions = null;
       this.controlError =
         error instanceof Error ? error.message : 'Could not load start options';
     }
@@ -647,6 +652,11 @@ export class TalkComposer extends LitElement {
   }
 
   willUpdate(changed: PropertyValues<this>): void {
+    if (changed.has('agent') && changed.get('agent')?.id !== this.agent?.id) {
+      this.startOptions = null;
+      this.directoryLoadId++;
+      if (changed.get('agent')) this.workingDirectory = '';
+    }
     if (
       changed.has('sessionId') ||
       (changed.has('sessionEnded') && !this.sessionEnded)
@@ -1206,8 +1216,15 @@ export class TalkComposer extends LitElement {
       this.startsNewSession &&
       ['claude_code', 'codex'].includes(this.agent.agent_kind ?? '')
     ) {
+      const targetAgentId = this.agent.id;
+      if (!this.startOptions) await this.loadDirectories();
+      if (this.agent?.id !== targetAgentId) return;
+      if (!this.startOptions) {
+        this.controlError = 'Could not load start options. Try sending again.';
+        return;
+      }
       if (
-        !this.startOptions?.capabilities.start_directory ||
+        !this.startOptions.capabilities.start_directory ||
         !this.startOptions?.capabilities.command_session
       ) {
         this.controlError =
@@ -1607,6 +1624,9 @@ export class TalkComposer extends LitElement {
                 .options=${this.startOptions}
                 .directory=${this.workingDirectory}
                 .runtime=${this.agent?.agent_kind ?? ''}
+                @focusin=${() => {
+                  if (!this.startOptions) void this.loadDirectories();
+                }}
                 @directory-selected=${(event: CustomEvent<string>) => {
                   this.workingDirectory = event.detail;
                 }}

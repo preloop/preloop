@@ -10,6 +10,8 @@ test('checkout identity strips credentials and keeps tracker host', () => {
   assert.equal(remoteIdentity('git@git.example.com:team/example.git'), 'git.example.com/team/example');
   assert.equal(remoteIdentity('https://user:example@git.example.com/team/example.git?query=example'), 'git.example.com/team/example');
   assert.equal(remoteIdentity('/tmp/local'), undefined);
+  assert.equal(remoteIdentity('C:/work/example.git'), undefined);
+  assert.equal(remoteIdentity(String.raw`C:\work\example.git`), undefined);
 });
 
 test('offers only existing git checkouts from known directories', async () => {

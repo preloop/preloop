@@ -352,7 +352,7 @@ export class PreloopCodexSidecar {
     }
     this.socket = socket;
 
-    socket.on("open", async () => {
+    socket.on("open", () => {
       this.log("Agent Control: connected; announcing capabilities");
       this.reconnectAttempts = 0;
       this.sendEnvelope({
@@ -365,7 +365,6 @@ export class PreloopCodexSidecar {
           runtime: this.runtime,
           version: "0.1.1",
           default_directory: config.workspace_root,
-          checkouts: await knownCheckouts(config, this.observer?.recentDirectories()),
           capabilities: {
             // Same names the Claude sidecar advertises, minus `worktree`
             // (this sidecar does not create git worktrees).
@@ -391,6 +390,10 @@ export class PreloopCodexSidecar {
         },
       });
       this.startHeartbeat(config);
+      void knownCheckouts(config, this.observer?.recentDirectories()).then(checkouts => {
+        if (this.socket !== socket || socket.readyState !== WebSocket.OPEN) return;
+        this.sendEnvelope({ type: "presence", name: "checkout_inventory", payload: { checkouts } });
+      });
     });
 
     socket.on("message", (data) => {

@@ -675,7 +675,18 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 db.query(models.AgentControlCommand.id)
                 .filter(
                     models.AgentControlCommand.runtime_session_id == runtime_session_id,
-                    models.AgentControlCommand.account_id == account_id,
+                    or_(
+                        models.AgentControlCommand.account_id == account_id,
+                        models.AgentControlCommand.consuming_account_id == account_id,
+                    ),
+                    or_(
+                        models.AgentControlCommand.expires_at > datetime.now(UTC),
+                        and_(
+                            models.AgentControlCommand.expires_at.is_(None),
+                            models.AgentControlCommand.created_at
+                            > datetime.now(UTC) - timedelta(minutes=10),
+                        ),
+                    ),
                     models.AgentControlCommand.kind == "command",
                     models.AgentControlCommand.status.in_(
                         ["pending", "delivered", "acked"]

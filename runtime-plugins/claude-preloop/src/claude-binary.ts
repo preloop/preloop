@@ -9,11 +9,11 @@ import type { ControlConfig } from "./config.js";
 const execFileAsync = promisify(execFile);
 
 /**
- * Oldest Claude Code the model upstream accepts for subscription traffic.
- * A turn on an older binary fails with "version X or newer is required".
+ * Oldest Claude Code verified to report prompt UUIDs for streaming results.
+ * This matches the bundled binary tested with this plugin.
  * The plugin tests fail when the bundled Claude Code is older than this.
  */
-export const MIN_CLAUDE_CODE_VERSION = "2.1.251";
+export const MIN_CLAUDE_CODE_VERSION = "2.1.330";
 
 export type ClaudeExecutable = {
   /** Absolute path passed as pathToClaudeCodeExecutable; unset = bundled. */
@@ -111,6 +111,12 @@ export function findOnPath(
   return undefined;
 }
 
+function requirePromptCorrelation(version: string | undefined): void {
+  if (!version || compareVersions(version, MIN_CLAUDE_CODE_VERSION) < 0) {
+    throw new Error(`Cannot verify streaming prompt correlation for Claude Code ${version ?? "unknown"}; update Claude Code to ${MIN_CLAUDE_CODE_VERSION} or newer, or remove claude_executable to use the bundled binary`);
+  }
+}
+
 function olderThanMinimum(version: string | undefined): string | undefined {
   if (version && compareVersions(version, MIN_CLAUDE_CODE_VERSION) < 0) {
     return `Claude Code ${version} is older than ${MIN_CLAUDE_CODE_VERSION}; the model upstream may reject it`;
@@ -150,6 +156,7 @@ export async function resolveClaudeExecutable(
       );
     }
     const version = await probe(configured);
+    requirePromptCorrelation(version);
     return {
       path: configured,
       version,
@@ -160,9 +167,10 @@ export async function resolveClaudeExecutable(
   const onPath = (deps.findClaude ?? (() => findOnPath("claude")))();
   if (onPath) {
     const version = await probe(onPath);
-    if (version && (!bundled || compareVersions(version, bundled) > 0)) {
+    if (version && compareVersions(version, MIN_CLAUDE_CODE_VERSION) >= 0 && (!bundled || compareVersions(version, bundled) > 0)) {
       return { path: onPath, version, source: "path" };
     }
   }
+  requirePromptCorrelation(bundled);
   return { version: bundled, source: "bundled", warning: olderThanMinimum(bundled) };
 }

@@ -895,6 +895,15 @@ def resolve_session_control_mode(
             "an Agent Control agent; a line is a note read at its next tool or "
             "model call",
         )
+    if (
+        session.session_source_type in {"claude_code", "codex"}
+        and session.ended_at is None
+        and getattr(session, "control_owned", None) is not True
+        and getattr(session, "turn_state", None) in {"working", "waiting_for_approval"}
+    ):
+        return SessionControlMode(
+            "note", "turn_in_progress", "Delivers at the agent's next step", agent
+        )
     kind = str(agent.agent_kind or agent.session_source_type or "").lower()
     name = agent.display_name or kind or "the agent"
     if kind not in SUPPORTED_CONTROL_AGENT_KINDS:

@@ -564,8 +564,9 @@ def test_prompt_delivery_receipts_update_the_transcript(
         assert activity.metadata_["prompt_delivery"] == state
 
 
+@pytest.mark.parametrize("shared", [False, True])
 def test_one_result_does_not_end_another_queued_prompt(
-    client: TestClient, db_session: Session, test_user: models.User
+    client: TestClient, db_session: Session, test_user: models.User, shared: bool
 ) -> None:
     """Concurrent prompt receipts keep the conversation working until all settle."""
     agent, session = native_session(client, db_session, test_user)
@@ -588,12 +589,21 @@ def test_one_result_does_not_end_another_queued_prompt(
             )
             command.status = "acked"
             commands.append(command)
+    if shared:
+        from preloop.models.crud import crud_account
+
+        owner = crud_account.create(
+            db_session, obj_in={"organization_name": "Example owner"}
+        )
+        for command in commands:
+            command.account_id = owner.id
+            command.consuming_account_id = test_user.account_id
     session.turn_state = "working"
     db_session.commit()
     for index, command in enumerate(commands):
         crud_agent_control_command.mark_terminal_result(
             db_session,
-            account_id=test_user.account_id,
+            account_id=command.account_id,
             managed_agent_id=agent.id,
             command_id=command.command_id,
             result_payload={"status": "completed"},
@@ -631,3 +641,37 @@ def test_old_sidecar_interrupt_does_not_require_prompt_features(
         )
     assert response.status_code == 202, response.text
     assert send.call_args.kwargs["envelope"].payload["interrupt"] is True
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_expired_acknowledged_prompt_does_not_keep_session_working(
+    client: TestClient, db_session: Session, test_user: models.User, legacy: bool
+) -> None:
+    """A lost result from an old process cannot block later turn completion."""
+    agent, session = native_session(client, db_session, test_user)
+    with patch(
+        "preloop.api.endpoints.agent_control.agent_control_manager.send_to_agent",
+        new_callable=AsyncMock,
+        return_value=True,
+    ):
+        response = client.post(
+            f"/api/v1/agents/{agent.id}/control/prompts",
+            json={"message": "Example prompt", "target_session_id": str(session.id)},
+        )
+    command = crud_agent_control_command.get_by_command_id(
+        db_session,
+        account_id=test_user.account_id,
+        command_id=response.json()["command_id"],
+    )
+    command.status = "acked"
+    command.expires_at = None if legacy else datetime.now(UTC) - timedelta(minutes=1)
+    command.created_at = datetime.now(UTC) - timedelta(minutes=11)
+    session.turn_state = "working"
+    db_session.commit()
+    crud_runtime_session.record_control_turn(
+        db_session,
+        account_id=test_user.account_id,
+        runtime_session_id=session.id,
+        completed=True,
+    )
+    assert session.turn_state == "your_turn"

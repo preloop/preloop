@@ -1,5 +1,6 @@
 """Features announced by the currently connected native Talk sidecar."""
 
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -116,7 +117,10 @@ def project_choices(
         for checkout in by_path.values():
             directory = checkout.get("path", "")
             if (
-                not directory.startswith("/")
+                not (
+                    PurePosixPath(directory).is_absolute()
+                    or PureWindowsPath(directory).is_absolute()
+                )
                 or checkout.get("remote", "").lower() != identity
             ):
                 continue

@@ -266,7 +266,7 @@ export class PreloopClaudeSidecar {
     }
     this.socket = socket;
 
-    socket.on("open", async () => {
+    socket.on("open", () => {
       this.log("Agent Control: connected; announcing capabilities");
       this.reconnectAttempts = 0;
       this.sendEnvelope({
@@ -279,7 +279,6 @@ export class PreloopClaudeSidecar {
           runtime: this.runtime,
           version: "0.1.2",
           default_directory: config.workspace_root,
-          checkouts: await knownCheckouts(config, this.observer?.recentDirectories()),
           capabilities: {
             start_directory: true,
             command_session: true,
@@ -304,6 +303,10 @@ export class PreloopClaudeSidecar {
         },
       });
       this.startHeartbeat(config);
+      void knownCheckouts(config, this.observer?.recentDirectories()).then(checkouts => {
+        if (this.socket !== socket || socket.readyState !== WebSocket.OPEN) return;
+        this.sendEnvelope({ type: "presence", name: "checkout_inventory", payload: { checkouts } });
+      });
       this.replayCommandOutcomes(socket);
     });
 
