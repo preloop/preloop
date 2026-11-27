@@ -128,8 +128,14 @@ HOST_EXEC_CAPABILITIES = frozenset(
         "host_publication",
         "host_continuation",
         "host_read_only_review",
+        "host_network",
     }
 )
+#: Capability of a profile whose runs have outbound network access (a Codex
+#: profile with allow_network, or a harness that does not sandbox network).
+HOST_NETWORK_CAPABILITY = "host_network"
+#: Lease key: the flow needs network, so only a host_network profile may run it.
+HOST_EXEC_NETWORK_LEASE_KEY = "host_exec_network"
 HOST_EXEC_MAX_RESULT_BYTES = 256 * 1024
 #: Lease key naming the authorized directory a host run works in (#1669).
 HOST_EXEC_WORKSPACE_KEY = "host_exec_workspace"
@@ -560,6 +566,7 @@ def runner_has_host_exec_profile(
     require_publication: bool = False,
     require_continuation: bool = False,
     require_read_only_review: bool = False,
+    require_network: bool = False,
 ) -> bool:
     """True when the runner advertised this profile for the leased harness.
 
@@ -577,6 +584,8 @@ def runner_has_host_exec_profile(
         require_read_only_review: The lease is a read-only review; the
             profile must advertise ``host_read_only_review``. Older runners
             never do, so they cannot run it with a writable sandbox.
+        require_network: The flow needs network; the profile must advertise
+            ``host_network``.
 
     Returns:
         True when the runner can run this lease.
@@ -604,6 +613,8 @@ def runner_has_host_exec_profile(
             if require_continuation and "host_continuation" not in caps:
                 return False
             if require_read_only_review and "host_read_only_review" not in caps:
+                return False
+            if require_network and HOST_NETWORK_CAPABILITY not in caps:
                 return False
             models = item.get("models") or []
             return not model_identifier or (
@@ -708,6 +719,68 @@ def _clone_enabled(git_clone_config: Any) -> bool:
     if isinstance(git_clone_config, Mapping):
         return bool(git_clone_config.get("enabled"))
     return bool(getattr(git_clone_config, "enabled", False))
+
+
+NETWORK_UNAVAILABLE = (
+    "the flow sets agent_config.requires_network but no registered runner "
+    "in its pool offers a host profile with network access; set "
+    '"allow_network": true on the host profile in runner-host-profiles.json '
+    "and update the preloop CLI on the runner"
+)
+
+
+def host_exec_requires_network(agent_config: Any) -> bool:
+    """True when the flow's agent config asks for outbound network.
+
+    Args:
+        agent_config: The flow's agent configuration mapping.
+
+    Returns:
+        True when ``agent_config.requires_network`` is ``True``.
+    """
+    return (
+        isinstance(agent_config, Mapping)
+        and agent_config.get("requires_network") is True
+    )
+
+
+def account_has_network_runner(
+    db: Any,
+    *,
+    account_id: Any,
+    runner_pool: Any,
+    profile: str,
+    agent_type: Any,
+) -> bool:
+    """True when a registered runner in the pool offers ``profile`` with network.
+
+    Offline runners count, as for publication: a saved flow waits for its
+    runner.
+
+    Args:
+        db: Database session.
+        account_id: Account that owns the flow.
+        runner_pool: The flow's runner pool, or None for the default pool.
+        profile: Host profile name.
+        agent_type: Host-exec agent type the profile must run.
+
+    Returns:
+        True when some runner can run a network-requiring lease.
+    """
+    from preloop.models.crud import crud_flow_runner
+
+    if account_id is None or db is None:
+        return False
+    pool = runner_pool if isinstance(runner_pool, str) else ""
+    runners = crud_flow_runner.find_matching(
+        db, account_id=account_id, pool=pool, online_only=False
+    )
+    return any(
+        runner_has_host_exec_profile(
+            runner, profile, None, agent_type, require_network=True
+        )
+        for runner in runners
+    )
 
 
 PULL_REQUEST_UNAVAILABLE = (

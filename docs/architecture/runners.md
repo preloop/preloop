@@ -6,6 +6,23 @@ Personal and shared private runners: capability reporting, owner consent, native
 
 Private-runner log batches use stable delivery identities and acknowledgments so a reconnect can replay unconfirmed output without duplicating stored rows. Socket writes have deadlines, live log broadcasts have a bounded budget, and runner lease release shares the terminal result transaction. Publication and native-session markers are saved while output arrives. The execution console refreshes runner assignment and failure details at lifecycle transitions; an execution without an observed runtime is shown as unassigned.
 
+## Native host network and agent credentials
+
+A host profile may set `allow_network`; Codex then runs workspace-write with
+`sandbox_workspace_write.network_access=true`, and the runner advertises
+`host_network` (other native harnesses do not sandbox network and always
+advertise it). A flow with `agent_config.requires_network: true` gets the
+`host_exec_network` lease key: flow save and run start refuse it when no
+runner in the pool advertises `host_network`, assignment skips runners that do
+not, and the runner refuses the lease on a profile without network
+(`cli/internal/cmd/runner_host_exec_network.go`). `agent_git_credential`
+leaves the checkout credential in the checkout's local git config as a
+URL-scoped extraHeader so the agent's own git fetch and push work; it is never
+in the agent environment. After the CLI exits, the runner reads a
+`result.json` the agent wrote during the run (execution directory or checkout
+root, regular file, bounded size) and turns a reported failure into FAILED
+with the agent's summary, matching the hosted result-artifact rule.
+
 ## Native host publication and Copilot continuation
 
 Every native host profile (Codex, Claude Code, Cursor, Devin, OpenCode,

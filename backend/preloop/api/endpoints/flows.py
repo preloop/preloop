@@ -110,10 +110,13 @@ from preloop.services.flow_delegation import (
 )
 from preloop.services.host_exec import (
     HARNESS_FALLBACK_SERVER,
+    NETWORK_UNAVAILABLE,
+    account_has_network_runner,
     harness_fallback_mode,
     harness_pinned_runner_id,
     host_exec_effective_profile,
     host_exec_flow_error,
+    host_exec_requires_network,
     host_exec_unavailable_reason,
     PULL_REQUEST_UNAVAILABLE,
 )
@@ -258,6 +261,16 @@ def _reject_host_exec_flow(
             )
         ):
             raise HTTPException(status_code=400, detail=PULL_REQUEST_UNAVAILABLE)
+        if host_exec_requires_network(agent_config) and not (
+            account_has_network_runner(
+                db,
+                account_id=account_id,
+                runner_pool=runner_pool,
+                profile=profile,
+                agent_type=agent_type,
+            )
+        ):
+            raise HTTPException(status_code=400, detail=NETWORK_UNAVAILABLE)
 
 
 def _caller_may_use_runner(

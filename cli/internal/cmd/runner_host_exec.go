@@ -79,6 +79,18 @@ type hostExecProfile struct {
 	// the checkout to a preloop/ branch and the control plane opens the pull
 	// request. Requires allow_checkout. Off by default.
 	AllowPublish bool `json:"allow_publish,omitempty"`
+	// AllowNetwork is the operator's opt-in to outbound network for a
+	// Codex workspace-write run (Codex's sandbox blocks it by default). The
+	// runner advertises it as host_network so the control plane can refuse
+	// a flow that needs network before leasing it. Off by default.
+	AllowNetwork bool `json:"allow_network,omitempty"`
+	// AgentGitCredential is the operator's opt-in to leaving the flow's
+	// repository credential configured in each checkout, so the agent's own
+	// git fetch and push work. The credential is an http.<remote>.extraHeader
+	// in the checkout's local .git/config, scoped to the repository URL; it
+	// never enters the agent's environment, but the agent can read the file.
+	// Requires allow_checkout. Off by default.
+	AgentGitCredential bool `json:"agent_git_credential,omitempty"`
 }
 
 type hostExecProfilesFile struct {
@@ -288,6 +300,9 @@ func hostExecAdvertisements() []hostExecAdvertisement {
 		}
 		if harness == hostExecHarnessCodex && profile.AllowCheckout {
 			caps = append(caps, hostExecCapabilityReadOnly)
+		}
+		if hostExecProfileHasNetwork(profile, harness) {
+			caps = append(caps, hostExecCapabilityNetwork)
 		}
 		models := make([]string, 0, len(profile.ModelMap))
 		for requested := range profile.ModelMap {
@@ -739,6 +754,12 @@ func newHostExecJob(job map[string]any) (*hostExecRun, error) {
 			hostExecCheckoutNotAllows, profile.Name, hostExecProfilesFileName,
 		)
 	}
+	if err := validateHostExecNetworkJob(job, profile, wantHarness); err != nil {
+		return nil, err
+	}
+	if checkout != nil && profile.AgentGitCredential {
+		checkout.agentCredential = true
+	}
 	publication, err := jobHostExecPublication(job, checkout)
 	if err != nil {
 		return nil, err
@@ -1181,6 +1202,7 @@ func beginHostExecJob(
 				return
 			}
 		}
+		cliStarted := time.Now()
 		if err := gate.start(cmd); err != nil {
 			if errors.Is(err, errHostExecHaltedBeforeStart) {
 				failed("STOPPED", "")
@@ -1193,6 +1215,7 @@ func beginHostExecJob(
 			go governance.deliver(cmd)
 		}
 		outcome := waitHostExecJob(cmd, executionID, buffer, halted, timeout, profile)
+		applyHostAgentResultFile(&outcome, run.workspace, run.checkout, cliStarted)
 		if governance != nil {
 			governance.close()
 			<-governance.delivered
