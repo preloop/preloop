@@ -112,11 +112,7 @@ See [security architecture](docs/architecture/security.md) and the
 edition extension.
 
 Installed extension inventory, including standalone MCP servers, uses bounded v5
-metadata: descriptions (from front matter, the manifest or the marketplace
-listing; bodies stay in the opt-out content pass), invocation, publisher, marketplace, hosts, licence, declared tools,
-hook events, bundle contents and MCP transport. The server stores a derived
-capability list per row (`preloop/schemas/extension_capabilities.py`) for the
-console's "What it can do" column and filter. A separate content pass uploads
+metadata with a derived capability list per row. A separate content pass uploads
 redacted text under account, device and per-extension opt-outs, shared by manual
 reports and resident runners.
 Content is encrypted per account and hash; reads require approval permission and
