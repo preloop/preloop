@@ -804,6 +804,9 @@ async def test_relinked_identity_releases_old_address(
         is_active=True,
     )
     f.db.add(user)
+    f.db.flush()
+    # The relinked user may run chat flows; role-based editions check this.
+    f.db.add(models.UserRole(user_id=user.id, role_id=f.role.id))
     f.db.commit()
     crud_chat.identities.update(f.db, db_obj=f.identity, obj_in={"user_id": user.id})
     if observer_active:

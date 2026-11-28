@@ -526,6 +526,9 @@ async def test_package_actor_permission_and_expiry(
         is_active=True,
     )
     f.db.add(other)
+    f.db.flush()
+    # A fully privileged member still cannot read another user's draft.
+    f.db.add(models.UserRole(user_id=other.id, role_id=f.role.id))
     f.db.commit()
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=real_app), base_url="http://test"
