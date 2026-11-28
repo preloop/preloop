@@ -10,7 +10,7 @@ from preloop.api.auth.jwt import (
     oauth2_scheme,
     _authenticate_with_api_key,
 )
-from preloop.api.auth.key_scopes import is_single_purpose_api_key
+from preloop.api.auth.key_scopes import API_KEY_SCOPE_DENIED, is_single_purpose_api_key
 from preloop.models import models
 from preloop.models.crud import crud_account_discovery_salt, crud_api_key
 from preloop.models.db.session import get_db_session
@@ -104,7 +104,10 @@ def _app_credential(
         key is None
         or (key.context_data or {}).get("credential_kind") != "managed_agent_durable"
     ):
-        raise HTTPException(403, "App credential required")
+        raise HTTPException(
+            403,
+            detail={"code": API_KEY_SCOPE_DENIED, "message": "App credential required"},
+        )
     return key
 
 
