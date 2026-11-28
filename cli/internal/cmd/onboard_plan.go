@@ -129,7 +129,10 @@ type agentPlan struct {
 	Writability writabilityReport
 	// Manual is set when a file onboarding writes cannot be written from
 	// here, so the change is handed to the person.
-	Manual       bool
+	Manual bool
+	// ManualFile says which file cannot be written; ManualReason is the
+	// refusal as the operating system worded it.
+	ManualFile   string
 	ManualReason string
 	// Blocked is non-empty when this agent cannot be applied in this mode.
 	Blocked string
@@ -659,9 +662,10 @@ func describeEnrollmentPlan(state *enrollmentPlanState) agentPlan {
 	blocked := state.writability.blocked()
 	plan.Manual = state.opts.ForceManual || len(blocked) > 0
 	if len(blocked) > 0 {
-		plan.ManualReason = fmt.Sprintf("%s is not writable here (%s)", configFileLabel(blocked[0].Target.Path), blocked[0].Reason)
+		plan.ManualFile = configFileLabel(blocked[0].Target.Path) + " is not writable here"
+		plan.ManualReason = blocked[0].Reason
 	} else if plan.Manual {
-		plan.ManualReason = "requested with --manual"
+		plan.ManualFile = "requested with --manual"
 	}
 	if state.blocked != nil {
 		plan.Blocked = state.blocked.Error()

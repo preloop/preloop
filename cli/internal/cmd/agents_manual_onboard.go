@@ -299,7 +299,13 @@ func decideManualModeForReport(agent AgentConfig, opts managedEnrollmentOptions,
 	if !decision.Manual {
 		return decision, nil
 	}
-	printWritabilityReport(output, decision.Report)
+	// The compact output names the file and the reason in the manual step
+	// itself; the full report is part of --explain. An agent kind manual
+	// setup does not cover always gets the report: it explains the refusal.
+	quiet := !opts.Explain && manualApplySupported(agent)
+	if !quiet {
+		printWritabilityReport(output, decision.Report)
+	}
 	onlyState := len(blocked) > 0
 	for _, probe := range blocked {
 		if probe.Target.Role != writeRoleState {
@@ -311,6 +317,8 @@ func decideManualModeForReport(agent AgentConfig, opts managedEnrollmentOptions,
 	}
 	if onlyState {
 		printManualLine(output, "Onboarding continues without local Preloop state: the agent's own files are writable and will be written, but no backup or resume state can be kept on this machine.")
+	} else if quiet {
+		// The review already said "manual step" for this agent.
 	} else if len(blocked) > 0 {
 		printManualLine(output, "Onboarding continues in manual mode: Preloop prepares the agent and prints the exact change for you to make.")
 	} else {
@@ -372,6 +380,18 @@ type manualEnrollmentInputs struct {
 	ConfigExisted  bool
 	PinFamilies    bool
 	OAuthSource    string
+	// Step, when set, reports the hand-over as a step line.
+	Step func(step, status, detail string)
+	// Detail receives the helpers' own text: everything with --explain,
+	// otherwise only what needs action. Output is used when it is nil.
+	Detail io.Writer
+}
+
+func (in *manualEnrollmentInputs) detail() io.Writer {
+	if in.Detail != nil {
+		return in.Detail
+	}
+	return in.Output
 }
 
 func changeFromProbe(probe *configWriteProbe, label, role, format string) manualFileChange {
@@ -447,7 +467,7 @@ func buildManualApplyPlan(in *manualEnrollmentInputs) (manualApplyPlan, []string
 			if hooksInSettings {
 				approvalHookConfigPathOverrides[source] = staged.ConfigPath
 			}
-			hookErr := installApprovalHooks(agent, in.BaseURL, token, in.Output)
+			hookErr := installApprovalHooks(agent, in.BaseURL, token, in.detail())
 			delete(approvalHookConfigPathOverrides, source)
 			if hookErr != nil {
 				return plan, nil, hookErr
@@ -548,7 +568,7 @@ func addClaudeSideFiles(in *manualEnrollmentInputs, plan *manualApplyPlan, notes
 		if err := syncClaudeCodeManagedMCPServer(agent, in.BaseURL, token); err != nil {
 			return err
 		}
-		if err := ensureClaudeAPIKeyPreApproved(agent, token, in.Output); err != nil {
+		if err := ensureClaudeAPIKeyPreApproved(agent, token, in.detail()); err != nil {
 			*notes = append(*notes, fmt.Sprintf("Warning: could not pre-approve the gateway key in Claude Code's user config: %v", err))
 		}
 	} else if probe := report.probeFor(writeRoleUserConfig); probe != nil {
@@ -609,8 +629,29 @@ func manualResumeCommand(displayName string) string {
 }
 
 // runManualApplyEnrollment is the manual-mode replacement for the local
-// write phase of onboarding.
+// write phase of onboarding: it prepares the step, shows it and waits for
+// the person. A run with several agents collects the steps instead and
+// shows them together at the end.
 func runManualApplyEnrollment(in *manualEnrollmentInputs) error {
+	step, done, err := prepareManualStep(in)
+	if err != nil || done {
+		return err
+	}
+	if in.Opts.manualSink != nil {
+		in.Opts.manualSink(step)
+		return step.pending
+	}
+	presentManualStep(in.Output, step, 1, 1, in.Opts.Explain)
+	results := waitForManualSteps(in.Input, in.Output, []*manualStep{step}, manualWaitInteractive(in.Opts), in.Opts.Explain)
+	return results[0]
+}
+
+// prepareManualStep does everything manual setup does before the person's
+// turn: it writes the files that are writable, records the pending
+// enrollment and saves the instructions. done is true when nothing is left
+// for the person (every agent file was writable), in which case the setup
+// was finished here.
+func prepareManualStep(in *manualEnrollmentInputs) (step *manualStep, done bool, err error) {
 	agent := in.Agent
 	output := in.Output
 	displayName := resolveAgentDisplayName(agent)
@@ -618,14 +659,14 @@ func runManualApplyEnrollment(in *manualEnrollmentInputs) error {
 
 	plan, notes, err := buildManualApplyPlan(in)
 	if err != nil {
-		return err
+		return nil, false, err
 	}
 
 	var backupState *localEnrollmentState
 	if stateWritable {
 		backupState, err = createLocalEnrollmentBackup(agent, in.ConfigExisted, in.OriginalBytes, in.Plan)
 		if err != nil {
-			return err
+			return nil, false, err
 		}
 		backupState.PinModelFamilies = in.PinFamilies
 		if in.OAuthSource != "" && backupState.ClaudeOAuthCredentialSource == "" {
@@ -659,7 +700,7 @@ func runManualApplyEnrollment(in *manualEnrollmentInputs) error {
 		}.withDeviceLink(in.Client, agent),
 	)
 	if err != nil {
-		return err
+		return nil, false, err
 	}
 	// From here the pending enrollment owns the cleanup: cancelling it, or
 	// letting it expire, removes what this run created.
@@ -697,6 +738,9 @@ func runManualApplyEnrollment(in *manualEnrollmentInputs) error {
 	if !stateSaved {
 		resumeCommand += " --resume-token " + resumeToken
 	}
+	resumeOptions := manualResumeOptions{
+		SkipLiveValidate: in.Opts.SkipLiveValidate || !in.Opts.LiveValidate,
+	}
 
 	if len(plan.Files) == 0 {
 		// Every agent file was writable and has been written; only Preloop's
@@ -711,65 +755,44 @@ func runManualApplyEnrollment(in *manualEnrollmentInputs) error {
 		if !stateSaved {
 			printManualLine(output, "  Resume token (not a secret; keep it, ~/.preloop is not writable): %s", resumeToken)
 		}
-		return resumeManualEnrollment(in.Client, &resumeState, manualResumeOptions{
-			SkipLiveValidate: in.Opts.SkipLiveValidate || !in.Opts.LiveValidate,
-		}, output)
+		return nil, true, resumeManualEnrollment(in.Client, &resumeState, resumeOptions, output)
 	}
+
+	// The saved instructions are always the complete text: every form the
+	// change can take and what each one does not enable.
 	instructions := renderManualInstructions(displayName, plan, in.Decision.BundleDir, resumeCommand)
-	printManualLine(output, "")
-	fmt.Fprint(output, instructions) //nolint:errcheck
-	if in.Decision.BundleDir != "" {
-		if err := writeManualBundle(in.Decision.BundleDir, instructions, plan, resumeToken); err != nil {
-			printManualLine(output, "Could not save the instructions to %s: %v", in.Decision.BundleDir, err)
-			printManualLine(output, "They are shown above only. Copy them now.")
-		} else {
-			printManualLine(output, "Saved (mode 0600, contains the agent key): %s", in.Decision.BundleDir)
-			printManualLine(output, "Delete that directory once the change is in place.")
-		}
-	}
-	for _, note := range notes {
-		printManualLine(output, "  %s", note)
-	}
-	printManualLine(output, "")
-	printManualLine(output, "Waiting for local configuration: %s is NOT onboarded yet.", displayName)
-	printManualLine(output, "  Managed agent: %s", in.ManagedAgent.ID)
-	if enrollment.ExpiresAt != "" {
-		printManualLine(output, "  This pending setup expires %s; after that Preloop removes the key and what this run created.", enrollment.ExpiresAt)
-	} else {
-		printManualLine(output, "  A pending setup that is never resumed expires and Preloop removes the key and what this run created.")
+	step = &manualStep{
+		DisplayName:    displayName,
+		Plan:           plan,
+		BundleDir:      in.Decision.BundleDir,
+		Instructions:   instructions,
+		Notes:          notes,
+		ManagedAgentID: in.ManagedAgent.ID,
+		ExpiresAt:      enrollment.ExpiresAt,
+		ResumeCommand:  resumeCommand,
+		CancelCommand:  "preloop agents onboard --cancel " + shellQuoteAgentName(displayName),
+		pending:        &manualApplyPendingError{AgentName: displayName, ResumeCommand: resumeCommand},
 	}
 	if !stateSaved {
-		printManualLine(output, "  Resume token (not a secret; keep it, ~/.preloop is not writable): %s", resumeToken)
+		step.ResumeToken = resumeToken
 	}
-	printManualLine(output, "  Cancel instead: preloop agents onboard --cancel %s", shellQuoteAgentName(displayName))
-
-	pending := &manualApplyPendingError{AgentName: displayName, ResumeCommand: resumeCommand}
-	interactive := stdinIsTerminal() && !in.Opts.AutoApprove && !nonInteractiveAutoConfirm()
-	if !interactive {
-		return pending
-	}
-	reader := bufio.NewReader(in.Input)
-	for {
-		answer, promptErr := promptForTextInput(
-			reader,
-			output,
-			"Press Enter when the change is in place (or type 'later' to stop here and resume another time): ",
-		)
-		if promptErr != nil {
-			return pending
-		}
-		if strings.EqualFold(strings.TrimSpace(answer), "later") {
-			return pending
-		}
-		resumeErr := resumeManualEnrollment(in.Client, &resumeState, manualResumeOptions{
-			SkipLiveValidate: in.Opts.SkipLiveValidate || !in.Opts.LiveValidate,
-		}, output)
-		if resumeErr == nil {
-			return nil
-		}
-		var notApplied *manualNotAppliedError
-		if !errors.As(resumeErr, &notApplied) {
-			return resumeErr
+	if in.Decision.BundleDir != "" {
+		if err := writeManualBundle(in.Decision.BundleDir, instructions, plan, resumeToken); err != nil {
+			step.BundleError = err
+		} else {
+			step.BundleSaved = true
 		}
 	}
+	client := in.Client
+	step.resume = func(w io.Writer) error {
+		return resumeManualEnrollment(client, &resumeState, resumeOptions, w)
+	}
+	if in.Step != nil {
+		files := "1 file to change"
+		if len(plan.Files) != 1 {
+			files = fmt.Sprintf("%d files to change", len(plan.Files))
+		}
+		in.Step(stepManual, stepStatusWaiting, "your turn: "+files)
+	}
+	return step, false, nil
 }

@@ -1,0 +1,16 @@
+Manual removal for Claude Code
+  File:  /home/jane/.claude/settings.json (read-only file system)
+  Do:    replace it with the prepared file, or make the changes below
+  /home/jane/.preloop/manual-setup/claude-code-000000000000-offboard/settings.json
+  Remove these keys: env.ANTHROPIC_API_KEY, env.ANTHROPIC_CUSTOM_MODEL_OPTION,
+    env.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME, servers
+  Set these keys (to what they were before Preloop):
+
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://provider.example.com"
+  },
+  "model": "claude-sonnet-4-5"
+}
+
+  Guide:   https://docs.preloop.ai/guide/clients/sandboxed-agents/#offboarding

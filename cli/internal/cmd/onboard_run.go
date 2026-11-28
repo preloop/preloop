@@ -592,7 +592,33 @@ func (r *onboardRun) execute() error {
 		}
 		return nil
 	}
-	return agentOnboardingSummaryError(outcomes)
+	if err := agentOnboardingSummaryError(outcomes); err != nil {
+		return err
+	}
+	return manualStepsWaitingError(outcomes)
+}
+
+// manualStepsWaitingError is the exit status of a run with several agents
+// that ended with a manual step still waiting and nothing failed: 3, the
+// status a single agent in that state has always had, so a script can tell
+// "your turn" from done.
+func manualStepsWaitingError(outcomes []agentOnboardingOutcome) error {
+	var waiting []string
+	for _, outcome := range outcomes {
+		switch outcome.Status {
+		case agentOnboardingStatusFailed:
+			return nil
+		case agentOnboardingStatusWaiting:
+			waiting = append(waiting, resolveAgentDisplayName(outcome.Agent))
+		}
+	}
+	if len(waiting) == 0 {
+		return nil
+	}
+	return &exitCodeError{
+		code:    manualApplyExitCode,
+		message: fmt.Sprintf("waiting for local configuration: %s; finish each with: preloop agents onboard --resume <agent>", strings.Join(waiting, ", ")),
+	}
 }
 
 // show prints the review: compact, or the full text with --explain.
@@ -630,6 +656,9 @@ func (r *onboardRun) apply(plan onboardPlan) ([]agentOnboardingOutcome, []agentR
 	var receipts []agentReceipt
 	var enrolled []AgentConfig
 	var firstErr error
+	// Manual steps are shown together after every other agent is set up.
+	var manualSteps []*manualStep
+	var manualOutcome []int
 	// With several agents the gateway probes run together afterwards, so a
 	// slow provider for one agent does not hold up the next.
 	live := r.base.LiveValidate && !r.base.SkipLiveValidate && r.sel.ModelRouting
@@ -665,6 +694,10 @@ func (r *onboardRun) apply(plan onboardPlan) ([]agentOnboardingOutcome, []agentR
 			ui.renderer = r.renderer
 			ui.emit = r.emit
 			ui.receipts = func(receipt agentReceipt) { receipts = append(receipts, receipt) }
+			state.opts.manualSink = func(step *manualStep) {
+				manualSteps = append(manualSteps, step)
+				manualOutcome = append(manualOutcome, len(outcomes))
+			}
 			err = r.applyAgent(state, ui)
 			ui.flush()
 		}
@@ -687,6 +720,19 @@ func (r *onboardRun) apply(plan onboardPlan) ([]agentOnboardingOutcome, []agentR
 
 	if deferProbes && len(enrolled) > 0 {
 		r.runProbes(enrolled, outcomes, receipts)
+	}
+	if len(manualSteps) > 0 {
+		for index, step := range manualSteps {
+			presentManualStep(r.output, step, index+1, len(manualSteps), r.sel.Explain)
+		}
+		results := waitForManualSteps(r.input, r.output, manualSteps, r.interactive(), r.sel.Explain)
+		for index, result := range results {
+			at := manualOutcome[index]
+			outcomes[at] = classifyAgentOnboardingOutcome(outcomes[at].Agent, result)
+			if len(plan.Agents) == 1 {
+				firstErr = result
+			}
+		}
 	}
 	return outcomes, receipts, firstErr
 }
@@ -865,8 +911,11 @@ func (r *onboardRun) report() []string {
 	}
 	sent := fmt.Sprintf("extension report sent: %s, %s", agentCountLabel(summary.Agents), extensions)
 	switch {
-	case summary.ContentFailed:
+	case summary.ContentFailed && summary.ContentUploaded == 0:
 		sent += "; their text was not uploaded"
+	case summary.ContentFailed:
+		// Earlier batches were stored before the upload stopped.
+		sent += fmt.Sprintf("; text of %d uploaded, the rest was not", summary.ContentUploaded)
 	case summary.ContentUploaded > 0:
 		sent += fmt.Sprintf("; text of %d uploaded", summary.ContentUploaded)
 	}

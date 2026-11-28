@@ -289,6 +289,24 @@ or `curl -fsSL 'https://preloop.ai/install/cli?version=1.1.0-rc.1' | sh`.
   itself is unchanged: it reports only with `--report`. See
   `docs/guide/agent-discovery-reporting.md`.
   [#2569](https://github.com/preloop/preloop/issues/2569).
+- **CLI output:** the manual step for read-only configuration is one block.
+  When `preloop agents onboard` cannot write a file, the review says "manual
+  step" for that agent before anything is created, and the hand-over is a step
+  line (`>>  <agent>   your turn: 1 file to change`) followed by the file, its
+  probable path on the host, the prepared complete file, and the merge block.
+  The agent key is printed once, in that block. The environment-variable form,
+  the `claude --settings` form and the list of what each does not enable are
+  printed by `--explain` and are always in `INSTRUCTIONS.txt` in the saved
+  directory. The writability report (container, mount, owner) is reduced to the
+  `File:` and `Host:` lines. With several agents the others are set up first
+  and the manual steps follow together, numbered, with one wait; such a run now
+  exits 3 when a step is still waiting and nothing failed, the status a single
+  agent in that state always had (it used to exit 0). The manual removal block
+  of `preloop agents offboard` has the same shape. `--resume`, `--cancel`,
+  `--manual`, `--manual-output`, `--from-env`, `--settings-file` and the
+  pending setup's expiry are unchanged, and the line
+  `Waiting for local configuration: <agent> is NOT onboarded yet.` is kept.
+  [#2566](https://github.com/preloop/preloop/issues/2566).
 - **CLI prompts:** `preloop agents onboard` asks one question for the whole
   run instead of three or four per agent. It works out the plan for every agent
   first, shows it once, and asks `Apply to N agents? [Y/n/c/e]`: Enter applies,

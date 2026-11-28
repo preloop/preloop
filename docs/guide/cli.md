@@ -447,7 +447,7 @@ The Reason column also carries live-validation outcomes. `live validation thrott
 
 - **0**: at least one attempted agent onboarded, fully or partially (and trivially when nothing was attempted). A single-agent `partial` also exits 0.
 - **1**: every attempted agent failed, or another error occurred.
-- **3**: a single-agent `agents onboard` or `agents offboard` is waiting for a manual step: the configuration is read-only and the printed change has not been applied (or removed) yet. See [Manual setup for read-only configuration](#manual-setup-for-read-only-configuration).
+- **3**: `agents onboard` or `agents offboard` is waiting for a manual step: the configuration is read-only and the printed change has not been applied (or removed) yet. For a run over several agents this is the status when at least one step is still waiting and no agent failed. See [Manual setup for read-only configuration](#manual-setup-for-read-only-configuration).
 
 Script against the summary, not just the exit code, when you care about specific agents.
 

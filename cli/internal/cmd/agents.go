@@ -387,9 +387,11 @@ warning ("partial" onboarding).
 
 Exit codes: when onboarding multiple agents (no agent argument, or --all), an
 error for one agent does not stop the others; the command exits 0 when at
-least one attempted agent onboarded (fully or partially) and non-zero only
-when every attempted agent failed. With a single agent argument, a partial
-onboarding still exits 0.`,
+least one attempted agent onboarded (fully or partially) and 1 only when
+every attempted agent failed. With a single agent argument, a partial
+onboarding still exits 0. Exit status 3 means a manual step is waiting: the
+configuration is read-only and the printed change is not in place yet (for a
+run over several agents, when at least one step waits and no agent failed).`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runAgentsEnroll,
 }
@@ -2534,7 +2536,7 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 	// but the file is offboarded only once it no longer points at Preloop.
 	if localPlan.needsManualRemoval() {
 		if offboardServerOnly {
-			fmt.Print(renderManualRemoval(resolveAgentDisplayName(agent), agent, localPlan, ""))
+			fmt.Print(renderManualRemoval(resolveAgentDisplayName(agent), agent, localPlan, "", detectTermCaps(os.Stdout, false).Width))
 			local = localOffboardOutcome{Line: fmt.Sprintf(
 				"This machine: NOT changed. %s still holds the Preloop block (%s). Remove it as printed above; its key no longer works.",
 				agent.ConfigPath, firstNonEmptyString(localPlan.Probe.Reason, localPlan.ReadProblem),

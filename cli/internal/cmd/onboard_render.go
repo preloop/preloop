@@ -306,8 +306,13 @@ func agentPlanDetails(agent agentPlan, width int) []planDetailLine {
 	for _, line := range agent.PlanLines {
 		add(line)
 	}
-	if agent.Manual && agent.ManualReason != "" {
-		add("manual step: " + agent.ManualReason)
+	if agent.Manual && agent.ManualFile != "" {
+		add("manual step: " + agent.ManualFile)
+		if agent.ManualReason != "" {
+			// The refusal on its own line, so it reads (and can be
+			// searched for) as the operating system worded it.
+			lines = append(lines, planDetailLine{text: "(" + agent.ManualReason + ")", whole: true})
+		}
 	}
 	if agent.Blocked != "" {
 		add("cannot be applied: " + agent.Blocked)
@@ -339,10 +344,9 @@ func (r *plainRenderer) Plan(w io.Writer, plan onboardPlan, sel onboardSelection
 		writeWrapped(w, lead, hang, agentPlanSummary(agent), width)
 		for _, line := range agentPlanDetails(agent, width-utf8.RuneCountInString(hang)) {
 			indent := hang
-			if room := width - utf8.RuneCountInString(line.text); line.whole && room < len(hang) {
-				if room < 0 {
-					room = 0
-				}
+			// A whole line is moved left when that keeps it on one row;
+			// one that is longer than the terminal wraps in its column.
+			if room := width - utf8.RuneCountInString(line.text); line.whole && room >= 0 && room < len(hang) {
 				indent = strings.Repeat(" ", room)
 			}
 			writeWrapped(w, indent, indent, line.text, width)

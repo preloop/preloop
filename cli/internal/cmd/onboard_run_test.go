@@ -568,6 +568,7 @@ func TestEveryChoiceHasAFlag(t *testing.T) {
 		{[]string{"--report-extensions=false"}, func(s onboardSelection, _ []string) bool { return !s.ReportExtensions }},
 		{[]string{"--runner"}, func(s onboardSelection, _ []string) bool { return s.Runner != nil && *s.Runner }},
 		{[]string{"--no-runner"}, func(s onboardSelection, _ []string) bool { return s.Runner != nil && !*s.Runner }},
+		{[]string{"--flow-execution-consent", "never"}, func(s onboardSelection, _ []string) bool { return s.RunnerConsent == "never" }},
 		{[]string{"--explain"}, func(s onboardSelection, _ []string) bool { return s.Explain }},
 		{[]string{"--plain"}, func(s onboardSelection, _ []string) bool { return s.Plain }},
 	}
@@ -581,7 +582,7 @@ func TestEveryChoiceHasAFlag(t *testing.T) {
 	if err != nil || len(named) != 1 || named[0] != "Claude Code" {
 		t.Errorf("positional name: %v %v", named, err)
 	}
-	for _, bad := range [][]string{{"--runner", "--no-runner"}, {"--report-extensions", "--no-report-extensions"}} {
+	for _, bad := range [][]string{{"--runner", "--no-runner"}, {"--report-extensions", "--no-report-extensions"}, {"--flow-execution-consent", "sometimes"}} {
 		if _, _, err := onboardSelectionFromFlags(selectionFlagsCommand(t, bad...), nil); err == nil {
 			t.Errorf("%v should be refused", bad)
 		}
@@ -815,6 +816,18 @@ func TestReportPassesOnTheCollectorsNoticesAndFailures(t *testing.T) {
 	}
 	if strings.Contains(output, "Reported 1 agent(s)") {
 		t.Errorf("the routine summary line is printed as well:\n%s", fake.out.String())
+	}
+
+	// A partial upload is neither "uploaded" nor "not uploaded".
+	partial := newFakeOnboardRun(t, threeAgents()[:1], defaultOnboardSelection(), "", true)
+	partial.run.sendReport = func(io.Writer) (discoveryReportSummary, error) {
+		return discoveryReportSummary{Agents: 1, Extensions: 3, ContentUploaded: 2, ContentFailed: true}, nil
+	}
+	if err := partial.run.execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(strings.Fields(partial.out.String()), " "), "text of 2 uploaded, the rest was not") {
+		t.Fatalf("a partial upload is misreported:\n%s", partial.out.String())
 	}
 
 	uploaded := newFakeOnboardRun(t, threeAgents()[:1], defaultOnboardSelection(), "", true)

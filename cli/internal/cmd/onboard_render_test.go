@@ -86,7 +86,8 @@ func TestPlanRenderingGoldens(t *testing.T) {
 	three := samplePlan("Claude Code", "Codex CLI", "Cursor")
 	readOnly := samplePlan("Claude Code")
 	readOnly.Agents[0].Manual = true
-	readOnly.Agents[0].ManualReason = "settings.json is not writable here (read-only file system)"
+	readOnly.Agents[0].ManualFile = "settings.json is not writable here"
+	readOnly.Agents[0].ManualReason = "permission denied (owned by uid 0, running as uid 10001)"
 	again := samplePlan("Claude Code")
 	again.Agents[0].Reonboard = true
 	again.Agents[0].Disclosures = again.Agents[0].Disclosures[1:]
@@ -116,6 +117,32 @@ func TestPlanRenderingKeepsTheCredentialSourceWhole(t *testing.T) {
 		}
 		if longest, line := longestLine(text); longest > width {
 			t.Errorf("width %d: line of %d columns: %q", width, longest, line)
+		}
+	}
+}
+
+// protects=the refusal reason can be found in the review as one string;
+// fails_when=at 80 columns the reason the operating system gave for a
+// read-only file is split across two rows; no_claim=a reason longer than
+// the terminal is wide still has to wrap.
+func TestPlanRenderingKeepsTheRefusalReasonWhole(t *testing.T) {
+	plan := samplePlan("Claude Code")
+	plan.Agents[0].Manual = true
+	plan.Agents[0].ManualFile = "settings.json is not writable here"
+	plan.Agents[0].ManualReason = "permission denied (owned by uid 0, running as uid 10001)"
+	text := renderPlan(termCaps{Width: 80}, plan)
+	if !strings.Contains(text, "(permission denied (owned by uid 0, running as uid 10001))") {
+		t.Errorf("the refusal reason was split:\n%s", text)
+	}
+	if longest, line := longestLine(text); longest > 80 {
+		t.Errorf("line of %d columns: %q", longest, line)
+	}
+	// A reason longer than the terminal cannot stay whole: it wraps in the
+	// row's column instead of starting at the left edge.
+	plan.Agents[0].ManualReason = "permission denied (owned by uid 1001, running as uid 10001), and the mount is read-only"
+	for _, line := range strings.Split(renderPlan(termCaps{Width: 80}, plan), "\n") {
+		if strings.Contains(line, "permission denied") && !strings.HasPrefix(line, "                   (") {
+			t.Errorf("a long reason left its column: %q", line)
 		}
 	}
 }

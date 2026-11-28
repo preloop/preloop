@@ -1,0 +1,23 @@
+Manual step for Claude Code
+  File:  /home/jane/.claude/settings.json (read-only file system)
+  Host:  probably ./state/claude/settings.json
+  Do:    replace it with the prepared file, or merge the block below
+         /home/jane/.preloop/manual-setup/claude-code-000000000000/settings.json
+
+{
+  "env": {
+    "ANTHROPIC_API_KEY": "agt_SYNTHETIC0000000000000000000000000000000001"
+  }
+}
+
+  Also create /home/jane/.claude.json from the prepared file:
+    /home/jane/.preloop/manual-setup/claude-code-000000000000/claude.merge.json
+Waiting for local configuration: Claude Code is NOT onboarded yet.
+  The block holds the agent key. It is shown once.
+  Other ways to apply it, and their limits: --explain or INSTRUCTIONS.txt below.
+  Saved (mode 0600, contains the agent key):
+    /home/jane/.preloop/manual-setup/claude-code-000000000000
+  This pending setup expires 2026-11-29T12:00:00Z; after that Preloop removes
+  the key and what this run created.
+  Finish:  preloop agents onboard --resume "Claude Code"
+  Cancel:  preloop agents onboard --cancel "Claude Code"

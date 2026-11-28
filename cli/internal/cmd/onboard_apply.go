@@ -442,6 +442,8 @@ func applyManagedEnrollment(state *enrollmentPlanState, input *bufio.Reader, ui 
 			ConfigExisted:  configExisted,
 			PinFamilies:    pinModelFamilies,
 			OAuthSource:    oauthSource,
+			Step:           ui.step,
+			Detail:         detail,
 		})
 	}
 	backupState, err := createLocalEnrollmentBackup(agent, configExisted, originalBytes, plan)

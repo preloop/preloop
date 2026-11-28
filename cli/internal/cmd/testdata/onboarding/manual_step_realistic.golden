@@ -1,0 +1,42 @@
+Manual step for Claude Code
+  File:  /home/jane/.claude/settings.json (read-only file system)
+  Host:  probably /home/jane/src/preloop/examples/sandboxed-agent-rig/state/ro-settings/claude/settings.json
+  Do:    replace it with the prepared file, or merge the block below
+         /home/jane/.preloop/manual-setup/claude-code-000000000000/settings.json
+
+{
+  "env": {
+    "ANTHROPIC_API_KEY": "agt_SYNTHETIC0000000000000000000000000000000001",
+    "ANTHROPIC_BASE_URL": "https://preloop.example.com/anthropic",
+    "ANTHROPIC_CUSTOM_MODEL_OPTION": "anthropic/claude-sonnet-4-5",
+    "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME": "Preloop anthropic/claude-sonnet-4-5",
+    "CLAUDE_CODE_ENABLE_TELEMETRY": "0",
+    "CLAUDE_CODE_USE_BEDROCK": "0",
+    "DISABLE_TELEMETRY": "1",
+    "OTEL_LOGS_EXPORTER": "none",
+    "OTEL_METRICS_EXPORTER": "none",
+    "OTEL_TRACES_EXPORTER": "none"
+  },
+  "model": "sonnet",
+  "servers": {
+    "preloop": {
+      "headers": {
+        "Authorization": "Bearer agt_SYNTHETIC0000000000000000000000000000000001"
+      },
+      "transport": "http-streaming",
+      "url": "https://preloop.example.com/mcp/v1"
+    }
+  }
+}
+
+  Also create /home/jane/.claude.json from the prepared file:
+    /home/jane/.preloop/manual-setup/claude-code-000000000000/claude.merge.json
+Waiting for local configuration: Claude Code is NOT onboarded yet.
+  The block holds the agent key. It is shown once.
+  Other ways to apply it, and their limits: --explain or INSTRUCTIONS.txt below.
+  Saved (mode 0600, contains the agent key):
+    /home/jane/.preloop/manual-setup/claude-code-000000000000
+  This pending setup expires 2026-11-29T12:00:00Z; after that Preloop removes
+  the key and what this run created.
+  Finish:  preloop agents onboard --resume "Claude Code"
+  Cancel:  preloop agents onboard --cancel "Claude Code"
