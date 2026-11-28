@@ -1009,6 +1009,9 @@ func TestUnsupportedAgentWithReadOnlyStateSaysWhatIsMissing(t *testing.T) {
 }
 
 func TestManualReonboardReportsUnwritableExistingGate(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores permission bits")
+	}
 	rig := newManualRigServer(t)
 	home := newManualRigHome(t)
 	hookPath := filepath.Join(filepath.Dir(home.settings), "separate-hooks.json")
