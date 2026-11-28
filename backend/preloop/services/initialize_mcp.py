@@ -2299,6 +2299,10 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                 )
                 events = list(events_result.scalars())
 
+                from preloop.utils.approval_origin import (
+                    hook_recorded_approval_note,
+                    hook_recorded_tool_origin,
+                )
                 from preloop.services.external_approval import (
                     hide_agent_comment,
                     scope_replay,
@@ -2365,9 +2369,21 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                 # lock during potentially long tool execution.
                 if approval_request.status == "approved":
                     cached = approval_request.tool_result
+                    hook_origin = hook_recorded_tool_origin(approval_request.tool_args)
+
+                    # A hook-recorded request (e.g. Claude Code's native
+                    # ToolSearch) is a decision for the harness, not a call
+                    # Preloop can run: report it, and leave tool_result
+                    # untouched so a native grant can still be claimed (#2595).
+                    if hook_origin is not None:
+                        response["execution"] = "not_run_hook_recorded"
+                        response["tool_origin"] = hook_origin
+                        response["hook_call_note"] = hook_recorded_approval_note(
+                            str(approval_request.tool_name), hook_origin
+                        )
 
                     # Another request is already executing this tool
-                    if isinstance(cached, dict) and cached.get("_executing"):
+                    elif isinstance(cached, dict) and cached.get("_executing"):
                         response["status"] = "executing"
 
                     # Execution failed previously — return the error without

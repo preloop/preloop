@@ -765,3 +765,60 @@ def test_mint_has_no_warning_when_tools_resolve(client, db_session, test_user):
     )
     assert response.status_code == 201
     assert response.json()["warnings"] == []
+
+
+def _mint_with_tools(client, source_id: str, tools: list[str]) -> dict:
+    response = client.post(
+        "/api/v1/auth/runtime-sessions/token",
+        json={
+            "session_source_type": "claude_code",
+            "session_source_id": source_id,
+            "allowed_mcp_tools": tools,
+        },
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def test_scoped_token_includes_implicitly_enabled_builtin(
+    client, db_session, test_user
+):
+    """A default-enabled builtin needs no ToolConfiguration row (#2594).
+
+    The owner lists and calls ``get_approval_status`` with no configuration,
+    so a token scoped to that tool must see it as well.
+    """
+    body = _mint_with_tools(client, "implicit-builtin-1", ["get_approval_status"])
+    api_key = crud_api_key.get_by_key(db_session, key=body["token"])
+    assert api_key.context_data["allowed_mcp_tools"] == [
+        {"tool_name": "get_approval_status"}
+    ]
+    assert body["warnings"] == []
+
+
+def test_scoped_token_excludes_explicitly_disabled_builtin(
+    client, db_session, test_user
+):
+    from preloop.models.models.tool_configuration import ToolConfiguration
+
+    db_session.add(
+        ToolConfiguration(
+            account_id=test_user.account_id,
+            tool_name="get_approval_status",
+            tool_source="builtin",
+            is_enabled=False,
+        )
+    )
+    db_session.flush()
+    body = _mint_with_tools(client, "disabled-builtin-1", ["get_approval_status"])
+    api_key = crud_api_key.get_by_key(db_session, key=body["token"])
+    assert api_key.context_data["allowed_mcp_tools"] == []
+
+
+def test_scoped_token_excludes_default_disabled_and_unknown_tools(
+    client, db_session, test_user
+):
+    """``send_note`` is default-disabled; an unknown name is not a builtin."""
+    body = _mint_with_tools(client, "default-disabled-1", ["send_note", "no_such"])
+    api_key = crud_api_key.get_by_key(db_session, key=body["token"])
+    assert api_key.context_data["allowed_mcp_tools"] == []

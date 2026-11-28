@@ -51,6 +51,9 @@ EXPERIMENTAL_METRICS: dict[str, str] = {
     "gen_ai.client.operation.duration": (
         "Duration of a governed model or tool call, in seconds."
     ),
+    "gen_ai.client.inference.duration": (
+        "Duration of a governed model inference call, in seconds."
+    ),
     "gen_ai.client.token.usage": (
         "Input and output tokens per governed model call ({token})."
     ),
@@ -71,6 +74,11 @@ STABLE_METRIC_DIMENSIONS: dict[str, tuple[str, ...]] = {
 
 EXPERIMENTAL_METRIC_DIMENSIONS: dict[str, tuple[str, ...]] = {
     "gen_ai.client.operation.duration": (
+        "gen_ai.operation.name",
+        "gen_ai.provider.name",
+        "gen_ai.request.model",
+    ),
+    "gen_ai.client.inference.duration": (
         "gen_ai.operation.name",
         "gen_ai.provider.name",
         "gen_ai.request.model",

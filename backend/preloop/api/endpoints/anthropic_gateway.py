@@ -10,6 +10,8 @@ request in identity headers; see
 
 from __future__ import annotations
 
+import dataclasses
+
 from typing import Any, Callable, Dict, Optional
 
 from fastapi import APIRouter, Body, Depends, Header, Request
@@ -37,6 +39,7 @@ from preloop.services.model_gateway_auth import (
     ModelGatewayAuthContext,
     authenticate_bearer_token,
 )
+from preloop.services.model_allowlist import MODEL_NOT_ALLOWED_ERROR_CODE
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
 from preloop.services.openai_gateway import (
     OpenAIGatewayService,
@@ -154,6 +157,28 @@ def _attribution(
     return attribution
 
 
+def _client_facing_allowlist_error(exc: ModelGatewayAPIError) -> ModelGatewayAPIError:
+    """Answer an allowlist denial with 400 ``invalid_request_error`` (#2590).
+
+    Claude Code treats any 403 from a custom ``ANTHROPIC_BASE_URL`` as an
+    authentication failure and prefixes it with ``Failed to authenticate`` or
+    ``Please run /login``; a 404 is replaced by its own "issue with the
+    selected model" text. A 400 is printed as ``API Error: 400 <message>``,
+    so the policy message reaches the user unchanged. Only the response to
+    the client changes: usage and audit rows keep recording the denial as
+    the 403 ``model_not_allowed`` policy outcome.
+
+    Args:
+        exc: The gateway error raised by the service.
+
+    Returns:
+        A 400 copy for an allowlist denial, otherwise ``exc`` itself.
+    """
+    if exc.status_code != 403 or exc.code != MODEL_NOT_ALLOWED_ERROR_CODE:
+        return exc
+    return dataclasses.replace(exc, status_code=400, error_type="invalid_request_error")
+
+
 def _run(
     auth_context: ModelGatewayAuthContext,
     service: OpenAIGatewayService,
@@ -171,6 +196,7 @@ def _run(
         error = exc
         if auth_context.gateway_subject is not None:
             error = to_trusted_upstream_error(exc, auth_context.gateway_subject)
+        error = _client_facing_allowlist_error(error)
         if service.upstream_response_headers:
             error.extra_response_headers = dict(  # type: ignore[attr-defined]
                 service.upstream_response_headers

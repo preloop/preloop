@@ -2,8 +2,9 @@
 
 Per router (OpenAI, Anthropic, Gemini): a budget denial is ``429`` with the
 provider-shaped body, an integer ``retry-after`` and ``x-should-retry:
-false``; a model allowlist denial stays ``403``; a rate limit is ``429``
-without ``x-should-retry: false``.
+false``; a model allowlist denial stays ``403`` on the OpenAI and Gemini
+routers and is ``400 invalid_request_error`` on the Anthropic router (#2590);
+a rate limit is ``429`` without ``x-should-retry: false``.
 """
 
 from __future__ import annotations
@@ -232,7 +233,6 @@ def test_budget_denial_without_reset_defaults_retry_after(
     ("router", "expected_kind"),
     [
         ("openai", "permission_error"),
-        ("anthropic", "permission_error"),
         ("gemini", "PERMISSION_DENIED"),
     ],
 )
@@ -251,6 +251,37 @@ def test_allowlist_denial_stays_403(
 
     assert response.status_code == 403, response.text
     assert _error_kind(router, response.json()) == expected_kind
+    assert "x-should-retry" not in response.headers
+    upstream.assert_not_called()
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_anthropic_allowlist_denial_is_400_invalid_request(
+    app, client, db_session, test_user, stream
+):
+    """Claude Code reads any gateway 403 as a login failure (#2590).
+
+    It prefixes a 403 with ``Failed to authenticate`` / ``Please run /login``
+    and replaces a 404 with its own "issue with the selected model" text, but
+    prints a 400 ``API Error: 400 <message>`` verbatim. The Anthropic router
+    therefore answers an allowlist denial with 400 ``invalid_request_error``
+    and keeps the policy message.
+    """
+    with (
+        patch(COMPLETION) as upstream,
+        patch.object(
+            OpenAIGatewayService,
+            "_check_budget",
+            return_value=_result("subject_model_not_allowed"),
+        ),
+    ):
+        response = _anthropic(app, client, db_session, test_user, stream=stream)
+
+    assert response.status_code == 400, response.text
+    error = response.json()["error"]
+    assert error["type"] == "invalid_request_error"
+    assert "allowed models" in error["message"]
+    assert "login" not in error["message"].lower()
     assert "x-should-retry" not in response.headers
     upstream.assert_not_called()
 
