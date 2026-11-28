@@ -18,6 +18,7 @@ import {
   getFleetFindings,
 } from '../../../device-fleet-api';
 import {
+  NO_DEVICE,
   UNASSIGNED,
   agentLabel,
   buildRegister,
@@ -161,9 +162,13 @@ export class ComplianceView extends LitElement {
 
   private setFilter(key: keyof ComplianceFilters, event: Event): void {
     // Option values are URI-encoded: sl-select splits a value on spaces.
-    const value = decodeURIComponent(
-      String((event.target as HTMLSelectElement).value ?? '')
-    );
+    const raw = String((event.target as HTMLSelectElement).value ?? '');
+    let value = raw;
+    try {
+      value = decodeURIComponent(raw);
+    } catch {
+      // Values are always encoded here; an undecodable one is used as is.
+    }
     this.filters = { ...this.filters, [key]: value || undefined };
   }
 
@@ -252,7 +257,9 @@ export class ComplianceView extends LitElement {
     const people = [...new Set(all.map((r) => r.person))].sort((a, b) =>
       a === UNASSIGNED ? 1 : b === UNASSIGNED ? -1 : a.localeCompare(b)
     );
-    const devices = [...new Map(all.map((r) => [r.deviceKey, r.device]))];
+    const devices: [string, string][] = [
+      ...new Map(all.map((r) => [r.deviceKey || NO_DEVICE, r.device])),
+    ];
     const agents = [...new Set(all.flatMap((r) => r.agentKinds))].sort();
     const reasons = [...new Set(all.flatMap((r) => r.reasons))].sort();
     const select = (
@@ -271,7 +278,7 @@ export class ComplianceView extends LitElement {
       >
         ${options.map(
           ([value, text]) =>
-            html`<sl-option value=${value.replace(/ /g, ' ')}
+            html`<sl-option value=${encodeURIComponent(value)}
               >${text}</sl-option
             >`
         )}
@@ -313,9 +320,24 @@ export class ComplianceView extends LitElement {
         >
       </div>
       ${
+        register.truncated
+          ? html`<p class="meta" role="status" data-testid="truncated">
+              Showing the first ${register.devicesShown} of
+              ${register.devicesTotal} devices. Summary counts and rows cover
+              the devices shown.
+            </p>`
+          : nothing
+      }
+      ${
         rows.length === 0
           ? html`<div class="empty-state" data-testid="empty">
-              ${all.length === 0 ? EMPTY_REGISTER : 'No rows match these filters.'}
+              ${
+                all.length > 0
+                  ? 'No rows match these filters.'
+                  : register.truncated
+                    ? 'Nothing is out of policy on the devices shown.'
+                    : EMPTY_REGISTER
+              }
             </div>`
           : html`<div class="table-scroll">
               <table class="styled-table" data-testid="register">

@@ -96,7 +96,14 @@ export interface ComplianceSummary {
 export interface ComplianceRegister {
   summary: ComplianceSummary;
   rows: ComplianceRow[];
+  /** The fleet page held only the first devices; counts cover those shown. */
+  truncated: boolean;
+  devicesShown: number;
+  devicesTotal: number;
 }
+
+/** Filter value for rows whose findings name no device. */
+export const NO_DEVICE = '__no_device__';
 
 export const UNASSIGNED = 'Unassigned';
 
@@ -163,7 +170,8 @@ function agentsOf(
  * oldest condition first. Findings with no device fall under "Unassigned".
  */
 export function buildRegister(
-  fleet: Pick<DeviceFleetPage, 'items'>,
+  fleet: Pick<DeviceFleetPage, 'items'> &
+    Partial<Pick<DeviceFleetPage, 'total' | 'truncated'>>,
   findings: FleetFinding[]
 ): ComplianceRegister {
   const devices = new Map(fleet.items.map((d) => [d.device_key, d]));
@@ -242,6 +250,9 @@ export function buildRegister(
       findingsByReason: byReason,
     },
     rows,
+    truncated: fleet.truncated === true,
+    devicesShown: fleet.items.length,
+    devicesTotal: Math.max(fleet.total ?? 0, fleet.items.length),
   };
 }
 
@@ -259,7 +270,9 @@ export function filterRows(
   return rows.filter(
     (row) =>
       (!filters.person || row.person === filters.person) &&
-      (!filters.device || row.deviceKey === filters.device) &&
+      (!filters.device ||
+        row.deviceKey ===
+          (filters.device === NO_DEVICE ? '' : filters.device)) &&
       (!filters.agent || row.agentKinds.includes(filters.agent)) &&
       (!filters.reason || row.reasons.includes(filters.reason))
   );

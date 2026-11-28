@@ -7,6 +7,7 @@ import type {
 } from '../../../device-fleet-api';
 import { fleetExtensionFindings } from '../../../test-helpers/fleet-extension-findings';
 import {
+  NO_DEVICE,
   buildRegister,
   filterRows,
   registerCsv,
@@ -130,6 +131,25 @@ describe('compliance register', () => {
     );
     expect(filterRows(rows, { person: 'Jane Doe', agent: 'codex' })).to.be
       .empty;
+    const orphan = buildRegister({ items: DEVICES }, [
+      ...FINDINGS,
+      { ...FINDINGS[0], id: 'f-none', device_key: null },
+    ]).rows;
+    expect(
+      filterRows(orphan, { device: NO_DEVICE }).map((r) => r.device)
+    ).to.deep.equal(['No device']);
+  });
+
+  it('reports a truncated fleet page instead of presenting it as complete', () => {
+    // protects=truncation is carried to the page; fails_when=a partial fleet
+    // reads as the whole register; no_claim=none beyond protects.
+    const register = buildRegister(
+      { items: DEVICES, total: 40, truncated: true },
+      FINDINGS
+    );
+    expect(register.truncated).to.equal(true);
+    expect(register.devicesShown).to.equal(3);
+    expect(register.devicesTotal).to.equal(40);
   });
 
   it('writes a CSV with the as-of time, columns and neutralised formulas', () => {
@@ -180,7 +200,11 @@ describe('Compliance view', () => {
     ],
   };
 
-  function setup(team: boolean, findings: FleetFinding[] = FINDINGS) {
+  function setup(
+    team: boolean,
+    findings: FleetFinding[] = FINDINGS,
+    page: { truncated?: boolean; total?: number } = {}
+  ) {
     api = mockApi({
       capabilities: team ? ['fleet_coverage'] : [],
       profile: { permissions: ['view_agents', 'view_device_fleet'] },
@@ -194,8 +218,8 @@ describe('Compliance view', () => {
           path: '/api/v1/fleet/device-fleet',
           body: {
             items: DEVICES,
-            total: 3,
-            truncated: false,
+            total: page.total ?? 3,
+            truncated: page.truncated ?? false,
             summary: {},
             unassigned_agents: [],
           },
@@ -241,6 +265,40 @@ describe('Compliance view', () => {
     expect(root.querySelector('[data-testid="edition-note"]')).to.equal(null);
     expect(root.textContent?.toLowerCase()).not.to.contain('compliant');
     expect(root.querySelector('[data-testid="export-csv"]')).to.exist;
+  });
+
+  it('filters by a person whose name contains a space', async () => {
+    // protects=the person select end to end; fails_when=a name with a space
+    // never matches or the select drops the choice; no_claim=the change event
+    // is dispatched directly rather than through a pointer.
+    setup(true);
+    const el = await render();
+    const root = el.shadowRoot!;
+    const select = root.querySelector(
+      'sl-select[data-filter="person"]'
+    ) as HTMLElement & { value: string };
+    const option = [...select.querySelectorAll('sl-option')].find(
+      (o) => o.textContent?.trim() === 'Jane Doe'
+    ) as HTMLElement & { value: string };
+    select.value = option.value;
+    select.dispatchEvent(new Event('sl-change'));
+    await el.updateComplete;
+    const rows = root.querySelectorAll('[data-testid="register"] tbody tr');
+    expect(rows).to.have.length(1);
+    expect(rows[0].textContent).to.contain('Jane Doe');
+    expect(select.value).to.equal(option.value);
+  });
+
+  it('shows the truncation notice for a partial fleet page', async () => {
+    // protects=the partial-fleet notice; fails_when=truncation is silent;
+    // no_claim=none beyond protects.
+    setup(true, FINDINGS, { truncated: true, total: 40 });
+    const el = await render();
+    expect(
+      el
+        .shadowRoot!.querySelector('[data-testid="truncated"]')
+        ?.textContent?.replace(/\s+/g, ' ')
+    ).to.contain('Showing the first 3 of 40 devices');
   });
 
   it('shows the empty state without claiming compliance', async () => {
