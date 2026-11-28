@@ -711,4 +711,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert flow_proposal.down_revision == runner_flow_grant.revision
     definition = script.get_revision("20270104_execution_definition")
     assert definition.down_revision == flow_proposal.revision
-    assert script.get_heads() == [definition.revision]
+    precheck = script.get_revision("20270105_flow_precheck")
+    assert precheck.down_revision == definition.revision
+    assert script.get_heads() == [precheck.revision]

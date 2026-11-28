@@ -499,6 +499,7 @@
   "POST /api/v1/flows/{flow_id}/apply-preset-update": "deny",
   "POST /api/v1/flows/{flow_id}/conversations": "deny",
   "POST /api/v1/flows/{flow_id}/dismiss-preset-update": "deny",
+  "POST /api/v1/flows/{flow_id}/precheck/evaluate": "deny",
   "POST /api/v1/flows/{flow_id}/trigger": "flow:trigger",
   "POST /api/v1/flows/{flow_id}/webhook-secret/rotate": "deny",
   "POST /api/v1/internal/result-validation": "deny",

@@ -4377,7 +4377,7 @@ class PrecheckEvaluateResponse(BaseModel):
     summary="Evaluate a flow's pre-check without starting a run",
 )
 @require_permission("execute_flows")
-async def evaluate_flow_precheck(
+def evaluate_flow_precheck(
     *,
     db: Session = Depends(get_db),
     flow_id: uuid.UUID,
@@ -4398,10 +4398,13 @@ async def evaluate_flow_precheck(
             may not run it, 422 when the draft reads outside the flow's
             projects or the flow has no pre-check.
     """
+    # A sync handler, so the request session is used on the worker thread
+    # FastAPI runs it on; the async evaluation is driven from there on the
+    # application's event loop.
+    import anyio.from_thread
+
     ensure_permission_in_oss(db, current_user, "execute_flows")
-    flow = await run_db_off_loop(
-        lambda: crud_flow.get(db=db, id=flow_id, account_id=current_user.account_id)
-    )
+    flow = crud_flow.get(db=db, id=flow_id, account_id=current_user.account_id)
     if not flow:
         raise HTTPException(status_code=404, detail="Flow not found")
     from preloop.services.flow_precheck import (
@@ -4411,7 +4414,8 @@ async def evaluate_flow_precheck(
     from preloop.services.flow_trigger_service import FlowTriggerService
 
     try:
-        await FlowTriggerService(db)._authorize_flow_run(
+        anyio.from_thread.run(
+            FlowTriggerService(db)._authorize_flow_run,
             flow,
             AuthorizationContext(
                 account_id=current_user.account_id, db=db, user=current_user
@@ -4430,9 +4434,12 @@ async def evaluate_flow_precheck(
             trigger_project_ids=flow.trigger_project_ids,
             git_clone_config=flow.git_clone_config,
         )
-    outcome = await evaluate_precheck(
-        db, flow, {"payload": {}}, trigger_kind="dry_run", precheck=draft
-    )
+    async def _evaluate() -> Any:
+        return await evaluate_precheck(
+            db, flow, {"payload": {}}, trigger_kind="dry_run", precheck=draft
+        )
+
+    outcome = anyio.from_thread.run(_evaluate)
     if outcome is None:  # pragma: no cover - dry_run always evaluates
         raise HTTPException(status_code=422, detail="The flow has no pre-check")
     document = dict(outcome.document)
