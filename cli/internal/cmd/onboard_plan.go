@@ -154,6 +154,21 @@ func (p agentPlan) capabilityState(id string) capabilityState {
 	return capabilityStateUnavailable
 }
 
+// offerMCPOnly offers the run-wide switch when no selected agent would lose
+// a usable route and at least one was looking for a model credential.
+func (p onboardPlan) offerMCPOnly() bool {
+	missing := false
+	for _, agent := range p.Agents {
+		if agent.ModelAlias != "" {
+			return false
+		}
+		if agent.state != nil && agent.state.managedGatewayEnabled {
+			missing = true
+		}
+	}
+	return missing
+}
+
 // skippedAgent is a discovered agent the run leaves alone, and why.
 type skippedAgent struct {
 	Name   string
@@ -397,6 +412,12 @@ func planManagedEnrollment(
 			)
 		}
 		if upstream != nil && (upstream.CanRouteThroughGateway() || planServerReuse) {
+			// The gateway can register a new stock Claude model on demand only
+			// for subscription OAuth. Persist catalog-backed pins for other routes.
+			if isClaudeCodeAgent(agent) && !opts.PinModelFamiliesSet &&
+				!strings.EqualFold(upstream.CredentialType, anthropicClaudeCodeOAuthCredentialType) {
+				pinModelFamilies = true
+			}
 			plan.ClaudeFableBuiltinDefault = claudeOnboardFableFollowsBuiltinDefault(
 				agent, upstream, pinModelFamilies,
 			)

@@ -194,6 +194,7 @@ Apply to 1 agent? [Y/n/c/e]:
 | Answer | Effect |
 | --- | --- |
 | Enter or `y` | Apply the plan as shown. Nothing else is asked. |
+| `m` | Choose MCP only and review the updated plan. Offered when onboarding looks for a model credential and none of the selected agents has a usable route. |
 | `n` | Cancel. Prints "Nothing was changed." and exits 0. |
 | `e` | Print everything the review leaves out (the credential custody and plan text of each agent, what the extension report sends), then ask again. |
 | `c` | Change something, one line each with the current value as the default: which agents, model routing, Agent Control, approval hooks, the extension report, the runner, and on request the name and model of each agent. The plan is then shown again. |
