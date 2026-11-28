@@ -369,6 +369,7 @@
   "POST /api/v1/agents/enrollment/applied": "deny",
   "POST /api/v1/agents/enrollment/authorities": "deny",
   "POST /api/v1/agents/enrollment/exchange": "deny",
+  "POST /api/v1/agents/extension-approvals/bulk": "deny",
   "POST /api/v1/agents/extension-approvals/{agent_kind}/{extension_kind}/{extension_id}/pins": "deny",
   "POST /api/v1/agents/extension-content": "deny",
   "POST /api/v1/agents/extension-content/missing": "deny",
