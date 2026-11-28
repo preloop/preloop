@@ -536,7 +536,8 @@ PY
 
 # A subscription login and a settings file that names no model, Claude Code's
 # stock setup: the picker offers the subscription first, ahead of the account's
-# API-key model. Checked on a writable home and on a read-only settings file.
+# API-key model. The model is Claude Code's default, or its most recent model
+# when an earlier variant already ran it in this container. Checked on a writable home and on a read-only settings file.
 variant_subscription_picker() {
   begin subscription-picker "no model in settings, a subscription login and an account API-key model"
   add_api_key_model | tee -a "$TRANSCRIPT"
@@ -549,7 +550,7 @@ variant_subscription_picker() {
   compose exec -T agent-writable bash -c 'umask 077; cat > ~/.claude/.credentials.json' <<<"$login"
   run agent-writable 'grep -c "\"model\"" ~/.claude/settings.json || true'
   run_tty agent-writable 'n\n' "preloop agents onboard 'Claude Code'"
-  expect "model: anthropic/claude-fable-5 (subscription login)"
+  expect "(subscription login)"
   refute "model: anthropic/claude-haiku-4-5"
   expect "Nothing was changed."
 
@@ -567,9 +568,9 @@ PY
   compose exec -T agent-ro-settings bash -c 'umask 077; cat > ~/.claude/.credentials.json' <<<"$login"
   run agent-ro-settings 'grep " /home/agent/.claude/settings.json " /proc/self/mountinfo | cut -d" " -f4-6; grep -c "\"model\"" ~/.claude/settings.json || true'
   local before
-  before=$(grep -c "model: anthropic/claude-fable-5 (subscription login)" "$TRANSCRIPT" || true)
+  before=$(grep -c "(subscription login)" "$TRANSCRIPT" || true)
   run_tty agent-ro-settings 'n\n' "preloop agents onboard 'Claude Code'"
-  if [ "$(grep -c "model: anthropic/claude-fable-5 (subscription login)" "$TRANSCRIPT" || true)" -le "$before" ]; then
+  if [ "$(grep -c "(subscription login)" "$TRANSCRIPT" || true)" -le "$before" ]; then
     echo "RIG FAILURE ($CURRENT): the read-only variant did not offer the subscription first" >&2
     FAILURES=$((FAILURES + 1))
   fi
