@@ -128,8 +128,10 @@ async def ci_health_report(ctx: Optional[Context] = None, **arguments: Any) -> d
         error = exc.errors()[0]
         where = ".".join(str(p) for p in error.get("loc", ()))
         raise ToolError(f"ci_health_request_invalid: {where}: {error['msg']}") from None
+    # The full request: an approved call is replayed from these stored
+    # arguments, ledger updates included.
     await flow_state_tools._approved(
-        NAME, context, request.model_dump(exclude={"ledger_updates"}), ctx
+        NAME, context, request.model_dump(mode="json"), ctx
     )
     now = datetime.now(UTC)
 
