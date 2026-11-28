@@ -436,3 +436,32 @@ func TestRunnerDiscoveryRecognizesEnrollmentWithoutMCP(t *testing.T) {
 		}
 	}
 }
+
+func TestRunnerDiscoveryRejectionStatusAndRecovery(t *testing.T) {
+	setupDiscoveryHome(t)
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	schedule := newRunnerDiscoverySchedule(now, runnerDiscoveryState{}, func() float64 { return 0 })
+	schedule.completed(now, 24*time.Hour, &api.APIError{StatusCode: 422, Body: `{"detail":[{"msg":"Value error, Profile completeness and error must agree","input":"private-input"}]}`})
+	if err := saveRunnerDiscoveryState(schedule.runnerDiscoveryState); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	printRunnerDiscoveryStatus(&output)
+	for _, text := range []string{"failed", "Profile completeness and error must agree", "discovery_next_attempt: 2026-01-01T00:01:00Z"} {
+		if !strings.Contains(output.String(), text) {
+			t.Errorf("missing %q from %s", text, &output)
+		}
+	}
+	if strings.Contains(output.String(), "private-input") {
+		t.Fatal("validation input persisted")
+	}
+	schedule.completed(now.Add(time.Minute), 24*time.Hour, nil)
+	if err := saveRunnerDiscoveryState(schedule.runnerDiscoveryState); err != nil {
+		t.Fatal(err)
+	}
+	output.Reset()
+	printRunnerDiscoveryStatus(&output)
+	if strings.Contains(output.String(), "must agree") {
+		t.Fatal("failure survived recovery")
+	}
+}

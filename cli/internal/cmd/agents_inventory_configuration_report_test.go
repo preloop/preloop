@@ -3,6 +3,11 @@ package cmd
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+
+	"github.com/preloop/preloop/cli/internal/api"
 	"os"
 	"strings"
 	"testing"
@@ -119,5 +124,44 @@ func TestManagedFailurePreservesBaseScanAndErrors(t *testing.T) {
 	appendManagedConfigurationEvidence(&report, "salt", "linux", func(string) ([]byte, error) { t.Fatal("truncated scan read a file"); return nil, nil })
 	if report.Evidence.Completeness != "failed" || len(report.Evidence.Errors) != 2 || report.Evidence.Errors[0] != "timeout" {
 		t.Fatal("truncation lost base failure")
+	}
+}
+
+func TestPreviousServerReportingManagedConfiguration(t *testing.T) {
+	for _, platform := range []string{"linux", "darwin", "windows"} {
+		t.Run(platform, func(t *testing.T) {
+			report := buildAllUsersReport("salt", "device", "00000000-0000-4000-8000-000000000001",
+				inventoryEnvelope{ObservedAt: time.Now(), Completeness: "complete", Apps: []inventoryApp{{
+					AppID: "claude-code", ProfileRef: "user", Presence: "present", Completeness: "complete",
+				}}}, time.Now())
+			appendManagedConfigurationEvidence(&report, "salt", platform, func(string) ([]byte, error) { return nil, os.ErrNotExist })
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				var posted discoveryReportRequest
+				if err := json.NewDecoder(r.Body).Decode(&posted); err != nil {
+					t.Error(err)
+					return
+				}
+				if len(posted.Evidence.Applications) == 2 {
+					w.WriteHeader(422)
+					fmt.Fprint(w, `{"detail":"Evidence application must match a reported candidate"}`)
+					return
+				}
+				if len(posted.Candidates) != 1 || len(posted.Evidence.Applications) != 1 ||
+					posted.Evidence.Applications[0].ConfigPathHash != posted.Candidates[0].ConfigPathHash ||
+					posted.Evidence.ScopeCompleteness["managed_config"] != "partial" {
+					t.Error("lost user evidence or claimed complete machine coverage")
+				}
+				fmt.Fprint(w, `{"received":1}`)
+			}))
+			defer server.Close()
+			var result discoveryReportResponse
+			err := postInventoryReport(api.NewClientWithToken(server.URL, "example"), report, &result)
+			if err != nil || calls != 2 || result.Received != 1 ||
+				len(report.Evidence.Applications) != 2 || report.Evidence.ScopeCompleteness["managed_config"] != "complete" {
+				t.Fatalf("rollback report: calls=%d result=%+v err=%v", calls, result, err)
+			}
+		})
 	}
 }

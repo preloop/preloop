@@ -44,7 +44,8 @@ func TestAllUsersInventoryPlatformFixtures(t *testing.T) {
 			t.Setenv("OPENCLAW_CONFIG_PATH", filepath.Join(base, "secret-override"))
 			t.Setenv("PI_CODING_AGENT_DIR", filepath.Join(base, "secret-override"))
 			pd := inventoryProfileDependencies{Profiles: func() ([]inventoryProfile, bool, error) {
-				return []inventoryProfile{{Home: homes[0]}, {Home: homes[1]}, {Home: homes[2]}}, false, nil
+				return []inventoryProfile{{Home: homes[0]}, {Home: homes[1]}, {Home: homes[2]},
+					{Home: filepath.Join(base, "missing")}}, false, nil
 			}, OpenRoot: func(home string) (*os.Root, error) {
 				if home == homes[2] {
 					return nil, os.ErrPermission
@@ -52,7 +53,7 @@ func TestAllUsersInventoryPlatformFixtures(t *testing.T) {
 				return os.OpenRoot(home)
 			}}
 			result := collectAllUsersInventory(deps, pd, "salt-a", "workstation-a")
-			if result.Schema != "preloop.inventory.v4" || result.Completeness != "partial" || len(result.Profiles) != 3 {
+			if result.Schema != "preloop.inventory.v4" || result.Completeness != "partial" || len(result.Profiles) != 4 {
 				t.Fatalf("bad result %+v", result)
 			}
 			if result.Profiles[2].ErrorCode != "profile_unreadable" {
@@ -79,6 +80,17 @@ func TestAllUsersInventoryPlatformFixtures(t *testing.T) {
 				t.Fatalf("profile path mismatch: %+v", result.Apps)
 			}
 			report := buildAllUsersReport("salt-a", "machine-secret", "00000000-0000-4000-8000-000000000001", result, time.Now().UTC())
+			// Validate the wire entries produced by the same elevated collector
+			// used by manual reports and resident runners.
+			for i, want := range []struct{ state, reason string }{
+				{"partial", "probe_incomplete"}, {"partial", "probe_incomplete"},
+				{"failed", "profile_unreadable"}, {"failed", "profile_unavailable"},
+			} {
+				profile := report.Evidence.Profiles[i]
+				if profile.Completeness != want.state || profile.ErrorCode != want.reason {
+					t.Errorf("profile %d: got %+v, want %+v", i, profile, want)
+				}
+			}
 			raw, _ := json.Marshal([]any{result, report})
 			for _, needle := range append(homes, secret, "private-name", "machine-secret", "secret-override") {
 				if bytes.Contains(raw, []byte(needle)) {
@@ -401,5 +413,14 @@ func TestInventoryDirectoryProfilesKeepEntriesReadBeforeError(t *testing.T) {
 	profiles, _, err = inventoryDirectoryProfiles("/Users", entries[:1], readErr, false)
 	if err != readErr || len(profiles) != 1 || profiles[0].Home != filepath.Join("/Users", "alice") {
 		t.Fatalf("profiles=%#v err=%v", profiles, err)
+	}
+}
+
+func TestProbedProfileResultAgreesWithItsCompleteness(t *testing.T) {
+	for completeness, wantCode := range map[string]string{"complete": "", "partial": "probe_incomplete", "failed": "probe_incomplete"} {
+		got := probedProfileResult("synthetic-ref", completeness)
+		if got.ErrorCode != wantCode || got.Completeness != completeness || got.ProfileRef != "synthetic-ref" {
+			t.Errorf("%s: %+v", completeness, got)
+		}
 	}
 }

@@ -265,6 +265,28 @@ func TestDiscoverReportWithoutLoginFails(t *testing.T) {
 	}
 }
 
+func TestDiscoverReportRejectionReturnsServerReason(t *testing.T) {
+	setupDiscoveryHome(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case discoveryReportPath:
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			io.WriteString(w, `{"detail":"Profile completeness and error must agree"}`)
+		case discoverySaltPath:
+			json.NewEncoder(w).Encode(discoverySaltResponse{Salt: testDiscoverySalt})
+		default:
+			io.WriteString(w, `[]`)
+		}
+	}))
+	defer server.Close()
+	useDiscoveryServer(t, server.URL)
+	command := newDiscoverTestCmd(t, "--report", "--no-onboard-prompt")
+	err := runAgentsDiscover(command, nil)
+	if err == nil || !strings.Contains(err.Error(), "422") || !strings.Contains(err.Error(), "Profile completeness and error must agree") {
+		t.Fatalf("expected command error with server reason, got %v", err)
+	}
+}
+
 func TestDiscoveryReportDisclosesAcceptedEvidence(t *testing.T) {
 	for _, legacy := range []bool{false, true} {
 		t.Run(map[bool]string{false: "v4", true: "v2"}[legacy], func(t *testing.T) {

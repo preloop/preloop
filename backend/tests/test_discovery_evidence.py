@@ -542,3 +542,99 @@ def test_scope_completeness_is_bounded_and_consistent(scopes: dict[str, str]) ->
         DiscoveryEvidence.model_validate(
             envelope(scan_scope=["user_config"], scope_completeness=scopes)
         )
+
+
+@pytest.mark.parametrize("schema_version", [2, 3, 4])
+def test_partial_profile_with_unknown_reason_is_recorded(
+    observation_db: Session, schema_version: int
+) -> None:
+    """Keep an older collector's partial result when it supplied no reason."""
+    payload = envelope(
+        schema_version=schema_version,
+        completeness="partial",
+        profiles=[{"profile_ref": "a" * 64, "completeness": "partial"}],
+    )
+    row = record(observation_db, uuid4(), uuid4(), payload)
+    assert row.evidence["profiles"] == [
+        {"profile_ref": "a" * 64, "completeness": "partial", "error_code": None}
+    ]
+
+
+@pytest.mark.parametrize(
+    ("completeness", "error", "valid"),
+    [
+        ("complete", None, True),
+        ("complete", "probe_incomplete", False),
+        ("partial", "probe_incomplete", True),
+        ("partial", None, True),
+        ("failed", "profile_unreadable", True),
+        ("failed", "profile_unavailable", True),
+        ("failed", "probe_incomplete", True),
+        ("failed", None, False),
+    ],
+)
+def test_collector_profile_states(
+    completeness: str, error: str | None, valid: bool
+) -> None:
+    """Retain profile access failures and reject contradictory outcomes."""
+    data = envelope(
+        schema_version=4,
+        completeness="partial",
+        profiles=[
+            {"profile_ref": "a" * 64, "completeness": completeness, "error_code": error}
+        ],
+    )
+    if valid:
+        assert DiscoveryEvidence.model_validate(data).profiles[0].error_code == error
+    else:
+        with pytest.raises(ValidationError, match="Profile completeness and error"):
+            DiscoveryEvidence.model_validate(data)
+
+
+@pytest.mark.parametrize("schema_version", [3, 4])
+def test_machine_evidence_is_recorded_once_with_legacy_service(
+    schema_version: int,
+) -> None:
+    """A machine setting is evidence even when there is no installed candidate."""
+    from preloop.api.endpoints import agent_discovery
+
+    user = SimpleNamespace(id=uuid4())
+    account = SimpleNamespace(id=uuid4())
+    payload = DiscoveryReportRequest(
+        workstation_fingerprint="a" * 64,
+        evidence=DiscoveryEvidence.model_validate(
+            envelope(
+                schema_version=schema_version,
+                scan_scope=["managed_config"],
+                applications=[
+                    dict(
+                        agent_kind="claude_code",
+                        config_path_hash="b" * 64,
+                        config_scope="managed_config",
+                    )
+                ],
+            )
+        ),
+    )
+    with (
+        patch.object(agent_discovery, "get_plugin_manager") as manager,
+        patch.object(agent_discovery, "crud_discovery_observation") as observations,
+        patch.object(agent_discovery, "crud_discovered_extension"),
+        patch.object(agent_discovery, "crud_discovered_agent_candidate") as candidates,
+        patch.object(agent_discovery, "evaluate_fleet_findings"),
+    ):
+        legacy_service = MagicMock()
+        legacy_service.record.side_effect = HTTPException(
+            422, "Evidence application must match a reported candidate"
+        )
+        manager.return_value.get_service.side_effect = lambda name: (
+            legacy_service if name == "discovery_evidence" else None
+        )
+        candidates.record_report.return_value = []
+        result = agent_discovery.record_discovery_report(
+            MagicMock(), payload, account, user
+        )
+        assert result.received == 0
+        evidence = observations.record.call_args.kwargs["evidence"]
+        assert evidence["applications"][0]["config_scope"] == "managed_config"
+        legacy_service.record.assert_not_called()

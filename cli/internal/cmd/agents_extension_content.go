@@ -796,6 +796,9 @@ func sendInventoryReportWithContent(client inventoryReportClient, w io.Writer, r
 	if err := postInventoryReport(client, report, &response); err != nil {
 		return response, contentOutcome{}, err
 	}
+	if response.ManagedConfigOmitted {
+		fmt.Fprintln(w, "Server accepted profile inventory. Machine-wide configuration was omitted because the server requires an installed candidate.")
+	}
 	if response.LegacyEvidence {
 		return response, contentOutcome{}, nil
 	}

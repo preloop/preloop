@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 
 	"github.com/preloop/preloop/cli/internal/api"
 )
@@ -89,6 +91,27 @@ func postInventoryReport(client inventoryReportClient, report discoveryReportReq
 	if !errors.As(err, &apiErr) || apiErr.StatusCode != 422 {
 		return inventoryReportError(err)
 	}
+	// Older evidence services required a candidate for machine settings. A
+	// setting alone cannot establish installation. Keep the user inventory
+	// and explicitly mark the omitted machine scope partial on the retry.
+	var rejection struct {
+		Detail string `json:"detail"`
+	}
+	if json.Unmarshal([]byte(apiErr.Body), &rejection) == nil && rejection.Detail == candidateMismatchReason {
+		evidence := *report.Evidence
+		evidence.Applications = slices.DeleteFunc(slices.Clone(evidence.Applications), func(app inventoryReportApplication) bool {
+			return app.ConfigScope == "managed_config"
+		})
+		if len(evidence.Applications) < len(report.Evidence.Applications) {
+			evidence.ScopeCompleteness = maps.Clone(evidence.ScopeCompleteness)
+			evidence.Errors = slices.Clone(evidence.Errors)
+			markManagedInventoryIncomplete(&evidence, "unavailable")
+			report.Evidence = &evidence
+			err := client.Post(discoveryReportPath, report, response)
+			response.ManagedConfigOmitted = err == nil
+			return inventoryReportError(err)
+		}
+	}
 	var validation struct {
 		Detail []struct {
 			Loc  []any  `json:"loc"`
@@ -147,6 +170,8 @@ func inventoryReportError(err error) error {
 	}
 	return err
 }
+
+const candidateMismatchReason = "Evidence application must match a reported candidate"
 
 const legacyInventoryNotice = "Server accepted legacy inventory only; extension identifiers, hashes and managed configuration were not reported."
 

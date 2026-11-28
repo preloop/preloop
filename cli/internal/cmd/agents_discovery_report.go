@@ -69,11 +69,12 @@ type discoveryReportRequest struct {
 }
 
 type discoveryReportResponse struct {
-	Received       int  `json:"received"`
-	Created        int  `json:"created"`
-	Updated        int  `json:"updated"`
-	LegacyEvidence bool `json:"-"`
-	DetailsOmitted bool `json:"-"`
+	Received             int  `json:"received"`
+	Created              int  `json:"created"`
+	Updated              int  `json:"updated"`
+	ManagedConfigOmitted bool `json:"-"`
+	LegacyEvidence       bool `json:"-"`
+	DetailsOmitted       bool `json:"-"`
 }
 
 // discoveryReportingRequested reports whether the user opted in, by flag or

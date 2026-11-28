@@ -1216,6 +1216,23 @@ export class RunnersView extends LitElement {
                                   ${this.statusLabel(runnerPresence(row))}
                                 </sl-badge>
                                 ${
+                                  row.capabilities?.discovery_failure
+                                    ? html`
+                                        <div>
+                                          Discovery failed:
+                                          ${row.capabilities.discovery_failure.reason}${row.capabilities.discovery_failure.http_status ? ` (HTTP ${row.capabilities.discovery_failure.http_status})` : ''}
+                                        </div>
+                                        <div>
+                                          Next attempt
+                                          <time
+                                            datetime=${row.capabilities.discovery_failure.next_attempt}
+                                            >${formatLocalDateTime(row.capabilities.discovery_failure.next_attempt)}</time
+                                          >
+                                        </div>
+                                      `
+                                    : nothing
+                                }
+                                ${
                                   /*
                                    * An ephemeral runner is only worth pointing
                                    * out while it is here: the row vanishes with
