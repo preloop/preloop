@@ -113,6 +113,16 @@ def normalize_pr_url(url: Optional[str]) -> str:
             parts[3] = "pull"
             path = "/".join(parts)
     scheme = parsed.scheme or "https"
+    try:
+        port = parsed.port
+    except ValueError:
+        return ""
+    # Keep a non-default port: a self-hosted forge on :8929 serves its MRs
+    # there, and the stored link must open them (#2600).
+    if ":" in host:
+        host = f"[{host}]"
+    if port is not None and port != {"http": 80, "https": 443}.get(scheme):
+        host = f"{host}:{port}"
     return f"{scheme}://{host}{path}"
 
 
@@ -939,8 +949,10 @@ def is_bound_implementation_comment(
         return False
     payload = event.get("payload") or {}
     original = source.get("payload") or {}
-    repository = payload.get("repository") or payload.get("project") or {}
-    original_repository = original.get("repository") or original.get("project") or {}
+    from preloop.services.flow_feedback import payload_repository
+
+    repository = payload_repository(provider, payload)
+    original_repository = payload_repository(provider, original)
     if provider == "bitbucket":
         from preloop.utils.bitbucket import repository_identity
 

@@ -61,6 +61,19 @@ class TestNormalizePrUrl:
         )
         assert normalize_pr_url("https://api.github.com/repos/a/b/pulls/1") == ""
 
+    def test_non_default_port_is_preserved(self):
+        # #2600: a self-hosted GitLab on a non-default port.
+        url = "http://127.0.0.1:52305/workshop/shop-api/-/merge_requests/1"
+        assert normalize_pr_url(url) == url
+        assert (
+            normalize_pr_url("https://git.example.com:443/g/p/-/merge_requests/2")
+            == "https://git.example.com/g/p/-/merge_requests/2"
+        )
+        assert (
+            normalize_pr_url("http://[::1]:8929/g/p/-/merge_requests/3")
+            == "http://[::1]:8929/g/p/-/merge_requests/3"
+        )
+
 
 class TestExtractPrUrlFromCommentEvent:
     def test_github_pr_comment(self):
