@@ -410,9 +410,21 @@ async def refresh_pull_requests(
         if pr.get("state") == "merged":
             # A merged change closes the signatures it said it fixes; one
             # that fails again later becomes "regressed".
+            merged_at = str(pr.get("merged_at") or "")
             for signature_id in pr.get("signatures") or []:
                 entry = ledger["signatures"].get(signature_id)
-                if entry is not None and entry.get("status") in ("open", "regressed"):
+                # A failure seen after the merge means the fix did not hold:
+                # the entry keeps its open or regressed status.
+                failed_after = (
+                    _after(str(entry.get("last_seen") or ""), merged_at)
+                    if entry
+                    else False
+                )
+                if (
+                    entry is not None
+                    and entry.get("status") in ("open", "regressed", "quiet")
+                    and not failed_after
+                ):
                     entry["status"] = "fixed"
                     entry["status_at"] = pr.get("merged_at")
                     entry["linked"] = (entry.get("linked") or [])[-4:] + [pr["url"]]
@@ -429,3 +441,9 @@ def _same_host(target: Target, host: str) -> bool:
     if target.provider.name == "github":
         return api_host in (host, f"api.{host}")
     return api_host == host
+
+
+def _after(seen: str, merged_at: str) -> bool:
+    """Whether a failure timestamp is later than the merge (unknown: no)."""
+    a, b = parse_time(seen), parse_time(merged_at)
+    return bool(a and b and a > b)

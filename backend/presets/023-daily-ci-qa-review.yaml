@@ -128,8 +128,8 @@ prompt_template: |
 
   ## 2. Stop early when nothing changed
 
-  If changed_since_last_run is false, no ledger signature is "regressed",
-  and focus is empty: write a three-line report (window, "no new CI
+  If changed_since_last_run is false, partial is false, unavailable is
+  empty, no ledger signature is "regressed", and focus is empty: write a three-line report (window, "no new CI
   results", the current headline numbers), result.json with status
   success, change null and "early_stop": true, and stop. Do not read the
   repository or run tests.

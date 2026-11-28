@@ -13,6 +13,16 @@ from typing import Any, Iterable, Mapping, Optional
 from . import ledger as ledger_mod
 
 TREND_POINTS = 60
+#: Terminal statuses that count as a run that did not deliver.
+FAILED_STATUSES = (
+    "FAILED",
+    "TIMEOUT",
+    "TIMED_OUT",
+    "ABORTED",
+    "STOPPED",
+    "CANCELLED",
+    "CANCELED",
+)
 TOP_FLAKES = 10
 SERIES_FIELDS = (
     "success_rate",
@@ -42,6 +52,11 @@ def _aware(value: Optional[datetime], like: datetime) -> Optional[datetime]:
     if value.tzinfo is None and like.tzinfo is not None:
         return value.replace(tzinfo=like.tzinfo)
     return value
+
+
+def _before(value: Any, end: datetime) -> bool:
+    moment = _aware(_time(value), end)
+    return moment is not None and moment < end
 
 
 def _in(value: Any, start: datetime, end: datetime) -> bool:
@@ -138,9 +153,10 @@ def weekly_value(
 
     Returns:
         Runs by status, tokens, estimated cost, pull requests opened and
-        merged, failures fixed and regressed, the runner minutes per week
-        that merged changes claim to save (an estimate, as reported by the
-        change), and cost per merged pull request.
+        merged, failures fixed and regressed, the recurring runner minutes
+        per week that changes merged before ``end`` claim to save (an
+        estimate, as reported by each change), and cost per merged pull
+        request. Stopped and cancelled runs count as failed.
     """
     runs = {"total": 0, "succeeded": 0, "failed": 0, "skipped": 0}
     tokens = 0
@@ -155,7 +171,7 @@ def weekly_value(
         runs["total"] += 1
         if status == "SUCCEEDED":
             runs["succeeded"] += 1
-        elif status in ("FAILED", "TIMEOUT", "TIMED_OUT", "ABORTED"):
+        elif status in FAILED_STATUSES:
             runs["failed"] += 1
         tokens += int(row.get("total_tokens") or 0)
         cost += float(row.get("estimated_cost") or 0.0)
@@ -163,10 +179,13 @@ def weekly_value(
     prs = ledger.get("pull_requests") or []
     opened = [pr for pr in prs if _in(pr.get("opened_at"), start, end)]
     merged = [pr for pr in prs if _in(pr.get("merged_at"), start, end)]
+    # The recurring saving in force at the end of the window: changes merged
+    # before ``end``, so the prior window does not count a later merge.
     saved = [
         float(pr["estimated_minutes_saved_per_week"])
         for pr in prs
         if pr.get("state") == "merged"
+        and _before(pr.get("merged_at"), end)
         and isinstance(pr.get("estimated_minutes_saved_per_week"), (int, float))
     ]
     signatures = (ledger.get("signatures") or {}).values()

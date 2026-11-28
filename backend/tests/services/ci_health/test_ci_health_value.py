@@ -77,21 +77,23 @@ def _outcomes() -> list[dict[str, Any]]:
         row(2, "SUCCEEDED", 300_000, 2.5),
         row(3, "FAILED", 50_000, 0.5),
         row(4, "SKIPPED", 0, 0.0),
+        row(5, "STOPPED", 10_000, 0.25),
         row(9, "SUCCEEDED", 900_000, 9.0),
     ]
 
 
 def test_weekly_value_counts_only_the_window() -> None:
     week = weekly_value(_ledger(), _outcomes(), start=NOW - timedelta(days=7), end=NOW)
-    assert week["runs"] == {"total": 3, "succeeded": 2, "failed": 1, "skipped": 1}
-    assert week["tokens"] == 450_000
-    assert week["cost_usd_est"] == 4.5
+    # A stopped run counts as failed, not as an unclassified run.
+    assert week["runs"] == {"total": 4, "succeeded": 2, "failed": 2, "skipped": 1}
+    assert week["tokens"] == 460_000
+    assert week["cost_usd_est"] == 4.75
     assert (week["pull_requests_opened"], week["pull_requests_merged"]) == (2, 1)
     assert week["failures_fixed"] == 1
     # Only merged changes count towards claimed savings.
     assert week["runner_minutes_saved_per_week_est"] == 90
-    assert week["cost_per_merged_pull_request_usd_est"] == 4.5
-    assert week["tokens_per_merged_pull_request"] == 450_000
+    assert week["cost_per_merged_pull_request_usd_est"] == 4.75
+    assert week["tokens_per_merged_pull_request"] == 460_000
 
 
 def test_health_view_trend_flakes_and_prior_week() -> None:
@@ -107,6 +109,10 @@ def test_health_view_trend_flakes_and_prior_week() -> None:
     ]
     assert view["prior_week"]["runs"]["total"] == 1
     assert view["prior_week"]["cost_per_merged_pull_request_usd_est"] is None
+    # The saving is the one in force at the end of each window: the change
+    # merged this week does not count in the prior week.
+    assert view["week"]["runner_minutes_saved_per_week_est"] == 90
+    assert view["prior_week"]["runner_minutes_saved_per_week_est"] is None
     assert view["pull_requests"][0]["url"].endswith("/pull/8")
     empty = health_view(None, [], now=NOW)
     assert empty["repositories"] == {} and empty["week"]["runs"]["total"] == 0

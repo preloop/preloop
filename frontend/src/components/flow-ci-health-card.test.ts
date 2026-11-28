@@ -98,6 +98,7 @@ describe('flow-ci-health-card', () => {
     expect(isCiHealthView(view)).to.equal(true);
     expect(isCiHealthView({ id: 'flow' })).to.equal(false);
     expect(isCiHealthView(null)).to.equal(false);
+    expect(isCiHealthView({ ...view, days: undefined })).to.equal(false);
   });
 
   it('renders health, the failures worth a look and the value strip', async () => {
@@ -152,5 +153,36 @@ describe('flow-ci-health-card', () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(card.hidden).to.equal(true);
     expect(card.shadowRoot.querySelector('sl-card')).to.equal(null);
+  });
+
+  it('drops a stale answer for the previous flow', async () => {
+    let release: (value: Response) => void = () => {};
+    sinon.stub(window, 'fetch').callsFake(async (url) => {
+      if (String(url).includes('/flows/slow/')) {
+        return new Promise<Response>((resolve) => (release = resolve));
+      }
+      return new Response(
+        JSON.stringify({
+          ...view,
+          repositories: {
+            'github:example-org/b': view.repositories['github:example-org/app'],
+          },
+        })
+      );
+    });
+    const card = await fixture<any>(
+      html`<flow-ci-health-card .flowId=${'slow'}></flow-ci-health-card>`
+    );
+    card.flowId = 'fast';
+    await waitUntil(() =>
+      card.shadowRoot.querySelector('[data-testid="ci-health-card"]')
+    );
+    release(new Response(JSON.stringify(view)));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const text = card.shadowRoot.querySelector(
+      '[data-testid="ci-health-repositories"]'
+    )!.textContent;
+    expect(text).to.contain('example-org/b');
+    expect(text).not.to.contain('example-org/app');
   });
 });

@@ -407,3 +407,30 @@ async def test_signature_text_is_scrubbed_but_ids_stay_stable(
     dumped = str(ledger["signatures"]) + str(report["ledger"]["top"])
     assert secret not in dumped
     assert any(e["test"] == "TestConnect" for e in ledger["signatures"].values())
+
+
+@pytest.mark.asyncio
+async def test_a_failure_after_the_merge_keeps_the_signature_open(
+    fake_ci: FakeCi,
+) -> None:
+    """The fix did not hold: a failure newer than merged_at is not closed."""
+    from preloop.services.ci_health.collector import refresh_pull_requests
+
+    github, _ = make_providers(fake_ci, Budget(max_requests=50))
+    ledger = ledger_mod.empty(NOW)
+    ledger["signatures"] = {
+        "held": {"status": "regressed", "last_seen": "2026-01-01T10:00:00+00:00"},
+        "broke": {"status": "regressed", "last_seen": "2026-01-01T12:00:00+00:00"},
+        "silent": {"status": "quiet", "last_seen": "2025-12-20T10:00:00+00:00"},
+    }
+    ledger["pull_requests"] = [
+        {
+            "url": "https://github.com/example-org/app/pull/7",
+            "state": "open",
+            "signatures": ["held", "broke", "silent"],
+        }
+    ]
+    fake_ci.pulls["7"] = {"state": "closed", "merged_at": "2026-01-01T11:00:00Z"}
+    await refresh_pull_requests(ledger, [Target(github, "example-org/app")])
+    statuses = {k: v["status"] for k, v in ledger["signatures"].items()}
+    assert statuses == {"held": "fixed", "broke": "regressed", "silent": "fixed"}

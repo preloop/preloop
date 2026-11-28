@@ -92,6 +92,7 @@ export function isCiHealthView(value: unknown): value is FlowCiHealth {
   return (
     !!view &&
     typeof view === 'object' &&
+    typeof view.days === 'number' &&
     !!view.repositories &&
     typeof view.repositories === 'object' &&
     Array.isArray(view.top_flakes) &&
@@ -214,12 +215,21 @@ export class FlowCiHealthCard extends LitElement {
     this.hidden = this.view === null;
   }
 
+  private requestKey = '';
+
   private async load(): Promise<void> {
+    // Another flow's card must never show, even for a moment, and a slow
+    // answer for a previous flow must not replace the current one.
+    const key = `${this.flowId}:${this.days}`;
+    this.requestKey = key;
+    this.view = null;
     try {
       const view = await getFlowCiHealth(this.flowId, this.days);
+      if (this.requestKey !== key) return;
       this.view = isCiHealthView(view) ? view : null;
       this.failed = false;
     } catch {
+      if (this.requestKey !== key) return;
       // A card that cannot load says nothing rather than a false zero; the
       // flow page above it is still the authority on the runs.
       this.view = null;

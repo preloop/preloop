@@ -203,7 +203,7 @@ def test_result_feeds_the_value_summary(prompt: str) -> None:
         "pre-commit run --files",
         "PRELOOP_DISABLE_TELEMETRY=true",
         "Playwright",
-        "If changed_since_last_run is false",
+        "If changed_since_last_run is false, partial is false, unavailable is empty",
         "If mode.report_only is true: change nothing",
         "max_open_pull_requests open pull requests",
         "If no candidate clears the value bar: change nothing",

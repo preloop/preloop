@@ -226,6 +226,7 @@
   "GET /api/v1/flows/presets": "deny",
   "GET /api/v1/flows/summary": "deny",
   "GET /api/v1/flows/{flow_id}": "flow:trigger",
+  "GET /api/v1/flows/{flow_id}/ci-health": "deny",
   "GET /api/v1/flows/{flow_id}/gateway-usage/summary": "deny",
   "GET /api/v1/flows/{flow_id}/state": "deny",
   "GET /api/v1/flows/{flow_id}/state/{key}": "deny",
