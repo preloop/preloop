@@ -106,6 +106,63 @@ class TestCrud:
         )
 
 
+class TestCrudConcurrency:
+    def test_locked_update_replaces_a_stale_pre_read(
+        self, db_session: Session, test_user: models.User
+    ) -> None:
+        """A write committed between the pre-read and the lock still advances
+        the version, so a later compare-and-set cannot match a reused one."""
+        from sqlalchemy import update
+
+        flow = _flow(db_session, test_user.account_id)
+        scope = {"account_id": test_user.account_id, "flow_id": flow.id}
+        crud_flow_state.put_state(db_session, **scope, key="k", value=1)
+        cached = crud_flow_state.get_state(db_session, **scope, key="k")
+        assert cached is not None and cached.version == 1
+        # Another writer's commit, invisible to the identity map.
+        db_session.execute(
+            update(models.FlowState)
+            .where(models.FlowState.id == cached.id)
+            .values(version=5, value=2)
+            .execution_options(synchronize_session=False)
+        )
+        row = crud_flow_state.put_state(db_session, **scope, key="k", value=3)
+        assert row.version == 6
+        assert row.value == 3
+
+    def test_key_creation_locks_the_flow_and_listing_skips_values(
+        self, db_session: Session, test_user: models.User
+    ) -> None:
+        from sqlalchemy import event, inspect
+
+        flow = _flow(db_session, test_user.account_id)
+        scope = {"account_id": test_user.account_id, "flow_id": flow.id}
+        statements: list[str] = []
+
+        def record(conn, cursor, statement, *args):  # type: ignore[no-untyped-def]
+            statements.append(" ".join(statement.split()))
+
+        engine = db_session.get_bind()
+        event.listen(engine, "before_cursor_execute", record)
+        try:
+            crud_flow_state.put_state(db_session, **scope, key="new", value=[1] * 50)
+            created = list(statements)
+            statements.clear()
+            crud_flow_state.put_state(db_session, **scope, key="new", value=[2])
+            updated = list(statements)
+            statements.clear()
+            db_session.expunge_all()
+            rows = crud_flow_state.list_states(db_session, **scope)
+            listing = list(statements)
+        finally:
+            event.remove(engine, "before_cursor_execute", record)
+        assert any("FROM flow" in q and "FOR UPDATE" in q for q in created)
+        # Replacing an existing key does not take the flow lock.
+        assert not any("FROM flow " in q and "FOR UPDATE" in q for q in updated)
+        assert "value" in inspect(rows[0]).unloaded
+        assert all("flow_state.value" not in q for q in listing)
+
+
 @dataclass
 class Scenario:
     client: Client
@@ -216,6 +273,29 @@ async def test_reserved_keys_policy_and_binding(
     scope.actor.flow_execution_id = None
     with pytest.raises(ToolError, match="credential"):
         await scope.call("get_flow_state", {})
+
+
+@pytest.mark.asyncio
+async def test_policy_sees_and_replays_the_full_write(
+    scope: Scenario, db_session: Session
+) -> None:
+    """The approval record holds the value, so a parked approval that replays
+    the stored arguments writes what was approved."""
+    await scope.call("put_flow_state", {"key": "ledger", "value": {"n": 1}})
+    recorded = scope.policy.call_args.kwargs["arguments"]
+    assert recorded == {"key": "ledger", "value": {"n": 1}, "expected_version": None}
+    replayed = {**recorded, "value": {"n": 2}, "expected_version": 1}
+    await scope.call("put_flow_state", replayed)
+    stored = await scope.call("get_flow_state", {"key": "ledger"})
+    assert (stored["value"], stored["version"]) == ({"n": 2}, 2)
+
+
+def test_put_flow_state_is_not_advertised_as_idempotent() -> None:
+    from preloop.tools.builtin_defs import BUILTIN_TOOL_ANNOTATIONS
+
+    hints = BUILTIN_TOOL_ANNOTATIONS["put_flow_state"]
+    assert hints["idempotentHint"] is False
+    assert hints["destructiveHint"] is True
 
 
 class TestRest:
