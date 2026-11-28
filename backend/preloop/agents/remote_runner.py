@@ -179,6 +179,7 @@ class RemoteRunnerExecutor(AgentExecutor):
             pool=self.pool,
             execution_id=execution_id,
             payload=payload,
+            selected_flow=self.flow,
             required_runner_id=owner_id or self._harness_pin(payload),
             outcome=outcome,
         )
@@ -408,6 +409,7 @@ class RemoteRunnerExecutor(AgentExecutor):
                     pool=self.pool,
                     execution_id=execution.id,
                     payload=payload,
+                    selected_flow=flow,
                     required_runner_id=owner_id or self._harness_pin(payload),
                     outcome=outcome,
                 )
@@ -864,6 +866,7 @@ class RemoteRunnerExecutor(AgentExecutor):
                 pool=self.pool,
                 execution_id=execution.id,
                 payload=payload,
+                selected_flow=self.flow,
                 outcome=rerouted,
                 reroute_from=pin,
                 required_billing=harness_entry_billing(

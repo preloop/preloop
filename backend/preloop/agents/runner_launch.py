@@ -313,6 +313,10 @@ async def hydrate_runner_job(db: Session, job: dict[str, Any]) -> dict[str, Any]
     hydrated = dict(job)
     hydrated["account_api_token"] = context.get("account_api_token")
     hydrated["launch"] = await build_runner_launch(context)
+    crud_flow_execution.record_configuration(
+        db, execution.id, orchestrator.flow, "runner_delivery"
+    )
+    db.commit()
     return hydrated
 
 

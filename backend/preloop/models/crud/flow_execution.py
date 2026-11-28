@@ -289,6 +289,44 @@ def _parse_iso(value: Any) -> Optional[datetime]:
 class CRUDFlowExecution(CRUDBase[FlowExecution]):
     """CRUD operations for FlowExecution model."""
 
+    def record_configuration(
+        self, db: Session, execution_id: uuid.UUID, flow: models.Flow, stage: str
+    ) -> None:
+        """Bind the selected in-memory definition to this run before dispatch.
+
+        Concurrent runs may select the same revision. Both the snapshot and
+        its per-execution stage reference are insert-only and idempotent.
+        """
+        from sqlalchemy.dialects.postgresql import insert
+        from preloop.services.execution_definition import definition_json
+
+        if type(getattr(flow, "config_revision", None)) is not int:
+            return
+        snapshot = models.FlowDefinitionSnapshot
+        key = (snapshot.flow_id == flow.id, snapshot.revision == flow.config_revision)
+        snapshot_id = db.scalar(select(snapshot.id).where(*key))
+        if snapshot_id is None:
+            snapshot_id = db.scalar(
+                insert(snapshot)
+                .values(
+                    flow_id=flow.id,
+                    account_id=flow.account_id,
+                    revision=flow.config_revision,
+                    definition=definition_json(flow),
+                )
+                .on_conflict_do_nothing(index_elements=["flow_id", "revision"])
+                .returning(snapshot.id)
+            )
+            if snapshot_id is None:
+                snapshot_id = db.execute(select(snapshot.id).where(*key)).scalar_one()
+        db.execute(
+            insert(models.ExecutionConfigurationSelection)
+            .values(execution_id=execution_id, snapshot_id=snapshot_id, stage=stage)
+            .on_conflict_do_nothing(
+                index_elements=["execution_id", "stage", "snapshot_id"]
+            )
+        )
+
     def record_runtime_selection(
         self,
         execution: models.FlowExecution,

@@ -1,3 +1,4 @@
+from copy import deepcopy
 from dataclasses import dataclass, field as dataclass_field
 from datetime import datetime, timezone
 from typing import Any, List, Optional, Union
@@ -5,6 +6,7 @@ from uuid import UUID
 
 from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm.attributes import set_committed_value
 from sqlalchemy.orm import Query, Session, joinedload, load_only
 
 from .. import models, schemas
@@ -217,6 +219,7 @@ class CRUDFlow(CRUDBase[models.Flow]):
         *,
         refresh: bool = False,
         for_update: bool = False,
+        for_execution: bool = False,
     ) -> Optional[models.Flow]:
         """
         Retrieve a flow by its ID.
@@ -226,6 +229,7 @@ class CRUDFlow(CRUDBase[models.Flow]):
             id: The ID of the flow to retrieve (string or UUID).
             account_id: The ID of the account associated with the flow (string or UUID). Optional.
             refresh: Reload the flow and its selected model from storage.
+            for_execution: Return stable flow values across execution commits.
             for_update: Refresh and lock the flow until this transaction ends.
 
         Returns:
@@ -235,7 +239,7 @@ class CRUDFlow(CRUDBase[models.Flow]):
         id_str = str(id) if isinstance(id, UUID) else id
 
         query = db.query(self.model).filter(cast(self.model.id, String) == id_str)
-        if refresh:
+        if refresh or for_execution:
             query = query.populate_existing().options(joinedload(self.model.ai_model))
         if for_update:
             query = query.populate_existing().with_for_update(of=self.model)
@@ -246,7 +250,20 @@ class CRUDFlow(CRUDBase[models.Flow]):
             )
             query = query.filter(cast(self.model.account_id, String) == account_id_str)
 
-        return query.first()
+        row = query.first()
+        if row is None or not for_execution:
+            return row
+        # An ORM commit expires a managed flow and its next scalar read can
+        # observe a concurrent edit. Use the values from this single SELECT
+        # throughout launch. Access checks still query current authority.
+        selected = models.Flow(
+            **{
+                c.key: deepcopy(getattr(row, c.key))
+                for c in models.Flow.__table__.columns
+            }
+        )
+        set_committed_value(selected, "ai_model", row.ai_model)
+        return selected
 
     def get_multi(
         self,

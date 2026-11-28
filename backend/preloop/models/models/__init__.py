@@ -45,6 +45,10 @@ from .client_version_log import ClientVersionLog
 from .ai_model import AIModel
 from .flow_artifact import FlowArtifact
 from .flow import Flow
+from .flow_definition_snapshot import (
+    ExecutionConfigurationSelection,
+    FlowDefinitionSnapshot,
+)
 from .flow_feedback import FlowFeedback, FlowThread
 from .flow_execution import FlowExecution
 from .execution_realtime_cursor import ExecutionRealtimeCursor
@@ -330,6 +334,8 @@ __all__ = [
     "Comment",
     "AIModel",
     "Flow",
+    "FlowDefinitionSnapshot",
+    "ExecutionConfigurationSelection",
     "FlowArtifact",
     "FlowExecution",
     "ExecutionResultGrant",

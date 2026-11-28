@@ -12,6 +12,41 @@ exactly what that does and does not mean. Cross-link the
 [security audit presets](security-audit-presets.md) guide for the JSON
 contracts themselves.
 
+## Inspect an execution outcome
+
+Read `GET /api/v1/flows/executions/{execution_id}/outcome` with a human
+credential that can view the flow. Both the outcome and historical definition
+reads enforce account ownership, flow visibility and the recorded project's
+current tracker scope. Supply `project_id` to require a particular project.
+
+`creation_revision` is the revision observed when the execution was created.
+The `configurations` array identifies the definitions selected at launch,
+private runner lease assignment, and runner delivery when the server rebuilds
+a lease. For example, an execution queued at revision 3 can launch at revision
+4. A runner can keep that launch's resolved prompt and select revision 5 for
+checkout at delivery. Retries that create another execution have their own
+selections and a `retry_of_execution_id`.
+
+For a listed revision, read
+`GET /api/v1/flows/executions/{execution_id}/outcome/configurations/{revision}`.
+Concatenate the `definition_json` strings before parsing JSON. Each page holds
+up to 16 KiB. Both endpoints return `next_offset` when another page exists.
+The definition includes the configured prompt template, model reference,
+tools, triggers, limits and publication settings. The controller masks
+credential-shaped text and secret fields before storage and omits ingress
+secrets, shell bodies and inline environment values. Runs of a flow share one
+copy per selected revision. Deleting the flow removes its history.
+
+`work` identifies the triggering event and recorded repository or tracker
+reference. `runtime` reports execution and agent status. `output` reports
+capture and schema validation independently. `delivery.destination` identifies
+a confirmed code-host review or pull request. For a complete multi-repository
+publication it identifies the first target and gives the total target count.
+The existing result API carries the full publication record. Other delivery
+channels, incomplete publications and results without matching proof report
+`unconfirmed`. Reads use stored evidence. Historical executions can have an
+empty selection list and unknown capture or validation.
+
 ## Transports
 
 **Legacy log channel (default).** `FLOW_ARTIFACT_DIRECT_UPLOAD` is off and

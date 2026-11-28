@@ -13,7 +13,7 @@ import re
 from sqlalchemy.orm import Session
 from nats.aio.client import Client
 
-from preloop.models import schemas
+from preloop.models import models, schemas
 from preloop.models.crud import (
     crud_account,
     crud_ai_model,
@@ -2311,7 +2311,9 @@ class FlowExecutionOrchestrator:
         except Exception as e:
             logger.error(f"Failed to publish update to NATS: {type(e).__name__}")
 
-    def _get_flow_details(self, *, refresh: bool = False):
+    def _get_flow_details(
+        self, *, refresh: bool = False, selected_flow: Optional[models.Flow] = None
+    ) -> None:
         """Retrieve the Flow definition and associated AIModel."""
         logger.info(f"Retrieving flow details for flow_id: {self.flow_id}")
 
@@ -2321,8 +2323,8 @@ class FlowExecutionOrchestrator:
         )
         # Use CRUD layer without account filtering since this is an internal service
         # and we don't have the account_id yet (it's a property of the flow itself)
-        self.flow = crud_flow.get(
-            self.db, id=flow_id_str, **({"refresh": True} if refresh else {})
+        self.flow = selected_flow or crud_flow.get(
+            self.db, id=flow_id_str, refresh=refresh, for_execution=True
         )
         if not self.flow:
             raise ValueError(f"Flow with id {self.flow_id} not found")
@@ -5864,6 +5866,14 @@ class FlowExecutionOrchestrator:
                 self._check_result_schema(None)
         return persisted
 
+    def _record_published_destination(self, publication: dict[str, Any]) -> None:
+        """Record only a publisher response obtained by the controller."""
+        from preloop.services.execution_definition import published_destination
+
+        destination = published_destination(publication)
+        if destination:
+            self._record_completion(published_pull_request=destination)
+
     def _record_completion(self, **facts: Any) -> None:
         """Persist controller facts without changing execution outcome."""
         if getattr(self, "execution_log", None) is None:
@@ -7726,6 +7736,7 @@ class FlowExecutionOrchestrator:
                 f"{failed}; the branch is kept, retry the run's publication or "
                 "open the pull request from the branch"
             )
+        self._record_published_destination(found)
         self._opened_pr = {"url": found["url"], "branch": branch}
         self._opened_pr_bound = True
         self.execution_logger.log_milestone("pull_request_opened", dict(found))
@@ -10307,14 +10318,17 @@ class FlowExecutionOrchestrator:
                         f"Error during agent cleanup: {type(cleanup_error).__name__}"
                     )
 
-    def _create_execution_log(self):
+    def _create_execution_log(self) -> None:
         """Create an initial record in FlowExecutions.
 
-        No-op when ``execution_log`` was pre-created (manual trigger / worker
-        dispatch) so ``run()`` can be reused for both paths.
+        Bind the selected launch definition to the new or pre-created execution.
         """
         if self.execution_log is not None:
             logger.info("Using pre-created execution log: %s", self.execution_log.id)
+            crud_flow_execution.record_configuration(
+                self.db, self.execution_log.id, self.flow, "launch"
+            )
+            self.db.commit()
             self._sync_runtime_session()
             return
 
@@ -10333,6 +10347,9 @@ class FlowExecutionOrchestrator:
         )
 
         db_execution_log = crud_flow_execution.create(self.db, obj_in=execution_create)
+        crud_flow_execution.record_configuration(
+            self.db, db_execution_log.id, self.flow, "launch"
+        )
         self.db.commit()
         self.db.refresh(db_execution_log)
         self.execution_log = db_execution_log
@@ -12111,6 +12128,7 @@ class FlowExecutionOrchestrator:
             result = dict(agent_result.get("result") or {})
             result["trusted_publication"] = publication
             agent_result["result"] = result
+            self._record_published_destination(publication)
             self._opened_pr = publication
             self._attach_product_evidence_records(
                 agent_result, provenance=provenance, publication=publication
