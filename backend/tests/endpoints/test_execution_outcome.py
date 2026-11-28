@@ -37,7 +37,11 @@ def flow(db_session: Session, test_user: models.User) -> models.Flow:
 
 
 def _run(
-    db: Session, flow: models.Flow, *, retry_of: UUID | None = None
+    db: Session,
+    flow: models.Flow,
+    *,
+    retry_of: UUID | None = None,
+    source: str = "github",
 ) -> models.FlowExecution:
     """Create a queued execution like trigger entry points do."""
     return crud.crud_flow_execution.create(
@@ -48,7 +52,7 @@ def _run(
             retry_of_execution_id=retry_of,
             trigger_event_id="event-17",
             trigger_event_details={
-                "source": "github",
+                "source": source,
                 "payload": {
                     "repository": {"full_name": "example/project"},
                     "pull_request": {"number": 17, "head": {"sha": "a" * 40}},
@@ -109,13 +113,25 @@ def test_selection_history_and_retry(
     assert client.get(f"{_url(run)}/configurations/2").status_code == 404
 
 
+@pytest.mark.parametrize(
+    ("source", "receipt_provider"),
+    [
+        ("github", "github"),
+        ("webhook", "gitlab"),
+        ("manual", "github"),
+        ("chat", "gitlab"),
+        ("bitbucket_dc", "bitbucket"),
+    ],
+)
 def test_review_delivery_matches_work(
     db_session: Session,
     flow: models.Flow,
     client: TestClient,
+    source: str,
+    receipt_provider: str,
 ) -> None:
     """Require this execution's accepted review on the intended target and head."""
-    run = _run(db_session, flow)
+    run = _run(db_session, flow, source=source)
     crud.crud_flow_execution.update(
         db_session,
         db_obj=run,
@@ -146,7 +162,7 @@ def test_review_delivery_matches_work(
             db_session,
             account_id=flow.account_id,
             execution_id=run.id,
-            provider="github",
+            provider=receipt_provider,
             repository="example/project",
             pull_request=number,
             review_action="comment",
@@ -157,6 +173,7 @@ def test_review_delivery_matches_work(
             assert read()["delivery"]["state"] == "unconfirmed"
     delivered = read()["delivery"]
     assert delivered["state"] == "delivered"
+    assert delivered["destination"]["provider"] == receipt_provider
     assert delivered["destination"]["record_id"] == str(receipt.id)
     assert delivered["destination"]["provider_review_id"] == "1234"
 

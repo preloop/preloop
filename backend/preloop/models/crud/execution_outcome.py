@@ -3,7 +3,7 @@
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import Select, and_, case, func, select
+from sqlalchemy import Select, and_, case, func, literal, select
 from sqlalchemy.orm import Session
 
 from preloop.models import models
@@ -278,21 +278,21 @@ def _review_destination(
     provider: str | None,
 ) -> dict[str, Any] | None:
     """Find provider evidence for this run's own review target."""
-    if (
-        not repository
-        or not number
-        or provider not in {"github", "gitlab", "bitbucket"}
-    ):
+    if not repository or not number:
         return None
     from preloop.services.execution_definition import public_text
 
     receipt = models.ReviewPublicationReceipt
     platform = models.PlatformReviewPublication
+    known_provider = provider in {"github", "gitlab", "bitbucket"}
     for model in (platform, receipt):
+        if model is platform and not known_provider:
+            continue
         query = select(
             model.id,
             model.head_sha,
             model.review_id if model is platform else model.provider_review_id,
+            literal(provider) if model is platform else receipt.provider,
         ).where(
             model.account_id == account_id,
             model.execution_id == execution_id,
@@ -303,15 +303,15 @@ def _review_destination(
             query = query.where(model.head_sha == head.lower())
         if model is platform:
             query = query.where(model.state == "posted", model.review_state == "posted")
-        else:
-            query = query.where(model.provider == provider)
+        elif known_provider:
+            query = query.where(receipt.provider == provider)
         row = db.execute(
             query.order_by(model.created_at.desc(), model.id.desc()).limit(1)
         ).first()
         if row:
             return {
                 "kind": "pull_request_review",
-                "provider": provider,
+                "provider": public_text(row[3]),
                 "repository": public_text(repository),
                 "pull_request": public_text(number),
                 "head_sha": public_text(row[1]) if row[1] else None,
