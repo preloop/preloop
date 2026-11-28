@@ -1,3 +1,4 @@
+import type { FleetFinding } from '../device-fleet-api';
 import type { PreparedExtensionAttentionItem } from './attention-extension';
 import type { DeliveryReportAttention } from '../delivery-reports-api';
 import type { MCPFinding } from '../mcp-findings-api';
@@ -135,6 +136,7 @@ export interface AttentionBudgetDetail {
  * inbox unactionable.
  */
 export interface AttentionEvidence {
+  fleetFinding?: FleetFinding;
   deliveryReport?: DeliveryReportAttention;
   mcpFinding?: MCPFinding;
   failedRuns?: AttentionFailedRun[];
@@ -1495,6 +1497,9 @@ export function deriveAttentionItems(inputs: AttentionInputs): AttentionResult {
         detail: item.detail,
         href: item.href,
         at: item.opened_at,
+        evidence: item.fleetFinding
+          ? { fleetFinding: item.fleetFinding }
+          : undefined,
         fingerprint: item.fingerprint,
         dismissable: true,
       })),

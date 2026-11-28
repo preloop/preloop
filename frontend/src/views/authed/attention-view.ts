@@ -1,3 +1,4 @@
+import { inventoryLimitation } from '../../device-fleet-api';
 import type { PreparedExtensionAttentionItem } from '../../utils/attention-extension';
 import type { DeliveryReportAttention } from '../../delivery-reports-api';
 import { decideMCPFinding, type MCPFinding } from '../../mcp-findings-api';
@@ -293,6 +294,10 @@ export class AttentionView extends AuthedElement {
           background: var(--sl-color-neutral-400);
         }
 
+        .row-evidence pre {
+          white-space: pre-wrap;
+          overflow-wrap: anywhere;
+        }
         .row-body {
           display: flex;
           flex-direction: column;
@@ -905,7 +910,7 @@ export class AttentionView extends AuthedElement {
     if (override !== undefined) {
       return override;
     }
-    return sectionSize <= AUTO_EXPAND_MAX_ROWS;
+    return !item.evidence?.fleetFinding && sectionSize <= AUTO_EXPAND_MAX_ROWS;
   }
 
   private toggleRow(item: AttentionItem, sectionSize: number): void {
@@ -1768,6 +1773,10 @@ export class AttentionView extends AuthedElement {
 
   private renderEvidence(item: AttentionItem) {
     switch (item.kind) {
+      case 'extension':
+        return html`<strong>Evidence</strong>
+          <pre>
+${JSON.stringify(item.evidence?.fleetFinding?.evidence, null, 2)}</pre>`;
       case 'delivery_report':
         return html`<ul class="report-proposals">
           ${item.evidence?.deliveryReport?.proposals.map(
@@ -1805,6 +1814,7 @@ export class AttentionView extends AuthedElement {
     const evidence = item.evidence;
     if (!evidence) return false;
     return Boolean(
+      evidence.fleetFinding ||
       evidence.deliveryReport?.proposals.length ||
       evidence.failedRuns?.length ||
       evidence.agentReasons?.length ||
@@ -1847,6 +1857,9 @@ export class AttentionView extends AuthedElement {
   }
 
   private renderRow(item: AttentionItem, sectionSize: number) {
+    const finding = item.evidence?.fleetFinding;
+    const firstSeen =
+      finding && String(finding.evidence.first_seen_at || finding.opened_at);
     const expandable = this.hasEvidence(item);
     const expanded = expandable && this.isExpanded(item, sectionSize);
     return html`
@@ -1875,7 +1888,7 @@ export class AttentionView extends AuthedElement {
             <span
               class="row-detail"
               title=${item.at ? formatLocalDateTime(item.at) : nothing}
-              >${item.detail}${this.renderExpiry(item)}</span
+              >${item.detail}${firstSeen ? html` · First seen <time datetime=${firstSeen} title=${firstSeen}>${formatRelativeTime(firstSeen)}</time>` : nothing}${this.renderExpiry(item)}</span
             >
             ${
               // Deciding here means deciding without opening the request, so
@@ -1918,6 +1931,7 @@ export class AttentionView extends AuthedElement {
             <sl-badge variant="neutral" pill>${items.length}</sl-badge>
           </div>
         </div>
+        ${items.some((item) => item.evidence?.fleetFinding) ? html`<p class="row-detail">${inventoryLimitation}</p>` : nothing}
         <div class="list">
           ${repeat(
             items,

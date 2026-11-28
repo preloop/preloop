@@ -1714,6 +1714,7 @@ export class AuditView extends AuthedElement {
       let path = REST_API_PREFIX + '/exports/asset-register';
       if (kind === 'incidents') {
         path = REST_API_PREFIX + '/exports/incident-candidates';
+        params.set('include_manifest', 'false');
         if (this._startDate) params.set('from', this._startDate);
         if (this._throughDate)
           params.set('to', shiftUtcDate(this._throughDate, 1));

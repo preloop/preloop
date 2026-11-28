@@ -11,10 +11,12 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import case, exists, func, literal, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from preloop.models import models
 from preloop.schemas.discovered_extension import (
+    BulkExtensionApproval,
     ExtensionApprovalUpdate,
     ExtensionPinCreate,
 )
@@ -142,6 +144,36 @@ class CRUDExtensionApproval:
                 db, approval=row, pin=payload.pin, pinned_by_user_id=decided_by_user_id
             )
         return row
+
+    def set_bulk_state(
+        self,
+        db: Session,
+        *,
+        account_id: UUID,
+        decided_by_user_id: UUID,
+        payload: BulkExtensionApproval,
+    ) -> int:
+        """Apply one state to distinct names, retaining constraints, notes and pins."""
+        crud_expected_device.lock_account(db, account_id=account_id)
+        identities = dict.fromkeys(payload.extensions)
+        decision = {
+            "approval_state": payload.approval_state,
+            "decided_by_user_id": decided_by_user_id,
+            "decided_at": datetime.now(UTC),
+        }
+        statement = insert(models.ExtensionApproval).values(
+            [
+                {"account_id": account_id, **identity.model_dump(), **decision}
+                for identity in identities
+            ]
+        )
+        db.execute(
+            statement.on_conflict_do_update(
+                constraint="uq_extension_approval",
+                set_={**decision, "updated_at": func.now()},
+            )
+        )
+        return len(identities)
 
     def _has_pin(self, db: Session, *, approval_id: UUID, content_hash: str) -> bool:
         """Report whether a hash is already pinned under an approval."""

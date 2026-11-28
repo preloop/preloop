@@ -113,7 +113,7 @@ def _error_status(error: DoraExportError) -> int:
     return 413 if error.code == "export_too_large" else 400
 
 
-def _respond(export: DoraExport) -> Response:
+def _respond(export: DoraExport, *, include_manifest: bool = True) -> Response:
     """Serve the export, with the manifest reachable in both formats.
 
     JSON carries the manifest in the body next to the rows it digests. CSV
@@ -132,7 +132,7 @@ def _respond(export: DoraExport) -> Response:
             (manifest.get("edition") or {}).get("edition") or "unknown"
         ),
     }
-    if export.export_format == "csv":
+    if export.export_format == "csv" and include_manifest:
         headers["X-Preloop-Export-Manifest"] = base64.b64encode(
             canonical_manifest_json(manifest)
         ).decode("ascii")
@@ -178,6 +178,9 @@ def export_incident_candidates(
     ),
     to: Optional[str] = Query(None, description="End of the period, exclusive"),
     format: str = Query("csv", description="csv or json"),
+    include_manifest: bool = Query(
+        True, description="Include the full base64 manifest in CSV response headers"
+    ),
     db: Session = Depends(get_db_session),
     current_user: models.User = Depends(get_current_active_user),
     account: models.Account = Depends(get_account_for_user),
@@ -207,4 +210,4 @@ def export_incident_candidates(
         export=export,
         action=AUDIT_ACTION_INCIDENT_EXPORT,
     )
-    return _respond(export)
+    return _respond(export, include_manifest=include_manifest)

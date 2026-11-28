@@ -17,6 +17,7 @@ from preloop.models.db.session import get_db_session
 from preloop.schemas.agent_discovery import AGENT_KIND_PATTERN, HEX_SHA256_PATTERN
 from preloop.schemas.discovered_extension import (
     IDENTIFIER_PATTERN,
+    BulkExtensionApproval,
     DiscoveredExtensionList,
     EffectiveState,
     ExtensionApprovalList,
@@ -202,6 +203,24 @@ def get_approval(
     return ExtensionApprovalSummary.model_validate(
         crud_extension_approval.summary(db, [row])[0]
     )
+
+
+@router.post("/agents/extension-approvals/bulk")
+@require_permission("manage_agents")
+def bulk_set_approvals(
+    payload: BulkExtensionApproval,
+    account: Annotated[models.Account, Depends(get_account_for_user)],
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> dict[str, int]:
+    """Apply account-wide name decisions and evaluate findings once after commit."""
+    ensure_permission_in_oss(db, current_user, "manage_agents")
+    count = crud_extension_approval.set_bulk_state(
+        db, account_id=account.id, decided_by_user_id=current_user.id, payload=payload
+    )
+    db.commit()
+    evaluate_fleet_findings(db, account_id=account.id)
+    return {"count": count}
 
 
 @router.put(

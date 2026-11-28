@@ -237,6 +237,23 @@ describe('AttentionView', () => {
         ]) {
           expect(titles.some((text) => text?.includes(title))).to.equal(true);
         }
+        const section = el.shadowRoot!.querySelector('#extensions')!;
+        expect(section.querySelectorAll('time[title]')).to.have.length(3);
+        expect(
+          section.textContent!.split('Inventory shows files found on disk.')
+        ).to.have.length(2);
+        expect(section.textContent).not.to.contain('T10:00:00Z');
+        const link = new URL(
+          section.querySelector<HTMLAnchorElement>('a.row-title')!.href
+        );
+        expect(link.searchParams.get('device')).to.equal(
+          fleetExtensionFindings[0].device_key
+        );
+        expect(
+          fleetExtensionFindings.some(
+            (finding) => finding.id === link.searchParams.get('finding')
+          )
+        ).to.equal(true);
         const original = await prepareExtensionAttentionItem(
           extensionItemsResponse[0]
         );

@@ -1394,6 +1394,7 @@ describe('AuditView', () => {
         .getCalls()
         .map((call) => call.args[0] as string)
         .find((url) => url.startsWith('/api/v1/exports/incident-candidates'));
+      expect(requested).to.contain('include_manifest=false');
       expect(requested).to.contain('from=2026-01-31');
       expect(requested).to.contain('to=2026-02-01');
       element.remove();

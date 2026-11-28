@@ -327,6 +327,26 @@ export async function setExtensionApproval(
   });
 }
 
+/** Change account-wide states in one transaction, with no pin or constraint edits. */
+export async function setBulkExtensionApproval(
+  rows: ExtensionKey[],
+  approval_state: 'approved' | 'unapproved'
+): Promise<void> {
+  await request('/extension-approvals/bulk', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      approval_state,
+      extensions: rows.map(({ agent_kind, extension_kind, extension_id }) => ({
+        agent_kind,
+        extension_kind,
+        extension_id,
+      })),
+    }),
+  });
+  invalidateVersionConstraints();
+}
+
 /** Read device observations for exactly one extension, without aggregation. */
 export async function getExtensionDevices(
   row: ExtensionKey,

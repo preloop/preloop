@@ -238,6 +238,29 @@ class ExtensionApprovalFields(BaseModel):
     note: str | None = Field(default=None, max_length=512)
 
 
+class ExtensionIdentity(BaseModel):
+    """Natural key for one account-wide extension decision."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    agent_kind: str = Field(pattern=r"^[a-z0-9][a-z0-9_\-]{0,63}$")
+    extension_kind: ExtensionKind
+    extension_id: str = Field(pattern=IDENTIFIER_PATTERN)
+
+    @field_validator("extension_id")
+    @classmethod
+    def bounded_identifier(cls, value: str) -> str:
+        """Enforce the same byte limit as individual decisions."""
+        return ExtensionMetadata.bounded_identifier(value)
+
+
+class BulkExtensionApproval(BaseModel):
+    """A bounded state-only decision over explicit identities."""
+
+    model_config = ConfigDict(extra="forbid")
+    extensions: list[ExtensionIdentity] = Field(min_length=1, max_length=500)
+    approval_state: Literal["approved", "unapproved"]
+
+
 class ExtensionApprovalUpdate(ExtensionApprovalFields):
     """Replace a decision; null version constraint means any version.
 

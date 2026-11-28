@@ -415,6 +415,37 @@ export async function getFleetDeviceCredentials(
   );
   return Array.isArray(result.items) ? result.items : [];
 }
+export const inventoryLimitation =
+  'Inventory shows files found on disk. It cannot confirm that the agent loaded or ran them.';
+
+export function extensionFindingHref(finding: FleetFinding): string {
+  return finding.device_key
+    ? `${fleetHref(finding.device_key)}&finding=${encodeURIComponent(finding.id)}`
+    : fleetHref();
+}
+
+export function extensionFindingLocation(
+  finding: FleetFinding,
+  device?: DeviceFleetDevice
+): string {
+  const reported = finding.evidence.device_name;
+  const host = device
+    ? deviceLabel(device)
+    : typeof reported === 'string' && reported !== finding.device_key
+      ? reported
+      : finding.device_key
+        ? deviceLabel({ hostname: null, device_key: finding.device_key })
+        : '';
+  const labels =
+    device?.users.map((u) => u.label) ?? finding.evidence.device_people;
+  const people = Array.isArray(labels)
+    ? [...new Set(labels.filter((v) => typeof v === 'string' && v))].join(', ')
+    : '';
+  return [host && `On ${host}`, people && `Associated with ${people}`]
+    .filter(Boolean)
+    .join(' · ');
+}
+
 /** Name the installed extension and the evaluator's reason when available. */
 export function fleetFindingTitle(
   finding: Pick<FleetFinding, 'rule' | 'evidence' | 'title'>
@@ -426,6 +457,12 @@ export function fleetFindingTitle(
     const kind = text(finding.evidence?.kind);
     const reason = text(finding.evidence?.reason).replace(/_/g, ' ');
     const identity = name && kind ? `${name} (${kind})` : name || kind;
+    if (
+      name &&
+      kind &&
+      finding.title?.startsWith(`${name} (${kind.replace(/_/g, ' ')}) `)
+    )
+      return finding.title;
     const title = [
       identity,
       reason ? reason.charAt(0).toUpperCase() + reason.slice(1) : '',

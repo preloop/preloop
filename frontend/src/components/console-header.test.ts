@@ -309,6 +309,9 @@ describe('console-header bell empty state', () => {
       "Needs attention tracks items separately from this session's notifications."
     );
     expect(text).to.contain('1 item needs attention: 1 extension');
+    expect(
+      el.shadowRoot!.querySelector('.notification-badge')?.textContent?.trim()
+    ).to.equal('1');
     expect(el.shadowRoot!.querySelector('a[href="/console/attention"]')).to
       .exist;
   });

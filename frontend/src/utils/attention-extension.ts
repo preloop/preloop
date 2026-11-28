@@ -3,6 +3,8 @@ import { fetchWithAuth } from '../api';
 import type { DeliveryReportAttention } from '../delivery-reports-api';
 import {
   fleetAccess,
+  extensionFindingHref,
+  extensionFindingLocation,
   fleetFindingTitle,
   type FleetFinding,
 } from '../device-fleet-api';
@@ -25,6 +27,7 @@ export interface LoadedExtensionAttention {
 }
 
 export interface PreparedExtensionAttentionItem extends ExtensionAttentionItem {
+  fleetFinding?: FleetFinding;
   dismissalId: string;
   fingerprint: string;
 }
@@ -111,7 +114,15 @@ async function nameFleetFindings(
         item.source === source ? findings.get(item.id) : undefined;
       // Keep the provider's incident fingerprint: a failed evidence read must
       // not revive a dismissed item or make its dismissal stop matching.
-      return finding ? { ...item, title: fleetFindingTitle(finding) } : item;
+      return finding
+        ? {
+            ...item,
+            title: fleetFindingTitle(finding),
+            detail: extensionFindingLocation(finding),
+            href: extensionFindingHref(finding),
+            fleetFinding: finding,
+          }
+        : item;
     });
   } catch {
     return items;

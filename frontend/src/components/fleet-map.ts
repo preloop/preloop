@@ -125,7 +125,8 @@ import {
   workRelationLabel,
 } from '../utils/fleet-map-details';
 import { unifiedWebSocketManager } from '../services/unified-websocket-manager';
-import { getAgentKindPresentation } from '../utils/agent-kinds';
+export { agentKindLabel } from '../utils/agent-kinds';
+import { agentKindLabel } from '../utils/agent-kinds';
 import consoleStyles from '../styles/console-styles.css?inline';
 
 const ICON: Record<FleetMapNodeType, string> = {
@@ -198,22 +199,6 @@ const CODE_BADGES: readonly [FleetCodeAction, string, string][] = [
   ['commented', 'chat-left-text', 'commented on'],
   ['merged', 'check2-circle', 'merged'],
 ];
-
-/** "cursor_cli" reads as "Cursor CLI"; known kinds use their product name. */
-export function agentKindLabel(kind: string): string {
-  return (
-    getAgentKindPresentation(kind)?.label ??
-    kind
-      .split(/[_\s-]+/)
-      .filter(Boolean)
-      .map((word) =>
-        ['cli', 'ai', 'ide'].includes(word.toLowerCase())
-          ? word.toUpperCase()
-          : word.charAt(0).toUpperCase() + word.slice(1)
-      )
-      .join(' ')
-  );
-}
 
 /** Discovered agents are named by their kind; show it as a product name. */
 const displayLabel = (node: FleetMapNode): string =>

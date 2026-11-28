@@ -20,6 +20,7 @@ interface Readiness {
 /** Shared routing facts beside native mode controls and pending requests. */
 @customElement('approval-readiness')
 export class ApprovalReadiness extends LitElement {
+  @property({ type: Boolean }) compact = false;
   @property() agentId = '';
   @property() workflowId = '';
   @property() requestId = '';
@@ -34,6 +35,12 @@ export class ApprovalReadiness extends LitElement {
     :host {
       display: block;
       font-size: var(--console-text-meta, 13px);
+    }
+    summary {
+      cursor: pointer;
+    }
+    summary span {
+      color: var(--console-link-color);
     }
     p {
       margin: 0.5rem 0;
@@ -102,7 +109,7 @@ export class ApprovalReadiness extends LitElement {
     const data = this.data;
     if (!data) return html`<p role="status">Checking approval readiness…</p>`;
     if (data.enforced === false) return nothing;
-    return html`<section aria-label="Approval readiness">
+    const details = html`
       ${data.issues?.map((issue) => html`<p class="issue" role="status">${issue}</p>`)}
       <p>
         <strong
@@ -134,6 +141,20 @@ export class ApprovalReadiness extends LitElement {
         online.
         <button @click=${() => void this.load()}>Refresh readiness</button>
       </p>
+    `;
+    return html`<section aria-label="Approval readiness">
+      ${
+        this.compact
+          ? html`<details>
+              <summary>
+                Approval routing
+                ${data.issues?.length ? 'needs attention' : 'is configured'} ·
+                <span>Details</span>
+              </summary>
+              ${details}
+            </details>`
+          : details
+      }
     </section>`;
   }
 }
