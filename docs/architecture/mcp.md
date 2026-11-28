@@ -303,6 +303,17 @@ flows into policy and tool-call audits, whose account-scoped consent index is
 built concurrently. Synthetic simulation does no introspection HTTP. See
 [Delegated grants](../guide/grant-introspection.md).
 
+## Flow state
+
+`get_flow_state` and `put_flow_state` (default off) give a flow execution
+key/value JSON storage that outlives the run (`flow_state` table, one row per
+flow and key). The flow comes from the execution-bound credential. Each call
+re-reads the key binding and the flow's current `allowed_mcp_tools`. Writes
+carry a version for compare-and-set and are capped at 256 KB per value and 32
+keys per flow. Keys under `preloop.` are written only by platform features
+(the CI health ledger); runs can read them. Owners use
+`/api/v1/flows/{flow_id}/state`. See [Flow state](../guide/flows/flow-state.md).
+
 ## Current flow definitions and change proposals
 
 Grant `inspect_flows` to a flow to let its executions list and inspect current

@@ -20239,6 +20239,181 @@ paths:
       security:
       - bearerAuth: []
       x-restricted-ci: deny
+  /api/v1/flows/{flow_id}/state:
+    get:
+      tags:
+      - Flows
+      summary: List Flow State
+      description: List the keys a flow stores, without their values.
+      operationId: list_flow_state_api_v1_flows__flow_id__state_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowStateList'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/flows/{flow_id}/state/{key}:
+    get:
+      tags:
+      - Flows
+      summary: Get Flow State
+      description: Read one stored value.
+      operationId: get_flow_state_api_v1_flows__flow_id__state__key__get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      - name: key
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: ^[a-z0-9][a-z0-9._-]{0,127}$
+          title: Key
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowStateEntry'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+    put:
+      tags:
+      - Flows
+      summary: Put Flow State
+      description: Create or replace one value (not for reserved keys).
+      operationId: put_flow_state_api_v1_flows__flow_id__state__key__put
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      - name: key
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: ^[a-z0-9][a-z0-9._-]{0,127}$
+          title: Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FlowStatePutBody'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowStateEntry'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+    delete:
+      tags:
+      - Flows
+      summary: Delete Flow State
+      description: Delete (reset) one value, reserved keys included.
+      operationId: delete_flow_state_api_v1_flows__flow_id__state__key__delete
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      - name: key
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: ^[a-z0-9][a-z0-9._-]{0,127}$
+          title: Key
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/flows:
     post:
       tags:
@@ -46494,6 +46669,76 @@ components:
       - webhook_secret_hint
       - effective_publication_policy
       title: FlowResponse
+    FlowStateEntry:
+      properties:
+        key:
+          type: string
+          title: Key
+        value:
+          title: Value
+        version:
+          type: integer
+          title: Version
+        size_bytes:
+          type: integer
+          title: Size Bytes
+        updated_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Updated At
+        updated_by_execution_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Updated By Execution Id
+        reserved:
+          type: boolean
+          title: Reserved
+          default: false
+      type: object
+      required:
+      - key
+      - version
+      - size_bytes
+      title: FlowStateEntry
+      description: One stored value and its metadata.
+    FlowStateList:
+      properties:
+        keys:
+          items:
+            $ref: '#/components/schemas/FlowStateEntry'
+          type: array
+          title: Keys
+        max_keys:
+          type: integer
+          title: Max Keys
+          default: 32
+        max_value_bytes:
+          type: integer
+          title: Max Value Bytes
+          default: 262144
+      type: object
+      required:
+      - keys
+      title: FlowStateList
+      description: The flow's keys without their values.
+    FlowStatePutBody:
+      properties:
+        value:
+          title: Value
+        expected_version:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Expected Version
+      additionalProperties: false
+      type: object
+      required:
+      - value
+      title: FlowStatePutBody
+      description: REST body for ``PUT /flows/{flow_id}/state/{key}``.
     FlowSuccessNotifications:
       properties:
         comment_on_trigger_issue:

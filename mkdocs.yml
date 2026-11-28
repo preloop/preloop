@@ -242,6 +242,7 @@ nav:
       - Webhook triggers: webhook-triggers.md
       - Flow execution: guide/flows/flow-execution.md
       - Persistent execution: guide/flows/persistent-execution.md
+      - Flow state: guide/flows/flow-state.md
       - Interactive conversations: guide/flows/interactive-conversations.md
       - Event-driven employees: guide/virtual-employees.md
       - Delegation:
