@@ -1041,6 +1041,30 @@ async def _agent_permission_check(
             exclude_unset=True, exclude_none=True
         )
 
+    if (
+        payload.flow_execution_id
+        and identity.managed_agent_id is not None
+        and identity.flow_execution_id is None
+    ):
+        # A host-profile flow run: the operator's onboarded hook reports the
+        # execution it runs for. Once verified, the approval belongs to that
+        # execution and parks it instead of denying while the run goes on.
+        from preloop.services import native_flow_park
+
+        linked = await run_db_off_loop(
+            lambda: native_flow_park.verified_host_execution(
+                account_id=identity.account_id,
+                user_id=identity.user_id,
+                execution_id=payload.flow_execution_id,
+            )
+        )
+        if linked is not None:
+            identity = replace(
+                identity,
+                flow_id=linked["flow_id"],
+                flow_execution_id=linked["execution_id"],
+            )
+
     flow_policy_label: Optional[str] = None
     if (
         payload.flow_execution_id

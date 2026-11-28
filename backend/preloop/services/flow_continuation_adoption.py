@@ -28,6 +28,7 @@ from preloop.services.flow_artifacts import artifact_thread_id, artifact_referen
 from preloop.services.flow_feedback import (
     CODE_HOSTS,
     _repository_identity,
+    payload_repository,
     bound_repository,
     feedback_policy,
     register_thread,
@@ -100,8 +101,8 @@ def _load_source(
                 "Published PR URL or source branch is too long"
             )
         payload = details.get("payload") or {}
-        repository = payload.get("repository") or payload.get("project") or {}
         provider = details.get("source")
+        repository = payload_repository(provider, payload)
         tracker_ref = details.get("tracker_id") or flow.trigger_event_source
         if provider not in CODE_HOSTS:
             # A Jira-triggered run published to its bound repository; key the

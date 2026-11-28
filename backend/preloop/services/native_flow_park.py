@@ -109,18 +109,55 @@ def park_marker(execution_id: Any, tool_name: str, tool_input: Any) -> Dict[str,
     }
 
 
-def parked_message(request_id: Any, expires_at: Optional[datetime]) -> str:
-    """Hook reason telling the agent the run is paused, not refused."""
+def parked_message(
+    request_id: Any, expires_at: Optional[datetime], *, restarts_fresh: bool = False
+) -> str:
+    """Hook reason telling the agent the run is paused, not refused.
+
+    Args:
+        request_id: The approval request.
+        expires_at: End of the decision window.
+        restarts_fresh: A host profile: approval starts a fresh run of the
+            task rather than restoring this session.
+
+    Returns:
+        The deny reason.
+    """
     deadline = (
         f" (decision window closes {expires_at.isoformat()})" if expires_at else ""
+    )
+    approved = (
+        "If it is approved a fresh run of this task starts in a fresh checkout "
+        "and the command may run once there"
+        if restarts_fresh
+        else "If it is approved the run resumes and the command may run once"
     )
     return (
         f"Preloop requires human approval for this command (approval request "
         f"{request_id}){deadline}. The command did not run and this execution is "
-        "being paused: stop now and do not retry it. If it is approved the run "
-        "resumes and the command may run once; if it is refused or the window "
-        "closes, the run ends."
+        f"being paused: stop now and do not retry it. {approved}; if it is "
+        "refused or the window closes, the run ends and nothing more is "
+        "published."
     )
+
+
+def restarts_fresh(execution_id: Any) -> bool:
+    """True when a park of this execution resumes as a fresh run.
+
+    Args:
+        execution_id: The parked execution.
+
+    Returns:
+        True for host-profile runs.
+    """
+    from preloop.services.approval_park import execution_restarts_fresh
+
+    try:
+        with _session_factory()() as db:
+            return execution_restarts_fresh(db, execution_id)
+    except Exception:
+        logger.debug("Could not read the park mode of execution %s", execution_id)
+        return False
 
 
 def _session_factory() -> Any:
@@ -148,6 +185,64 @@ def pending_park_reason(execution_id: Any) -> Optional[str]:
         "This execution is paused waiting for approval request "
         f"{park['request_id']}. No further commands run until it is decided."
     )
+
+
+def verified_host_execution(
+    *, account_id: Any, user_id: Any, execution_id: Any
+) -> Optional[Dict[str, uuid.UUID]]:
+    """Verify an execution id a managed-agent hook reported for its session.
+
+    A private-runner host profile runs the operator's own CLI, whose
+    onboarded permission hook authenticates with the managed agent's key
+    and only reports ``PRELOOP_FLOW_EXECUTION_ID``. Unverified, that id was
+    ignored: the approval had no execution, the hook denied at once and the
+    run carried on and published while the request stayed pending (#2597).
+
+    The id is accepted only for a live execution of a flow in the caller's
+    account that is leased, as a host-exec job, to a runner the same user
+    registered: the process that set the variable.
+
+    Args:
+        account_id: Caller's account.
+        user_id: User the managed-agent credential belongs to.
+        execution_id: Execution id the hook reported.
+
+    Returns:
+        ``{"execution_id", "flow_id"}``, or None when unverified.
+    """
+    from preloop.models.crud import crud_flow, crud_flow_execution, crud_flow_runner
+
+    try:
+        execution_uuid = uuid.UUID(str(execution_id))
+        account_uuid = uuid.UUID(str(account_id))
+    except (TypeError, ValueError):
+        return None
+    if user_id is None:
+        return None
+    with _session_factory()() as db:
+        execution = crud_flow_execution.get(db, id=execution_uuid)
+        if execution is None or (
+            str(execution.status or "").upper()
+            in crud_flow_execution.TERMINAL_EXECUTION_STATUSES
+        ):
+            return None
+        flow = crud_flow.get(db, id=execution.flow_id, account_id=str(account_uuid))
+        if flow is None:
+            return None
+        assignment = crud_flow_runner.get_assignment_by_execution(
+            db, execution_id=execution_uuid
+        )
+        job = getattr(assignment, "pending_job", None) if assignment else None
+        if not isinstance(job, dict) or job.get("completion_protocol") != "host_exec":
+            return None
+        runner = crud_flow_runner.get(db, id=assignment.runner_id)
+        if (
+            runner is None
+            or runner.account_id != account_uuid
+            or str(runner.registered_by_user_id) != str(user_id)
+        ):
+            return None
+        return {"execution_id": execution_uuid, "flow_id": flow.id}
 
 
 def resolve_window(execution_id: Any, workflow: Any) -> Any:
