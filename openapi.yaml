@@ -56352,8 +56352,9 @@ components:
             exclusiveMinimum: 0.0
           - type: 'null'
           title: Claim Max Age Hours
-          description: 'A claim label applied longer ago than this is stale and ignored.
-            Unset: a claim label never goes stale.'
+          description: 'A claim label applied longer ago than this is stale and ignored,
+            as is one whose application is not among the pull request''s last 100
+            label events. Unset: a claim label never goes stale.'
       additionalProperties: false
       type: object
       title: PullRequestExclusions
