@@ -95,10 +95,10 @@ test('reports a plugin and persists its account approval through the console', a
   const captureDir = process.env.PRELOOP_EXTENSION_SCREENSHOTS;
   if (captureDir) await mkdir(captureDir, { recursive: true });
   for (const [kind, id, detail] of [
-    ['skill', 'careful', 'Bundled scripts: 1'],
+    ['skill', 'careful', /Bundled scripts\s*1/],
     ['hook', 'PreToolUse', 'Bash|Edit'],
-    ['plugin', 'reviewer@community', 'Author: Jane Doe'],
-  ]) {
+    ['plugin', 'reviewer@community', /Publisher\s*Jane Doe/],
+  ] as const) {
     await page
       .getByRole('button', { name: `Details for ${id}`, exact: true })
       .click();

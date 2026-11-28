@@ -2407,6 +2407,23 @@ paths:
             pattern: ^[^\x00-\x1f\x7f/\\]{1,128}$
           - type: 'null'
           title: Extension Id
+      - name: capability
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - enum:
+            - shell
+            - files_read
+            - files_write
+            - network
+            - hooks
+            - mcp
+            - scripts
+            - unknown
+            type: string
+          - type: 'null'
+          title: Capability
       - name: limit
         in: query
         required: false
@@ -41686,6 +41703,11 @@ components:
           - too_large
           - unreadable
           title: Content Hash Status
+        capabilities:
+          items:
+            $ref: '#/components/schemas/ExtensionCapability'
+          type: array
+          title: Capabilities
       type: object
       required:
       - fingerprint
@@ -41718,6 +41740,7 @@ components:
           - 2
           - 3
           - 4
+          - 5
           title: Schema Version
           default: 1
         extension_completeness:
@@ -43360,6 +43383,22 @@ components:
             $ref: '#/components/schemas/ContentHashBucket'
           type: array
           title: Content Hashes
+        capabilities:
+          items:
+            $ref: '#/components/schemas/ExtensionCapability'
+          type: array
+          title: Capabilities
+        first_seen_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: First Seen At
+        people_count:
+          type: integer
+          title: People Count
+          description: Distinct people whose credentials reported this extension
+          default: 0
       type: object
       required:
       - agent_kind
@@ -43584,6 +43623,63 @@ components:
       - agents
       title: ExtensionBundleCounts
       description: Observed components within an installed plugin.
+    ExtensionBundleNames:
+      properties:
+        skills:
+          items:
+            type: string
+            pattern: ^[A-Za-z0-9_.:\-]{1,64}$
+          type: array
+          maxItems: 50
+          title: Skills
+        commands:
+          items:
+            type: string
+            pattern: ^[A-Za-z0-9_.:\-]{1,64}$
+          type: array
+          maxItems: 50
+          title: Commands
+        agents:
+          items:
+            type: string
+            pattern: ^[A-Za-z0-9_.:\-]{1,64}$
+          type: array
+          maxItems: 50
+          title: Agents
+        mcp_servers:
+          items:
+            type: string
+            pattern: ^[A-Za-z0-9_.:\-]{1,64}$
+          type: array
+          maxItems: 50
+          title: Mcp Servers
+      additionalProperties: false
+      type: object
+      title: ExtensionBundleNames
+      description: Names of the components a plugin bundles, bounded for display.
+    ExtensionCapability:
+      properties:
+        key:
+          type: string
+          enum:
+          - shell
+          - files_read
+          - files_write
+          - network
+          - hooks
+          - mcp
+          - scripts
+          - unknown
+          title: Key
+        label:
+          type: string
+          title: Label
+      type: object
+      required:
+      - key
+      - label
+      title: ExtensionCapability
+      description: One plain-words capability and its filter key.
     ExtensionContentRead:
       properties:
         extension_kind:
@@ -43812,6 +43908,75 @@ components:
           type: array
           maxItems: 10000
           title: Hook Matchers
+        marketplace:
+          type: string
+          maxLength: 300
+          title: Marketplace
+          default: ''
+        homepage_host:
+          type: string
+          maxLength: 253
+          pattern: ^(?:localhost|[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)+)?$
+          title: Homepage Host
+          default: ''
+        repository_host:
+          type: string
+          maxLength: 253
+          pattern: ^(?:localhost|[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)+)?$
+          title: Repository Host
+          default: ''
+        license:
+          type: string
+          pattern: ^(?:[A-Za-z0-9][A-Za-z0-9.+\-]{0,63})?$
+          title: License
+          default: ''
+        modified_at:
+          type: string
+          pattern: ^(?:\d{4}-\d{2}-\d{2})?$
+          title: Modified At
+          default: ''
+        tools_declared:
+          type: boolean
+          title: Tools Declared
+          default: false
+        allowed_tools:
+          items:
+            type: string
+            pattern: ^[A-Za-z][A-Za-z0-9_.:*()| \-]{0,63}$
+          type: array
+          maxItems: 50
+          title: Allowed Tools
+        hook_events:
+          items:
+            type: string
+            pattern: ^[A-Za-z][A-Za-z0-9_\-]{0,31}$
+          type: array
+          maxItems: 50
+          title: Hook Events
+        bundle_names:
+          anyOf:
+          - $ref: '#/components/schemas/ExtensionBundleNames'
+          - type: 'null'
+        transport:
+          type: string
+          enum:
+          - ''
+          - stdio
+          - http
+          - sse
+          title: Transport
+          default: ''
+        command:
+          type: string
+          pattern: ^(?:[A-Za-z0-9_.+\-]{1,128})?$
+          title: Command
+          default: ''
+        url_host:
+          type: string
+          maxLength: 253
+          pattern: ^(?:localhost|[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)+)?$
+          title: Url Host
+          default: ''
       additionalProperties: false
       type: object
       title: ExtensionDetails
@@ -43825,6 +43990,14 @@ components:
         preloop_managed:
           type: boolean
           title: Preloop Managed
+        script:
+          type: boolean
+          title: Script
+          default: false
+        in_project:
+          type: boolean
+          title: In Project
+          default: false
       additionalProperties: false
       type: object
       required:
@@ -66030,7 +66203,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;

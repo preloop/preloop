@@ -379,7 +379,13 @@ describe('extension inventory', () => {
       [...root.querySelectorAll('th')].map((th) =>
         th.firstChild?.textContent?.trim()
       )
-    ).to.deep.equal(['Agent', 'Kind', 'Extension', 'First seen', 'Approval']);
+    ).to.deep.equal([
+      'Extension',
+      'Source',
+      'What it can do',
+      'First seen',
+      'Approval',
+    ]);
     expect(root.querySelector('tbody')?.textContent).to.contain(
       'reviewer@community'
     );

@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -23,6 +24,19 @@ type inventoryExtensionDetails struct {
 	Author              string                 `json:"author,omitempty"`
 	Bundles             *extensionBundleCounts `json:"bundles,omitempty"`
 	HookMatchers        []extensionHookMatcher `json:"hook_matchers,omitempty"`
+	// Schema 5 decision metadata. Hosts only, never URLs or paths.
+	Marketplace    string                `json:"marketplace,omitempty"`
+	HomepageHost   string                `json:"homepage_host,omitempty"`
+	RepositoryHost string                `json:"repository_host,omitempty"`
+	License        string                `json:"license,omitempty"`
+	ModifiedAt     string                `json:"modified_at,omitempty"`
+	ToolsDeclared  bool                  `json:"tools_declared,omitempty"`
+	AllowedTools   []string              `json:"allowed_tools,omitempty"`
+	HookEvents     []string              `json:"hook_events,omitempty"`
+	BundleNames    *extensionBundleNames `json:"bundle_names,omitempty"`
+	Transport      string                `json:"transport,omitempty"`
+	Command        string                `json:"command,omitempty"`
+	URLHost        string                `json:"url_host,omitempty"`
 }
 type extensionBundleCounts struct {
 	Skills     int `json:"skills"`
@@ -40,8 +54,12 @@ type extensionHookMatcher struct {
 type extensionHookCommand struct {
 	Executable     string `json:"executable"`
 	PreloopManaged bool   `json:"preloop_managed"`
+	Script         bool   `json:"script,omitempty"`
+	InProject      bool   `json:"in_project,omitempty"`
 }
 type extensionLocalDetail struct {
+	// Version is the authored frontmatter version; add() validates it.
+	Version  string
 	Body     string
 	Files    []string
 	Commands []string
@@ -135,10 +153,14 @@ func (r *extensionRoot) markdownDetails(path, id string, skill bool, plugin stri
 		local.Files = []string{file}
 	}
 	var front struct {
-		Name                   string `yaml:"name"`
-		Description            string `yaml:"description"`
-		UserInvocable          *bool  `yaml:"user-invocable"`
-		DisableModelInvocation bool   `yaml:"disable-model-invocation"`
+		Name                   string         `yaml:"name"`
+		Description            string         `yaml:"description"`
+		UserInvocable          *bool          `yaml:"user-invocable"`
+		DisableModelInvocation bool           `yaml:"disable-model-invocation"`
+		AllowedTools           any            `yaml:"allowed-tools"`
+		License                string         `yaml:"license"`
+		Hooks                  map[string]any `yaml:"hooks"`
+		Version                any            `yaml:"version"`
 	}
 	text := strings.ReplaceAll(string(data), "\r\n", "\n")
 	if strings.HasPrefix(text, "---\n") {
@@ -150,8 +172,21 @@ func (r *extensionRoot) markdownDetails(path, id string, skill bool, plugin stri
 			r.scan.fail("extension_malformed")
 		}
 	}
+	if front.Version != nil {
+		local.Version = fmt.Sprint(front.Version)
+	}
 	details.Name, _ = r.scan.detailText(front.Name)
-	details.Description, details.DescriptionWithheld = r.scan.detailText(front.Description)
+	// Bodies never leave the device in a report; only front matter does.
+	details.Description, details.DescriptionWithheld = r.scan.descriptionText(front.Description)
+	if front.AllowedTools != nil {
+		details.ToolsDeclared = true
+		details.AllowedTools = r.scan.safeTools(toolList(front.AllowedTools))
+	}
+	events := map[string]bool{}
+	for event := range front.Hooks {
+		events[event] = true
+	}
+	details.HookEvents = eventNames(events)
 	name := id
 	if skill && front.Name != "" {
 		name = front.Name
@@ -199,18 +234,28 @@ func (r *extensionRoot) markdownDetails(path, id string, skill bool, plugin stri
 		}
 		files := r.fileList(path)
 		count := 0
-		prefix := filepath.Join(path, "scripts") + string(filepath.Separator)
-		for _, name := range files {
-			if strings.HasPrefix(name, prefix) {
-				count++
+		// Skills ship executables in scripts/ (the documented place) or bin/.
+		for _, dir := range []string{"scripts", "bin"} {
+			prefix := filepath.Join(path, dir) + string(filepath.Separator)
+			for _, name := range files {
+				if strings.HasPrefix(name, prefix) {
+					count++
+				}
 			}
 		}
 		details.ScriptCount = &count
+		details.ModifiedAt = r.modifiedDate(files)
+		details.License = licenseName(front.License, r.licenseFile(path))
 		if r.scan.localDisplay {
 			local.Files = files
 		}
+	} else {
+		details.ModifiedAt = r.modifiedDate([]string{file})
 	}
 	details.Plugin, _ = r.scan.detailText(plugin)
+	if _, market, ok := strings.Cut(plugin, "@"); ok {
+		details.Marketplace, _ = r.scan.detailText(market)
+	}
 	return details, local
 }
 
@@ -233,8 +278,36 @@ func firstCommandWord(command string) (string, string) {
 	return command[:end], strings.TrimSpace(command[end:])
 }
 
-func (s *extensionScan) hookCommand(command string) extensionHookCommand {
+// hookInterpreters run the file named by their first argument, or the
+// command after -c; that file decides whether the hook runs a script.
+var hookInterpreters = map[string]bool{"bash": true, "sh": true, "zsh": true, "node": true, "bun": true, "deno": true, "python": true, "python3": true, "ruby": true, "perl": true}
+
+func (s *extensionScan) hookCommand(command, scope string) extensionHookCommand {
 	word, rest := firstCommandWord(command)
+	script, inProject := hookScript(word, scope)
+	if base := filepath.Base(strings.ReplaceAll(word, "\\", "/")); !script && hookInterpreters[base] {
+		next := rest
+		for next != "" {
+			arg, after := firstCommandWord(next)
+			if arg == "-c" {
+				arg, _ = firstCommandWord(after)
+				inner, innerRest := firstCommandWord(arg)
+				if inner == "exec" {
+					inner, _ = firstCommandWord(innerRest)
+				}
+				script, inProject = hookScript(inner, scope)
+				break
+			}
+			if !strings.HasPrefix(arg, "-") {
+				script, inProject = hookScript(arg, scope)
+				break
+			}
+			if after == next {
+				break
+			}
+			next = after
+		}
+	}
 	word = filepath.Base(strings.ReplaceAll(word, "\\", "/"))
 	safe, hidden := s.detailText(word)
 	if hidden || !detailExecutablePattern.MatchString(safe) {
@@ -250,7 +323,7 @@ func (s *extensionScan) hookCommand(command string) extensionHookCommand {
 			}
 		}
 	}
-	return extensionHookCommand{Executable: safe, PreloopManaged: managed}
+	return extensionHookCommand{Executable: safe, PreloopManaged: managed, Script: script, InProject: inProject}
 }
 
 // componentRoots augments conventional plugin directories with manifest paths.
@@ -296,8 +369,35 @@ func componentContains(file string, roots []string, skills bool) bool {
 }
 
 func (r *extensionRoot) pluginDetails(path string, manifest map[string]json.RawMessage, ext *inventoryExtension) {
-	details := &inventoryExtensionDetails{Bundles: &extensionBundleCounts{}}
-	details.Description, details.DescriptionWithheld = r.scan.detailText(extensionString(manifest["description"]))
+	details := &inventoryExtensionDetails{Bundles: &extensionBundleCounts{}, BundleNames: &extensionBundleNames{}}
+	entry := r.scan.marketEntries[ext.ID]
+	// Purpose: the manifest, else the marketplace listing. Both are published
+	// metadata; README and component bodies are content and stay on the device.
+	for _, candidate := range []string{extensionString(manifest["description"]), extensionString(entry["description"])} {
+		if strings.TrimSpace(candidate) != "" {
+			details.Description, details.DescriptionWithheld = r.scan.descriptionText(candidate)
+			break
+		}
+	}
+	if _, market, ok := strings.Cut(ext.ID, "@"); ok {
+		details.Marketplace, _ = r.scan.detailText(market)
+	}
+	details.HomepageHost = manifestURLHost(manifest["homepage"])
+	if details.HomepageHost == "" {
+		details.HomepageHost = manifestURLHost(entry["homepage"])
+	}
+	details.RepositoryHost = manifestURLHost(manifest["repository"])
+	if details.RepositoryHost == "" {
+		details.RepositoryHost = manifestURLHost(entry["repository"])
+	}
+	details.License = licenseName(extensionString(manifest["license"]), r.licenseFile(path))
+	if details.License == "" {
+		details.License = licenseName(extensionString(entry["license"]), nil)
+	}
+	if manifest["author"] == nil && entry["author"] != nil {
+		manifest = maps.Clone(manifest)
+		manifest["author"] = entry["author"]
+	}
 	var author struct {
 		Name string `json:"name"`
 	}
@@ -307,6 +407,15 @@ func (r *extensionRoot) pluginDetails(path string, manifest map[string]json.RawM
 	}
 	details.Author, _ = r.scan.detailText(author.Name)
 	files := r.fileList(path)
+	details.ModifiedAt = r.modifiedDate(files)
+	// The plugin's tools are the union of what its components declare; one
+	// undeclared component leaves the plugin's tool use undeclared.
+	tools, declared, components := []string{}, true, 0
+	addTools := func(found []string, ok bool) {
+		components++
+		tools = append(tools, found...)
+		declared = declared && ok
+	}
 	skills := r.componentRoots(manifest, "skills", "skills")
 	commands := r.componentRoots(manifest, "commands", "commands")
 	agents := r.componentRoots(manifest, "agents", "agents")
@@ -317,16 +426,22 @@ func (r *extensionRoot) pluginDetails(path string, manifest map[string]json.RawM
 			details.Bundles.Skills++
 			skillPath := filepath.Dir(file)
 			id := filepath.Base(skillPath)
+			details.BundleNames.Skills = append(details.BundleNames.Skills, id)
 			d, local := r.markdownDetails(skillPath, id, true, ext.ID)
+			addTools(d.AllowedTools, d.ToolsDeclared)
 			hash, status := treeHash(r.root, skillPath)
 			r.captureBundledSkill(ext.ID, path, strings.Split(ext.ID, "@")[0]+":"+id, skillPath, hash)
 			ext.Bundled = append(ext.Bundled, inventoryExtension{Kind: "skill", ID: strings.Split(ext.ID, "@")[0] + ":" + id, Details: d, Local: local, ContentHash: hash, HashStatus: status})
 		}
 		if strings.HasSuffix(rel, ".md") && componentContains(rel, commands, false) {
 			details.Bundles.Commands++
+			details.BundleNames.Commands = append(details.BundleNames.Commands, strings.TrimSuffix(filepath.Base(rel), ".md"))
+			addTools(r.componentTools(file))
 		}
 		if strings.HasSuffix(rel, ".md") && componentContains(rel, agents, false) {
 			details.Bundles.Agents++
+			details.BundleNames.Agents = append(details.BundleNames.Agents, strings.TrimSuffix(filepath.Base(rel), ".md"))
+			addTools(r.componentTools(file))
 		}
 	}
 	hookDocs := []map[string]json.RawMessage{}
@@ -340,13 +455,16 @@ func (r *extensionRoot) pluginDetails(path string, manifest map[string]json.RawM
 		hookDocs = append(hookDocs, inline)
 	}
 	localCommands := []string{}
+	hookEvents := map[string]bool{}
+	scripts := 0
 	for _, doc := range hookDocs {
 		var events map[string][]json.RawMessage
 		if json.Unmarshal(doc["hooks"], &events) != nil {
 			r.scan.fail("extension_malformed")
 			continue
 		}
-		for _, groups := range events {
+		for event, groups := range events {
+			hookEvents[event] = true
 			for _, group := range groups {
 				var obj struct {
 					Matcher string `json:"matcher"`
@@ -360,6 +478,17 @@ func (r *extensionRoot) pluginDetails(path string, manifest map[string]json.RawM
 					continue
 				}
 				details.Bundles.Hooks += len(obj.Hooks)
+				for _, command := range append([]string{obj.Command}, func() []string {
+					out := []string{}
+					for _, hook := range obj.Hooks {
+						out = append(out, hook.Command)
+					}
+					return out
+				}()...) {
+					if command != "" && r.scan.hookCommand(command, "user").Script {
+						scripts++
+					}
+				}
 				if obj.Command != "" {
 					details.Bundles.Hooks++
 					localCommands = append(localCommands, fmt.Sprintf("Matcher: %s\n%s", obj.Matcher, obj.Command))
@@ -394,9 +523,29 @@ func (r *extensionRoot) pluginDetails(path string, manifest map[string]json.RawM
 		}
 	}
 	details.Bundles.MCPServers = len(serverNames)
+	details.HookEvents = eventNames(hookEvents)
+	if components > 0 {
+		details.ToolsDeclared = declared
+		details.AllowedTools = uniqueSorted(tools)
+		if len(details.AllowedTools) > detailNameLimit {
+			details.AllowedTools = details.AllowedTools[:detailNameLimit]
+		}
+	}
+	if details.Bundles.Hooks > 0 {
+		details.ScriptCount = &scripts
+	}
+	names := []string{}
+	for name := range serverNames {
+		names = append(names, name)
+	}
+	details.BundleNames.Skills = safeNames(details.BundleNames.Skills)
+	details.BundleNames.Commands = safeNames(details.BundleNames.Commands)
+	details.BundleNames.Agents = safeNames(details.BundleNames.Agents)
+	details.BundleNames.MCPServers = safeNames(names)
 	if details.Bundles.Hooks > 10000 || details.Bundles.MCPServers > 10000 {
 		r.scan.fail("extension_limit")
 		details.Bundles = nil
+		details.BundleNames = nil
 	}
 	ext.Details = details
 	if r.scan.localDisplay {

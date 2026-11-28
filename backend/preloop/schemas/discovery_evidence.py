@@ -107,7 +107,7 @@ class ObservedProfile(SafeEvidenceModel):
 class DiscoveryEvidence(SafeEvidenceModel):
     """Versioned bounded observation, including empty and failed scans."""
 
-    schema_version: Literal[1, 2, 3, 4] = 1
+    schema_version: Literal[1, 2, 3, 4, 5] = 1
     extension_completeness: Literal["complete", "partial", "failed"] | None = None
     extension_errors: list[
         Literal[
@@ -239,6 +239,10 @@ class DiscoveryEvidence(SafeEvidenceModel):
                 ext.details is not None for ext in (app.extensions or [])
             ):
                 raise ValueError("Extension details require schema version 4")
+            if self.schema_version < 5 and any(
+                ext.uses_schema5() for ext in (app.extensions or [])
+            ):
+                raise ValueError("Extension decision metadata requires schema 5")
             if self.schema_version < 3 and (
                 app.extensions is not None or app.completeness is not None
             ):

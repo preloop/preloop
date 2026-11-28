@@ -10,6 +10,10 @@ from sqlalchemy.orm import Session
 
 from preloop.models import models
 from preloop.schemas.discovery_evidence import DiscoveryEvidence
+from preloop.schemas.extension_capabilities import (
+    capability_keys,
+    extension_capabilities,
+)
 
 from .expected_device import crud_expected_device
 from .extension_approval import (
@@ -142,6 +146,7 @@ class CRUDDiscoveredExtension:
                         if extension.details is not None
                         else None
                     )
+                    row.capabilities = capability_keys(extension.kind, row.details)
                     row.hook_count = extension.count
                     row.present = True
                     row.last_seen_at = received
@@ -276,6 +281,7 @@ class CRUDDiscoveredExtension:
         q: str | None = None,
         extension_kind: str | None = None,
         extension_id: str | None = None,
+        capability: str | None = None,
     ) -> tuple[list[dict[str, Any]], str | None]:
         """Return presence, raw approvals and content-pinned effective state.
 
@@ -297,6 +303,8 @@ class CRUDDiscoveredExtension:
         ):
             if value is not None:
                 filters.append(column == value)
+        if capability is not None:
+            filters.append(model.capabilities.contains([capability]))
         if q and q.strip():
             term = q.strip()
             matches = or_(
@@ -321,6 +329,11 @@ class CRUDDiscoveredExtension:
         )
         key = decode_cursor(cursor, 4 if group else 3, max_value_length=300)
         if group:
+            observation, api_key = models.DiscoveryObservation, models.ApiKey
+            user = models.User
+            # A person is the user behind the reporting credential: an API
+            # key's owner, or the signed-in user. Runner reports name nobody.
+            reporter = func.coalesce(api_key.user_id, user.id)
             columns = (model.agent_kind, model.extension_kind, model.extension_id)
             # Pick the same latest matching observation for both display and
             # sorting, before paginating the grouped inventory.
@@ -350,8 +363,13 @@ class CRUDDiscoveredExtension:
                     func.bool_or(effective_state_sql() == "content_unverified"),
                     latest_details.c.details,
                     latest_details.c.display_name,
+                    func.min(model.first_seen_at),
+                    func.count(func.distinct(reporter)),
                 )
                 .outerjoin(approval, approval_join())
+                .outerjoin(observation, observation.id == model.last_observation_id)
+                .outerjoin(api_key, api_key.id == observation.source_ref)
+                .outerjoin(user, user.id == observation.source_ref)
                 .where(*filters)
                 .join(
                     latest_details,
@@ -389,6 +407,9 @@ class CRUDDiscoveredExtension:
                 items.append(
                     dict(
                         details=r[10],
+                        capabilities=extension_capabilities(r[1], r[10]),
+                        first_seen_at=r[12],
+                        people_count=r[13],
                         agent_kind=r[0],
                         extension_kind=r[1],
                         extension_id=r[2],
@@ -445,6 +466,9 @@ class CRUDDiscoveredExtension:
             for row, decision in rows[:limit]:
                 item = row.to_dict()
                 item.update(
+                    capabilities=extension_capabilities(
+                        row.extension_kind, row.details
+                    ),
                     fingerprint=row.workstation_fingerprint,
                     approval_state=decision.approval_state if decision else "unknown",
                     effective_state=effective_state(

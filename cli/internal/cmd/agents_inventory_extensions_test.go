@@ -338,7 +338,7 @@ func TestExtensionReportReasonsAndOlderServer(t *testing.T) {
 			fmt.Fprint(w, `{"detail":[{"loc":["body","evidence","extension_errors"],"type":"extra_forbidden"}]}`)
 			return
 		}
-		if len(received.Evidence.ExtensionErrors) != 0 || received.Evidence.SchemaVersion != 4 {
+		if len(received.Evidence.ExtensionErrors) != 0 || received.Evidence.SchemaVersion != 5 {
 			t.Error("fallback lost inventory or retained unsupported reasons")
 		}
 		fmt.Fprint(w, `{"received":1}`)

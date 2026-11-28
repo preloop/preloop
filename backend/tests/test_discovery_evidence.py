@@ -46,7 +46,7 @@ def envelope(**changes: object) -> dict:
         {"source_ref": str(uuid4())},
         {"last_used_at": NOW.isoformat()},
         {"errors": ["https://example.com"]},
-        {"schema_version": 5},
+        {"schema_version": 6},
     ],
 )
 def test_private_or_unknown_fields_rejected(extra: dict) -> None:

@@ -7,8 +7,10 @@ import (
 	toml "github.com/pelletier/go-toml/v2"
 )
 
-// mcpServers reports configuration identities, never command arguments,
-// environment values, headers or URLs. A hash covers the complete definition.
+// mcpServers reports configuration identities with their transport, the
+// executable basename of a stdio server and the host of a remote one; never
+// command arguments, environment values, headers or URL paths. A hash covers
+// the complete definition.
 // Like hook and skill hashes, this is a portable comparison digest, not
 // encryption: secret rotation changes pins and low-entropy values are guessable.
 // Configured presence does not establish approval or observed execution.
@@ -54,7 +56,7 @@ func (r *extensionRoot) mcpServers(raw json.RawMessage, scope, project, file str
 			r.scan.fail("extension_malformed")
 			continue
 		}
-		ext := inventoryExtension{Kind: "mcp_server", ID: name, SourceKind: "local", Scope: scope, ProjectRefHash: project, Enabled: enabled, ContentHash: extensionHash(canonical), HashStatus: contentHashOK}
+		ext := inventoryExtension{Details: r.scan.mcpDetails(server), Kind: "mcp_server", ID: name, SourceKind: "local", Scope: scope, ProjectRefHash: project, Enabled: enabled, ContentHash: extensionHash(canonical), HashStatus: contentHashOK}
 		if r.scan.localDisplay {
 			ext.Local = &extensionLocalDetail{Files: []string{file}}
 		}

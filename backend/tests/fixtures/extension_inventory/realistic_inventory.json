@@ -1,0 +1,2345 @@
+{
+  "generated_by": "backend/tests/fixtures/extension_inventory/build_extension_home.sh",
+  "apps": [
+    {
+      "app_id": "claude-code",
+      "extensions": [
+        {
+          "kind": "hook",
+          "id": "PostToolUse",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:98be519dda93bb54b83acad2350dc4e3097e46ffd017b3a201e538f481f4a6dd",
+          "content_hash_status": "ok",
+          "event": "PostToolUse",
+          "count": 1,
+          "id_hashed": false,
+          "details": {
+            "invocation": "Runs on PostToolUse",
+            "hook_matchers": [
+              {
+                "matcher": "*",
+                "count": 1,
+                "commands": [
+                  {
+                    "executable": "preloop",
+                    "preloop_managed": true
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "kind": "hook",
+          "id": "PreCompact",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:3a60d49320941b0d049e35dd2a96f4667e9ad72e335dfa95404b44e00f23e361",
+          "content_hash_status": "ok",
+          "event": "PreCompact",
+          "count": 1,
+          "id_hashed": false,
+          "details": {
+            "invocation": "Runs on PreCompact",
+            "hook_matchers": [
+              {
+                "count": 1,
+                "commands": [
+                  {
+                    "executable": "backup-transcript.sh",
+                    "preloop_managed": false,
+                    "script": true
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "kind": "hook",
+          "id": "PreToolUse",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:bbf318ed56091a0d2ef37871404f04776ccb3c588e5057af84b59ce2ef890ea4",
+          "content_hash_status": "ok",
+          "event": "PreToolUse",
+          "count": 1,
+          "id_hashed": false,
+          "details": {
+            "invocation": "Runs on PreToolUse",
+            "hook_matchers": [
+              {
+                "matcher": "*",
+                "count": 1,
+                "commands": [
+                  {
+                    "executable": "preloop",
+                    "preloop_managed": true
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "kind": "hook",
+          "id": "SessionStart",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:fc4bf77d2f479e48b8525d7549131d9bd972dde602e8251c88cefb1459ce473a",
+          "content_hash_status": "ok",
+          "event": "SessionStart",
+          "count": 2,
+          "id_hashed": false,
+          "details": {
+            "invocation": "Runs on SessionStart",
+            "hook_matchers": [
+              {
+                "count": 1,
+                "commands": [
+                  {
+                    "executable": "preloop",
+                    "preloop_managed": true
+                  }
+                ]
+              },
+              {
+                "matcher": "^(startup|resume|clear|compact|fork)$",
+                "count": 1,
+                "commands": [
+                  {
+                    "executable": "bash",
+                    "preloop_managed": false,
+                    "script": true
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "kind": "hook",
+          "id": "Stop",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:3a21793ffa2f8dd91d4f3be3d0a89c8ba61359c4e48a3eec12db46f6696478b7",
+          "content_hash_status": "ok",
+          "event": "Stop",
+          "count": 2,
+          "id_hashed": false,
+          "details": {
+            "invocation": "Runs on Stop",
+            "hook_matchers": [
+              {
+                "count": 1,
+                "commands": [
+                  {
+                    "executable": "timeline-stop-hook",
+                    "preloop_managed": false,
+                    "script": true
+                  }
+                ]
+              },
+              {
+                "count": 1,
+                "commands": [
+                  {
+                    "executable": "preloop",
+                    "preloop_managed": true
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "kind": "hook",
+          "id": "UserPromptSubmit",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:98be519dda93bb54b83acad2350dc4e3097e46ffd017b3a201e538f481f4a6dd",
+          "content_hash_status": "ok",
+          "event": "UserPromptSubmit",
+          "count": 1,
+          "id_hashed": false,
+          "details": {
+            "invocation": "Runs on UserPromptSubmit",
+            "hook_matchers": [
+              {
+                "count": 1,
+                "commands": [
+                  {
+                    "executable": "preloop",
+                    "preloop_managed": true
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "kind": "mcp_server",
+          "id": "playwright",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:f516df0e020cf868b79df8c21d84afc2bf4da1403abcd9ed0a9e6848bf4b1b09",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "transport": "stdio",
+            "command": "npx"
+          }
+        },
+        {
+          "kind": "mcp_server",
+          "id": "preloop",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:0ca65229b1cee12794b89675179a294d32b30b66f9db4f71372a370f45246de3",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "transport": "http",
+            "url_host": "preloop.example.com"
+          }
+        },
+        {
+          "kind": "plugin",
+          "id": "cc-plugin-agents-md@builtin",
+          "source_kind": "builtin",
+          "scope": "user",
+          "enabled": "true",
+          "id_hashed": false
+        },
+        {
+          "kind": "plugin",
+          "id": "cc-plugin-plugin-authoring@builtin",
+          "source_kind": "builtin",
+          "scope": "user",
+          "enabled": "true",
+          "id_hashed": false
+        },
+        {
+          "kind": "plugin",
+          "id": "cc-plugin-privacy@builtin",
+          "source_kind": "builtin",
+          "scope": "user",
+          "enabled": "true",
+          "id_hashed": false
+        },
+        {
+          "kind": "plugin",
+          "id": "code-review@claude-plugins-official",
+          "version": "1.0.1",
+          "source_kind": "official_marketplace",
+          "source_ref_hash": "sha256:3d7e53eb9f016fc9ed91c787ed77c4d950dadf066c8cc83023ad2faec11e3e10",
+          "scope": "user",
+          "enabled": "true",
+          "content_hash": "sha256:b20e5a304eab4ff9d811aea0ea0d85d6d1c22f909858743aee54521c75d13ad1",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "description": "Automated code review for pull requests using multiple specialized agents with confidence-based scoring",
+            "author": "Anthropic",
+            "bundles": {
+              "skills": 0,
+              "commands": 1,
+              "hooks": 0,
+              "mcp_servers": 0,
+              "agents": 0
+            },
+            "marketplace": "claude-plugins-official",
+            "homepage_host": "github.com",
+            "license": "Apache-2.0",
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "Bash(gh issue list:*)",
+              "Bash(gh issue view:*)",
+              "Bash(gh pr comment:*)",
+              "Bash(gh pr diff:*)",
+              "Bash(gh pr list:*)",
+              "Bash(gh pr view:*)",
+              "Bash(gh search:*)",
+              "mcp__github_inline_comment__create_inline_comment"
+            ],
+            "bundle_names": {
+              "commands": [
+                "code-review"
+              ]
+            }
+          }
+        },
+        {
+          "kind": "plugin",
+          "id": "commit-commands@claude-plugins-official",
+          "version": "1.0.1",
+          "source_kind": "official_marketplace",
+          "source_ref_hash": "sha256:3d7e53eb9f016fc9ed91c787ed77c4d950dadf066c8cc83023ad2faec11e3e10",
+          "scope": "user",
+          "enabled": "true",
+          "content_hash": "sha256:c35d2dbaeeff1c339f5f91a45e98264a573afce64427d05d3bcf9a89cccb1936",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "description": "Streamline your git workflow with simple commands for committing, pushing, and creating pull requests",
+            "author": "Anthropic",
+            "bundles": {
+              "skills": 0,
+              "commands": 3,
+              "hooks": 0,
+              "mcp_servers": 0,
+              "agents": 0
+            },
+            "marketplace": "claude-plugins-official",
+            "homepage_host": "github.com",
+            "license": "Apache-2.0",
+            "modified_at": "2026-11-28",
+            "allowed_tools": [
+              "Bash(gh pr create:*)",
+              "Bash(git add:*)",
+              "Bash(git checkout --branch:*)",
+              "Bash(git commit:*)",
+              "Bash(git push:*)",
+              "Bash(git status:*)"
+            ],
+            "bundle_names": {
+              "commands": [
+                "clean_gone",
+                "commit",
+                "commit-push-pr"
+              ]
+            }
+          }
+        },
+        {
+          "kind": "plugin",
+          "id": "feature-dev@claude-plugins-official",
+          "version": "1.0.1",
+          "source_kind": "official_marketplace",
+          "source_ref_hash": "sha256:3d7e53eb9f016fc9ed91c787ed77c4d950dadf066c8cc83023ad2faec11e3e10",
+          "scope": "user",
+          "enabled": "true",
+          "content_hash": "sha256:255e4aa1619aa4712cbc95458289f58a81482bb6e2af76d4c307e93b0bdc81f7",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "description": "Comprehensive feature development workflow with specialized agents for codebase exploration, architecture design, and quality review",
+            "author": "Anthropic",
+            "bundles": {
+              "skills": 0,
+              "commands": 1,
+              "hooks": 0,
+              "mcp_servers": 0,
+              "agents": 3
+            },
+            "marketplace": "claude-plugins-official",
+            "homepage_host": "github.com",
+            "license": "Apache-2.0",
+            "modified_at": "2026-11-28",
+            "allowed_tools": [
+              "BashOutput",
+              "Glob",
+              "Grep",
+              "KillShell",
+              "LS",
+              "NotebookRead",
+              "Read",
+              "TodoWrite",
+              "WebFetch",
+              "WebSearch"
+            ],
+            "bundle_names": {
+              "commands": [
+                "feature-dev"
+              ],
+              "agents": [
+                "code-architect",
+                "code-explorer",
+                "code-reviewer"
+              ]
+            }
+          }
+        },
+        {
+          "kind": "plugin",
+          "id": "hookify@claude-plugins-official",
+          "version": "0.1.1",
+          "source_kind": "official_marketplace",
+          "source_ref_hash": "sha256:3d7e53eb9f016fc9ed91c787ed77c4d950dadf066c8cc83023ad2faec11e3e10",
+          "scope": "user",
+          "enabled": "true",
+          "content_hash": "sha256:7044fffde5aa9c456aaba39fd14cb800d41794860cbc4bf2c9019750a2668ef9",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "description": "Easily create hooks to prevent unwanted behaviors by analyzing conversation patterns",
+            "script_count": 4,
+            "author": "Anthropic",
+            "bundles": {
+              "skills": 1,
+              "commands": 4,
+              "hooks": 4,
+              "mcp_servers": 0,
+              "agents": 1
+            },
+            "marketplace": "claude-plugins-official",
+            "homepage_host": "github.com",
+            "license": "Apache-2.0",
+            "modified_at": "2026-11-28",
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Edit",
+              "Glob",
+              "Grep",
+              "Read",
+              "Skill",
+              "Task",
+              "TodoWrite",
+              "Write"
+            ],
+            "hook_events": [
+              "PostToolUse",
+              "PreToolUse",
+              "Stop",
+              "UserPromptSubmit"
+            ],
+            "bundle_names": {
+              "skills": [
+                "writing-rules"
+              ],
+              "commands": [
+                "configure",
+                "help",
+                "hookify",
+                "list"
+              ],
+              "agents": [
+                "conversation-analyzer"
+              ]
+            }
+          }
+        },
+        {
+          "kind": "plugin",
+          "id": "pyright-lsp@claude-plugins-official",
+          "version": "1.0.0",
+          "source_kind": "official_marketplace",
+          "source_ref_hash": "sha256:3d7e53eb9f016fc9ed91c787ed77c4d950dadf066c8cc83023ad2faec11e3e10",
+          "scope": "user",
+          "enabled": "true",
+          "content_hash": "sha256:68a773f6aaa4a8a44576d3f6cfdea1bfe8cd392096af98a5bb91f1c14f136f2b",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "description": "Python language server (Pyright) for type checking and code intelligence",
+            "author": "Anthropic",
+            "bundles": {
+              "skills": 0,
+              "commands": 0,
+              "hooks": 0,
+              "mcp_servers": 0,
+              "agents": 0
+            },
+            "marketplace": "claude-plugins-official",
+            "license": "Apache-2.0",
+            "modified_at": "2026-11-28",
+            "bundle_names": {}
+          }
+        },
+        {
+          "kind": "plugin",
+          "id": "security-guidance@claude-plugins-official",
+          "version": "2.0.21",
+          "source_kind": "official_marketplace",
+          "source_ref_hash": "sha256:3d7e53eb9f016fc9ed91c787ed77c4d950dadf066c8cc83023ad2faec11e3e10",
+          "scope": "user",
+          "enabled": "true",
+          "content_hash": "sha256:4b62ee17ce187f394648a7ea4d9bf2211933872081bf6d374aff264788c32796",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "description": "Security review for Claude-generated code. Pattern-based warnings on edits, LLM-powered diff review on Stop, and an agentic commit reviewer that catches injection, XSS, SSRF, hardcoded secrets, and 25+ other vulnerability classes.",
+            "script_count": 9,
+            "author": "David Dworken",
+            "bundles": {
+              "skills": 0,
+              "commands": 0,
+              "hooks": 9,
+              "mcp_servers": 0,
+              "agents": 0
+            },
+            "marketplace": "claude-plugins-official",
+            "homepage_host": "github.com",
+            "license": "Apache-2.0",
+            "modified_at": "2026-11-28",
+            "hook_events": [
+              "PostToolUse",
+              "SessionStart",
+              "Stop",
+              "UserPromptSubmit"
+            ],
+            "bundle_names": {}
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "autoplan",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:df8e7b54a03e0d1de1205a9b193f277f605a8e65a03fe7733a66d89bbe73dbd5",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "autoplan",
+            "description": "Auto-review pipeline — runs the CEO, design, eng and DX reviews in order (lean run: one reviewer), auto-deciding. Use for: run all reviews, automatic review pipeline. (gstack)",
+            "invocation": "/autoplan; loaded by the model when relevant",
+            "script_count": 6,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Edit",
+              "Glob",
+              "Grep",
+              "Read",
+              "WebSearch",
+              "Write"
+            ],
+            "hook_events": [
+              "PreToolUse"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "benchmark",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:90c4fbe0da164a33dba77867711104b488266bc9c8a57728533e8679f7c1f951",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "benchmark",
+            "description": "Web performance regression detection. Use for: web performance benchmark, check page speed. (gstack)",
+            "invocation": "/benchmark; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Glob",
+              "Read",
+              "Write"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "benchmark-models",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:9cb4abe97626203581378dbb13562e092f23c6410a44b33b0e3da434c8d028db",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "benchmark-models",
+            "description": "Cross-model benchmark for gstack skills. Use for: cross model benchmark, compare claude gpt gemini. (gstack)",
+            "invocation": "/benchmark-models; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Read"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "browse",
+          "version": "2.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:00527b50f0fb382d655f2c041e560fe020ebe021a3d881c3ee33b0ddbd949e8f",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "browse",
+            "description": "Drive a real browser through Aside: open a page, read it, click through a flow, take screenshots, check console errors. Use for: browse a page, open this url, take page screenshot. (gstack)",
+            "invocation": "/browse; loaded by the model when relevant",
+            "script_count": 4,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Read"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "build-check",
+          "version": "0.1.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:9f8e81870ca5bb8bcedbfbb380b1e578c984a91ba54c5c3d74b44872fc1fb784",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "build-check",
+            "description": "Use when coding: run the checks and tests … picks until green. Use for: run the checks, make the tests pass, make it green. (gstack)",
+            "invocation": "/build-check; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Edit",
+              "Glob",
+              "Grep",
+              "Read"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "canary",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:1b5f4e03b0fb397cd9cff190cd6dd29003a50ca485237b10c8d7a4f1018bb977",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "canary",
+            "description": "Post-deploy canary monitoring. Use for: monitor after deploy, canary check. (gstack)",
+            "invocation": "/canary; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Glob",
+              "Read",
+              "Write"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "captain",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:614f7739d0623a23c35c0520b3c943dc3bb811f9a6c3733eb3453a6ea1ab393e",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "captain",
+            "description": "Run a crew of coding agents from one controller (also … lanes send READY blocks and never merge; the controller merges through trains, keeps the digest, relays approvals, fixes flakes daily. Use for: captain, crew. (gstack)",
+            "invocation": "/captain; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Edit",
+              "Glob",
+              "Grep",
+              "Read",
+              "Write"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "careful",
+          "version": "0.1.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:b3d06128ecfd1813089a13bd3f804b18b2db8359a34fad7f4abce3b8bee7242d",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "careful",
+            "description": "Safety guardrails for destructive commands. Use for: be careful, warn before destructive, safety mode. (gstack)",
+            "invocation": "/careful; loaded by the model when relevant",
+            "script_count": 3,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "Bash",
+              "Read"
+            ],
+            "hook_events": [
+              "PreToolUse"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "codex",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:12ea5b0f5aa59268ce7235fc1c312b0f98801278bd2605f08248edaceb273eb3",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "codex",
+            "description": "OpenAI Codex CLI wrapper — three modes. Use for: codex review, second opinion, outside voice challenge. (gstack)",
+            "invocation": "/codex; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Glob",
+              "Grep",
+              "Read",
+              "Write"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "connect-chrome",
+          "version": "0.2.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:699510fabb86678efafe629e72dcd86682aa9341bb4791d4f65e4cf17f5efdd2",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "open-gstack-browser",
+            "description": "Launch GStack Browser — AI-controlled Chromium with the sidebar extension baked in. Use for: open gstack browser, launch chromium.",
+            "invocation": "/open-gstack-browser; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Read"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "context-restore",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:9c45f7d300686284a5b4d22097c11723acbe81eb690b411504692574a165adae",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "context-restore",
+            "description": "Restore working context saved earlier by … Use for: resume where i left off, restore context, where was i. (gstack)",
+            "invocation": "/context-restore; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Glob",
+              "Grep",
+              "Read"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "context-save",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:127d1e98c29ca5de04c8ca7f1224c8eb16197dd549b7ecc733c48ba9419c64ba",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "context-save",
+            "description": "Save working context. Use for: save progress, save state, save my work, context save. (gstack)",
+            "invocation": "/context-save; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Glob",
+              "Grep",
+              "Read",
+              "Write"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "design-consultation",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:2dd1be7e7ca2425a5517102bec3da6e16e11b5a7d0fc36e283c52e5d36a6afd7",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "design-consultation",
+            "description": "Design consultation: understands your product, researches the landscape, proposes a complete design system (aesthetic, typography, color, layout, spacing, motion), and generates font+color preview... (gstack)",
+            "invocation": "/design-consultation; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Edit",
+              "Glob",
+              "Grep",
+              "Read",
+              "WebSearch",
+              "Write"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "design-html",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:0264979c228498c8713f32c76469fc23b4ed86a73966000020cb1601bed700ec",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "design-html",
+            "description": "Design finalization: generates production-quality Pretext-native … Use for: build the design, code the mockup, make design real. (gstack)",
+            "invocation": "/design-html; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "Agent",
+              "AskUserQuestion",
+              "Bash",
+              "Edit",
+              "Glob",
+              "Grep",
+              "Read",
+              "Write"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "design-motion",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:75df903d1c97693f5fa8fa9dc9b79673e7612b959356abecb77f005aaf0a252b",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "design-motion",
+            "description": "Design motion: animate an approved design into a seamless MP4 and GIF loop. Use for: animate this design, make a showcase loop. (gstack)",
+            "invocation": "/design-motion; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Edit",
+              "Glob",
+              "Grep",
+              "Read",
+              "Write"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "design-review",
+          "version": "2.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:dfb6210f894677540a979aa4eff121e00e69f023041677cad50df71a537b0342",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "design-review",
+            "description": "Designer's eye QA: finds visual inconsistency, spacing issues, hierarchy problems, AI slop patterns, and slow interactions — then fixes them; --build checks UI while you build it. Use for: visual design audit, design qa. (gstack)",
+            "invocation": "/design-review; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Edit",
+              "Glob",
+              "Grep",
+              "Read",
+              "WebSearch",
+              "Write"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "design-shotgun",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:19ca379cd9fafb85971bd2de2b3c94196482015af4d91f12a34c40117f69d51b",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "design-shotgun",
+            "description": "Design shotgun: generate multiple AI design variants, open a comparison board, collect structured feedback, and iterate. Use for: explore design variants, show me design options. (gstack)",
+            "invocation": "/design-shotgun; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Glob",
+              "Grep",
+              "Read"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "deslop-shared-libs",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:678dfa90e30a96f486c402cf6768962e6c2c027409a3a555f5d7456be982d23f",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "deslop-shared-libs",
+            "description": "Find worthwhile shared-code extractions in recent work. Use for: find code worth sharing. (gstack)",
+            "invocation": "/deslop-shared-libs; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "Bash",
+              "Glob",
+              "Grep",
+              "Read"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "devex-review",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:4958de852e151eea56ed8d6fadfef60430b65fc2eeb1d98d1bb3f8161f643538",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "devex-review",
+            "description": "Live developer experience audit. Use for: live dx audit, test developer experience. (gstack)",
+            "invocation": "/devex-review; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Edit",
+              "Glob",
+              "Grep",
+              "Read",
+              "WebSearch"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "diagram",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:3361be7635b53fa48dbd437cad49714f64a897efda4240e8972568a8660de1de",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "diagram",
+            "description": "Turn an English description (or mermaid source) into a diagram triplet: the source, an editable .excalidraw file you can open on excalidraw.com, and rendered SVG + PNG. Use for: make a diagram, draw a diagram. (gstack)",
+            "invocation": "/diagram; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Read",
+              "Write"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "document-generate",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:e740330ede1e6206c71d69f6b0291cee0d2b127b1fa7558a7d43d3c82e3b4328",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "document-generate",
+            "description": "Generate missing documentation from scratch for a feature, module, or entire project. Use for: write docs for this, generate documentation. (gstack)",
+            "invocation": "/document-generate; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Edit",
+              "Glob",
+              "Grep",
+              "Read",
+              "Write"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "document-release",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:cfa4142251de715a76a3e407dac54169f50ca152353f079e0050dcea8401e6c2",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "document-release",
+            "description": "Release documentation audit. Use for: update docs after ship, document what changed. (gstack)",
+            "invocation": "/document-release; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Edit",
+              "Glob",
+              "Grep",
+              "Read",
+              "Write"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "eval-plan",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:6dd9619f1e9ceef62dbd3571f9c3894a801908b2535c3121cd1d20a1143c9062",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "eval-plan",
+            "description": "Preregister a paid eval (bars, arms, decoys, stop rules), dry-run it at zero cost, then run a three-item priced pilot whose spend table gates approval. (gstack)",
+            "invocation": "/eval-plan; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Edit",
+              "Glob",
+              "Grep",
+              "Read",
+              "Write"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "freeze",
+          "version": "0.1.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:ebfbca0f9d38bb80377e4fd74459d57b63152be5da84dddb1e99438b2ea51c11",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "freeze",
+            "description": "Restrict file edits to a specific directory for the session. Use for: freeze edits to directory, lock editing scope. (gstack)",
+            "invocation": "/freeze; loaded by the model when relevant",
+            "script_count": 2,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Read"
+            ],
+            "hook_events": [
+              "PreToolUse"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "gstack",
+          "version": "1.2.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:bd417ac0e96a562b811a6518a0adc397b349ed82fa7009d96176469f549e12c2",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "gstack",
+            "description": "Picks the gstack skill that fits a request: planning, review, QA, shipping, docs, security or design. Use for: gstack, which gstack skill, route this with gstack. (gstack)",
+            "invocation": "/gstack; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Read"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "gstack-upgrade",
+          "version": "1.1.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:01c236c086f868292b0a0f855878a2744a489a25539f206f86b438225fe38a56",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "gstack-upgrade",
+            "description": "Upgrade gstack to the latest version. Use for: upgrade gstack, update gstack version.",
+            "invocation": "/gstack-upgrade; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Read",
+              "Write"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "guard",
+          "version": "0.1.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:af875b4aa74e6383e9aae139947a90b67739739bdce2f70c915ff7c39eca8a96",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "guard",
+            "description": "Full safety mode: destructive command warnings + directory-scoped edits. Use for: full safety mode, guard against mistakes. (gstack)",
+            "invocation": "/guard; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Read"
+            ],
+            "hook_events": [
+              "PreToolUse"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "health",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:a4dbc0915d9c1f6d65c711d3c1b8a69eb4c507cbd5c902e3781afd4a9e11dce9",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "health",
+            "description": "Code quality dashboard. Use for: code health check, quality dashboard. (gstack)",
+            "invocation": "/health; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Edit",
+              "Glob",
+              "Grep",
+              "Read",
+              "Write"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "hookify:writing-rules",
+          "source_kind": "official_marketplace",
+          "scope": "user",
+          "enabled": "true",
+          "content_hash": "sha256:9237274ec2d24f1e8e96c401040be40cacf70524091a35fb71122679ff1fe386",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "writing-hookify-rules",
+            "description": "This skill should be used when the user asks to \"create a hookify rule\", \"write a hook rule\", \"configure hookify\", \"add a hookify rule\", or needs guidance on hookify rule syntax and patterns.",
+            "invocation": "/hookify:writing-hookify-rules; loaded by the model when relevant",
+            "script_count": 0,
+            "plugin": "hookify@claude-plugins-official",
+            "marketplace": "claude-plugins-official",
+            "modified_at": "2026-11-28"
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "ios-clean",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:884e0fe743ef975ce042eb94b91883958ab5c954930a919d3f4ee201144af730",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "ios-clean",
+            "description": "Remove the DebugBridge SPM package and all #if DEBUG wiring from an iOS app. Use for: clean the ios debug bridge, remove debugbridge. (gstack)",
+            "invocation": "/ios-clean; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Edit",
+              "Glob",
+              "Grep",
+              "Read"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "ios-design-review",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:3b65a29461aa3fe7b3718b3c1ed5391b6f8b8a77e9fd5af456796fac3e843ec9",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "ios-design-review",
+            "description": "Visual design audit for iOS apps on real hardware. Use for: review the ios design, audit the iphone app visuals. (gstack)",
+            "invocation": "/ios-design-review; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Glob",
+              "Grep",
+              "Read"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "ios-fix",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:ac78c677e420c7de981175138830bfe8118b650db2d1e5672ad36ec0d8e7ed77",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "ios-fix",
+            "description": "Autonomous iOS bug fixer. Use for: fix this ios bug, patch the iphone app. (gstack)",
+            "invocation": "/ios-fix; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Edit",
+              "Glob",
+              "Grep",
+              "Read",
+              "Write"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "ios-qa",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:654c195e4608560a46a04d897caf36d24957a19b3178769701a61d458905a154",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "ios-qa",
+            "description": "Live-device iOS QA for SwiftUI apps. Use for: ios qa, test the iphone app, test the ipad app. (gstack)",
+            "invocation": "/ios-qa; loaded by the model when relevant",
+            "script_count": 4,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Edit",
+              "Glob",
+              "Grep",
+              "Read",
+              "Write"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "ios-sync",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:f34a26f56887b3da8b24ce35a6463cf85a876ff16f9e7891b43f537f35705ed5",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "ios-sync",
+            "description": "Regenerate the iOS debug bridge against the latest upstream gstack templates. Use for: resync the ios debug bridge, regenerate ios accessors. (gstack)",
+            "invocation": "/ios-sync; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Edit",
+              "Glob",
+              "Grep",
+              "Read",
+              "Write"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "land-and-deploy",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:5a1ac5852ae88186b5c3a93354469760c3900e11bb1124e949d5bad13a478faa",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "land-and-deploy",
+            "description": "Land and deploy workflow. Use for: merge and deploy, land the pr, ship to production. (gstack)",
+            "invocation": "/land-and-deploy",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Glob",
+              "Read",
+              "Write"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "landing-report",
+          "version": "0.1.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:b399af3fbedd70402e4c1c8139089bd398f6aebe4880d08fbc1ceb052ecff4f4",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "landing-report",
+            "description": "Read-only queue dashboard for workspace-aware ship. Use for: landing report, version queue, ship queue. (gstack)",
+            "invocation": "/landing-report; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "Bash",
+              "Read"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "learn",
+          "version": "1.1.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:d94d8553e52965e80e33fe44656b063e89476e040bafe5c797132adddb67e7dd",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "learn",
+            "description": "Manage project learnings. Use for: show learnings, what have we learned.",
+            "invocation": "/learn; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Edit",
+              "Glob",
+              "Grep",
+              "Read",
+              "Write"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "make-pdf",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:f23cce7a971e368dfc86adc1cbfa20ca823ffce4b1fc1d4c62b6accff99bec94",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "make-pdf",
+            "description": "Turn any markdown file into a publication-quality PDF. Use for: markdown to pdf, generate pdf, make pdf, export pdf. (gstack)",
+            "invocation": "/make-pdf; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Read"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "modernize",
+          "version": "0.1.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:db9e448542ac23813cfdd86608053887ba9f170b88a98f3b9a6343c718e7fa13",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "modernize",
+            "description": "Bring an aging PR onto its current base and decide: MODERNIZE, REWORK or CLOSE. Use for: modernize this pr, rebase this old pr. (gstack)",
+            "invocation": "/modernize",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Glob",
+              "Grep",
+              "Read"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "office-hours",
+          "version": "2.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:cbc344d0f5ce936ca861858bf3160efc77623093e9d40aaa92fe38240af63722",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "office-hours",
+            "description": "YC Office Hours — two modes. Use for: brainstorm this, is this worth building. (gstack)",
+            "invocation": "/office-hours; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Edit",
+              "Glob",
+              "Grep",
+              "Read",
+              "WebSearch",
+              "Write"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "open-gstack-browser",
+          "version": "0.2.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:699510fabb86678efafe629e72dcd86682aa9341bb4791d4f65e4cf17f5efdd2",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "open-gstack-browser",
+            "description": "Launch GStack Browser — AI-controlled Chromium with the sidebar extension baked in. Use for: open gstack browser, launch chromium.",
+            "invocation": "/open-gstack-browser; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Read"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "pair-agent",
+          "version": "0.1.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:8b6fc598cd64919087098359d0aec78e969fa2f0f97b2b750870252d5befe1e8",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "pair-agent",
+            "description": "Pair a remote AI agent with your browser. Use for: pair with agent, connect remote agent. (gstack)",
+            "invocation": "/pair-agent; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Read"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "plan-ceo-review",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:ebd6072ce50529b3f595311a49497ff1181b611040761551c462fcf80f800ba3",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "plan-ceo-review",
+            "description": "… plan review. Use for: think bigger, expand scope, strategy review. (gstack)",
+            "invocation": "/plan-ceo-review; loaded by the model when relevant",
+            "script_count": 2,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Glob",
+              "Grep",
+              "Read",
+              "WebSearch"
+            ],
+            "hook_events": [
+              "PostToolUse"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "plan-design-review",
+          "version": "2.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:80468aa234a925c35fcac0ef4616dd24fcc4dcc9a425718c25b5ec8d79fd5085",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "plan-design-review",
+            "description": "Designer's eye plan review — interactive, like CEO and Eng review. Use for: design plan review, review ux plan. (gstack)",
+            "invocation": "/plan-design-review; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Edit",
+              "Glob",
+              "Grep",
+              "Read"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "plan-devex-review",
+          "version": "2.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:0f3c77c9010fa8a9aae113859ece0651c681f2c6eda8a0126d1d7b270c472178",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "plan-devex-review",
+            "description": "Interactive developer experience plan review. Use for: developer experience review, dx plan review. (gstack)",
+            "invocation": "/plan-devex-review; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Edit",
+              "Glob",
+              "Grep",
+              "Read",
+              "WebSearch"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "plan-eng-review",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:d728157ccfc788ce677dac4a2d8d105216a3e25a649dc39fc557140727d4a19c",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "plan-eng-review",
+            "description": "Use when you plan a feature before building it, or review a plan: locks in architecture, data flow, diagrams, edge cases, test coverage and performance. Use for: plan a feature, review architecture, eng plan review. (gstack)",
+            "invocation": "/plan-eng-review; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Glob",
+              "Grep",
+              "Read",
+              "WebSearch",
+              "Write"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "plan-tune",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:ff34eebb04d9e8d0075f30d656b75c41bacaed13ba326de7d2eac1984e856185",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "plan-tune",
+            "description": "Self-tuning question sensitivity + developer psychographic for gstack (v1: observational). Use for: tune questions, stop asking me that. (gstack)",
+            "invocation": "/plan-tune; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Edit",
+              "Glob",
+              "Grep",
+              "Read",
+              "Write"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "qa",
+          "version": "2.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:bd6e7ad63382591e9a79beaf76a5c10fef132b743711d30b1eb1b5f530b55878",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "qa",
+            "description": "Use when you test the site, API or CLI and fix bugs. Use for: qa test this, find bugs on site, test the site. (gstack)",
+            "invocation": "/qa; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Edit",
+              "Glob",
+              "Grep",
+              "Read",
+              "WebSearch",
+              "Write"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "qa-only",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:fceb2b9027e59206bbe29bb19daf9acee951e892482140fc97f02242fd34be62",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "qa-only",
+            "description": "Report … bugs. Use for: qa report only, just report bugs, test but dont fix. (gstack)",
+            "invocation": "/qa-only; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Read",
+              "WebSearch",
+              "Write"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "retro",
+          "version": "2.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:48b643fec6f21915c3f9cd27a1fc50a6f16d17e362bc9085256ba432ef57e9d5",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "retro",
+            "description": "Weekly engineering retrospective. Use for: weekly retro, what did we ship. (gstack)",
+            "invocation": "/retro; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Glob",
+              "Read",
+              "Write"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "review",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:e910f1f26ceeaf5b91086e33fab463b50e192d15bca1d274722bf5f46410de21",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "review",
+            "description": "Use when you review a diff before it lands: local changes, a branch or a PR. Use for: review my changes, look over my diff, review this pr. (gstack)",
+            "invocation": "/review; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "Agent",
+              "AskUserQuestion",
+              "Bash",
+              "Edit",
+              "Glob",
+              "Grep",
+              "Read",
+              "WebSearch",
+              "Write"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "runaway-stopper",
+          "version": "0.1.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:2575ce452d3dcc50f6ee1d0270d23dc02e33a9f596065f59de8570bc8a50563d",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "runaway-stopper",
+            "description": "Find runaway Capy threads and subagents, stop or rotate them safely, and prevent repeats. Use for: find runaway threads, stop runaway jobs. (gstack)",
+            "invocation": "/runaway-stopper; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "Bash",
+              "Read",
+              "Write"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "scrape",
+          "version": "2.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:e09630f139b6d6c0f9662f182cc4ec3516645be9580f1ddb4d0bb2bd245a0f66",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "scrape",
+            "description": "Pull data from a web page through the Aside browser — your real, already signed-in sessions. Use for: scrape this page, get data from, pull from. (gstack)",
+            "invocation": "/scrape; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Read"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "setup-browser-cookies",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:6e9faadad8f3f653455b4569e8e48a8162e6342d92c9fbf9f859dedaccfeefd7",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "setup-browser-cookies",
+            "description": "Import cookies from your real Chromium browser into the headless browse session. Use for: import browser cookies, login to test site. (gstack)",
+            "invocation": "/setup-browser-cookies; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Read"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "setup-deploy",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:4031fc8e250f405c2ceb89834fb04385f97a4fef1a7766cef53b4bd30eba867e",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "setup-deploy",
+            "description": "Configure deployment settings for … Use for: configure deploy, setup deployment.",
+            "invocation": "/setup-deploy; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Edit",
+              "Glob",
+              "Grep",
+              "Read",
+              "Write"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "setup-gbrain",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:262548e4a4b01200ca267ca6bd070379bbab24fcd0d6238ee351b9835a36f814",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "setup-gbrain",
+            "description": "Set up gbrain for this coding agent: install the CLI, initialize a local PGLite or Supabase brain, register MCP, capture per-remote trust policy. Use for: setup gbrain, install gbrain, connect gbrain. (gstack)",
+            "invocation": "/setup-gbrain; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Edit",
+              "Glob",
+              "Grep",
+              "Read",
+              "Write"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "ship",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:be21f1cf7743e83c71a4d5cb6899327098447db6d8f07b9bdc8db3100e857586",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "gstack-ship",
+            "description": "Ship it: merge the base, run tests, review the diff, bump VERSION and CHANGELOG, push and create a PR. Use for: ship it, create a pr, push to main. (gstack)",
+            "invocation": "/gstack-ship; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "Agent",
+              "AskUserQuestion",
+              "Bash",
+              "Edit",
+              "Glob",
+              "Grep",
+              "Read",
+              "WebSearch",
+              "Write"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "skillify",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:e4b4f0ffc67ef96a1d97b2bd678e750b99892e7e7cd9ed66672bf614a78d68a8",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "skillify",
+            "description": "Codify the most recent successful … flow into a permanent browser-skill on disk. Use for: skillify, codify this scrape, save this scrape. (gstack)",
+            "invocation": "/skillify; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Read",
+              "Write"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "spec",
+          "version": "0.1.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:7e7662249a4a62c2a80b31447c79e079fdc41cd87dc736355faf2bcbeeab4a4c",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "spec",
+            "description": "Turn vague intent into a precise, executable spec in five phases. Use for: spec this out, file an issue, write up a ticket. (gstack)",
+            "invocation": "/spec; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Glob",
+              "Grep",
+              "Read"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "sync-gbrain",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:97ef85b96ddcdddc05530a9e5bfd1840ba7940d5ccb2d0531deb4da967b1d2cc",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "sync-gbrain",
+            "description": "Keep gbrain current with this repo's code and refresh agent search guidance in CLAUDE.md. Use for: sync gbrain, refresh gbrain, reindex repo. (gstack)",
+            "invocation": "/sync-gbrain; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Edit",
+              "Glob",
+              "Grep",
+              "Read",
+              "Write"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "test-audit",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:13992f36de13632f8471ddcbeb8b8ab72e671600c6886c27a35c7fb50cb91d10",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "test-audit",
+            "description": "Find low-value or duplicate tests and the test-only code they keep alive. Use for: audit the test suite, find low-value tests. (gstack)",
+            "invocation": "/test-audit; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Edit",
+              "Glob",
+              "Grep",
+              "Read",
+              "Write"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "ubicloud",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:e638107fbf8ae78d4b0003f3df0a02fca7881b33e755073ecce489b0fa1213e3",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "ubicloud",
+            "description": "Run a heavy suite, build or eval on an ephemeral 16-vCPU Ubicloud VM: TTL-named VMs, a reaper, quota preflight and a hang watchdog. Use for: run on ubicloud, ubicloud vm, remote test run. (gstack)",
+            "invocation": "/ubicloud; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "Bash",
+              "Read"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "unfreeze",
+          "version": "0.1.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:9185d552522fa24954f3abd2a39d01f47b0e590c9f38842965fddae8f3d34b12",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "unfreeze",
+            "description": "Clear the freeze boundary set by … allowing edits to all directories again. Use for: unfreeze edits, unlock all directories. (gstack)",
+            "invocation": "/unfreeze; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "Bash",
+              "Read"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "write-skill",
+          "version": "0.1.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:4b609670705ba7b80444a3cde03765307e94f7940ca297a90493704d206db0d0",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "write-skill",
+            "description": "Write a new agent skill or improve one without bloat: the edit ladder, levels, drift and size checks, full diets. Use for: write a skill, improve this skill. (gstack)",
+            "invocation": "/write-skill; loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Edit",
+              "Glob",
+              "Grep",
+              "Read",
+              "Write"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "app_id": "codex-cli",
+      "extensions": [
+        {
+          "kind": "mcp_server",
+          "id": "docs",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "true",
+          "content_hash": "sha256:2a2be174e61d1f3c95acf8f91c4e5d38481bcf98e09ec594dae96af455ff79cc",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "transport": "http",
+            "url_host": "docs.example.com"
+          }
+        },
+        {
+          "kind": "mcp_server",
+          "id": "filesystem",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "true",
+          "content_hash": "sha256:8ded6d9374656fcd530062c66326183cfe3af6927a8ab2ea53c8c874995bd7ff",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "transport": "stdio",
+            "command": "npx"
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "careful",
+          "version": "0.1.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:0ee6e5158c67603ad33387a16d68d333e6bcc80f780eb16f4b17e54b8a85f39a",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "careful",
+            "description": "Safety guardrails for destructive commands. Use for: be careful, warn before destructive, safety mode. (gstack)",
+            "invocation": "$careful (or /skills); loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "Bash",
+              "Read"
+            ],
+            "hook_events": [
+              "PreToolUse"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "freeze",
+          "version": "0.1.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:cc0951bf1629860745d294e30aa533d2d57a2b6208171d65b34553d642ea26b9",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "freeze",
+            "description": "Restrict file edits to a specific directory for the session. Use for: freeze edits to directory, lock editing scope. (gstack)",
+            "invocation": "$freeze (or /skills); loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "AskUserQuestion",
+              "Bash",
+              "Read"
+            ],
+            "hook_events": [
+              "PreToolUse"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "review",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:5bf3d5fdbd6b575b4712e0cd67ce0cd346a70bf989bee24762fe804a1cfd79e7",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "review",
+            "description": "Use when you review a diff before it lands: local changes, a branch or a PR. Use for: review my changes, look over my diff, review this pr. (gstack)",
+            "invocation": "$review (or /skills); loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "Agent",
+              "AskUserQuestion",
+              "Bash",
+              "Edit",
+              "Glob",
+              "Grep",
+              "Read",
+              "WebSearch",
+              "Write"
+            ]
+          }
+        },
+        {
+          "kind": "skill",
+          "id": "ship",
+          "version": "1.0.0",
+          "source_kind": "local",
+          "scope": "user",
+          "enabled": "unknown",
+          "content_hash": "sha256:ef4e9c5686f43a3771074c1c240effc70338be8350fcde0e2211e2ac015b36f5",
+          "content_hash_status": "ok",
+          "id_hashed": false,
+          "details": {
+            "name": "gstack-ship",
+            "description": "Ship it: merge the base, run tests, review the diff, bump VERSION and CHANGELOG, push and create a PR. Use for: ship it, create a pr, push to main. (gstack)",
+            "invocation": "$gstack-ship (or /skills); loaded by the model when relevant",
+            "script_count": 0,
+            "modified_at": "2026-11-28",
+            "tools_declared": true,
+            "allowed_tools": [
+              "Agent",
+              "AskUserQuestion",
+              "Bash",
+              "Edit",
+              "Glob",
+              "Grep",
+              "Read",
+              "WebSearch",
+              "Write"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

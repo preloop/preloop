@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
+from preloop.schemas.extension_capabilities import ExtensionCapability
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -44,6 +45,8 @@ class ExtensionHookCommand(BaseModel):
     model_config = ConfigDict(extra="forbid")
     executable: str = Field(pattern=r"^[A-Za-z0-9_.+\-]{1,128}$")
     preloop_managed: bool
+    script: bool = False
+    in_project: bool = False
 
 
 class ExtensionHookMatcher(BaseModel):
@@ -75,6 +78,26 @@ class ExtensionBundleCounts(BaseModel):
     agents: int = Field(ge=0, le=10000)
 
 
+BundleName = Annotated[str, Field(pattern=r"^[A-Za-z0-9_.:\-]{1,64}$")]
+EventName = Annotated[str, Field(pattern=r"^[A-Za-z][A-Za-z0-9_\-]{0,31}$")]
+ToolName = Annotated[str, Field(pattern=r"^[A-Za-z][A-Za-z0-9_.:*()| \-]{0,63}$")]
+OPTIONAL_HOST_PATTERN = (
+    r"^(?:localhost|[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?"
+    r"(?:\.[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)+)?$"
+)
+OptionalHost = Annotated[str, Field(max_length=253, pattern=OPTIONAL_HOST_PATTERN)]
+
+
+class ExtensionBundleNames(BaseModel):
+    """Names of the components a plugin bundles, bounded for display."""
+
+    model_config = ConfigDict(extra="forbid")
+    skills: list[BundleName] = Field(default_factory=list, max_length=50)
+    commands: list[BundleName] = Field(default_factory=list, max_length=50)
+    agents: list[BundleName] = Field(default_factory=list, max_length=50)
+    mcp_servers: list[BundleName] = Field(default_factory=list, max_length=50)
+
+
 def validate_detail_text(value: str) -> str:
     """Reject paths, URLs, controls and noncanonical authored whitespace."""
     if any(unicodedata.category(char) in {"Cc", "Cf"} for char in value):
@@ -104,8 +127,21 @@ class ExtensionDetails(BaseModel):
     hook_matchers: list[ExtensionHookMatcher] = Field(
         default_factory=list, max_length=10000
     )
+    # Schema 5 decision metadata: host names only, never URLs or paths.
+    marketplace: DetailText = ""
+    homepage_host: OptionalHost = ""
+    repository_host: OptionalHost = ""
+    license: str = Field(default="", pattern=r"^(?:[A-Za-z0-9][A-Za-z0-9.+\-]{0,63})?$")
+    modified_at: str = Field(default="", pattern=r"^(?:\d{4}-\d{2}-\d{2})?$")
+    tools_declared: bool = False
+    allowed_tools: list[ToolName] = Field(default_factory=list, max_length=50)
+    hook_events: list[EventName] = Field(default_factory=list, max_length=50)
+    bundle_names: ExtensionBundleNames | None = None
+    transport: Literal["", "stdio", "http", "sse"] = ""
+    command: str = Field(default="", pattern=r"^(?:[A-Za-z0-9_.+\-]{1,128})?$")
+    url_host: OptionalHost = ""
 
-    @field_validator("name", "description", "plugin", "author")
+    @field_validator("name", "description", "plugin", "author", "marketplace")
     @classmethod
     def safe_text(cls, value: str) -> str:
         """Apply the authored-text boundary independently of the collector."""
@@ -128,6 +164,22 @@ class ExtensionDetails(BaseModel):
         if self.description_withheld and self.description:
             raise ValueError("Withheld descriptions must be empty")
         return self
+
+
+SCHEMA5_DETAIL_FIELDS = (
+    "marketplace",
+    "homepage_host",
+    "repository_host",
+    "license",
+    "modified_at",
+    "tools_declared",
+    "allowed_tools",
+    "hook_events",
+    "bundle_names",
+    "transport",
+    "command",
+    "url_host",
+)
 
 
 class ExtensionMetadata(BaseModel):
@@ -162,6 +214,21 @@ class ExtensionMetadata(BaseModel):
             data.pop("details", None)
         return data
 
+    def uses_schema5(self) -> bool:
+        """Whether these details carry decision metadata added in schema 5."""
+        details = self.details
+        if details is None:
+            return False
+        if self.kind in {"mcp_server", "plugin"} and (
+            self.kind == "mcp_server" or details.script_count is not None
+        ):
+            return True
+        return any(getattr(details, field) for field in SCHEMA5_DETAIL_FIELDS) or any(
+            command.script or command.in_project
+            for matcher in details.hook_matchers
+            for command in matcher.commands
+        )
+
     @field_validator("id")
     @classmethod
     def bounded_identifier(cls, value: str) -> str:
@@ -185,12 +252,29 @@ class ExtensionMetadata(BaseModel):
             raise ValueError("Only hooks have event and count")
         if self.details is not None:
             details = self.details
-            if self.kind != "skill" and details.script_count is not None:
-                raise ValueError("Only skills have script counts")
-            if self.kind != "plugin" and (
-                details.bundles is not None or details.author
+            if (
+                self.kind not in {"skill", "plugin"}
+                and details.script_count is not None
             ):
-                raise ValueError("Only plugins have author and bundle counts")
+                raise ValueError("Only skills and plugins have script counts")
+            if self.kind != "plugin" and (
+                details.bundles is not None
+                or details.author
+                or details.bundle_names is not None
+                or details.homepage_host
+                or details.repository_host
+            ):
+                raise ValueError("Only plugins have author and bundle contents")
+            if self.kind != "mcp_server" and (
+                details.transport or details.command or details.url_host
+            ):
+                raise ValueError("Only MCP servers have a transport")
+            if self.kind not in {"skill", "command", "plugin"} and (
+                details.tools_declared or details.allowed_tools
+            ):
+                raise ValueError("Only skills, commands and plugins declare tools")
+            if self.kind not in {"skill", "plugin"} and details.hook_events:
+                raise ValueError("Only skills and plugins register hook events")
             if details.hook_matchers:
                 if (
                     self.kind != "hook"
@@ -315,6 +399,7 @@ class DiscoveredExtensionSummary(BaseModel):
     effective_state: EffectiveState
     content_hash: str | None
     content_hash_status: ContentHashStatus
+    capabilities: list[ExtensionCapability] = Field(default_factory=list)
 
 
 class ContentHashBucket(BaseModel):
@@ -342,6 +427,12 @@ class ExtensionAggregate(BaseModel):
     )
     pin_count: int = 0
     content_hashes: list[ContentHashBucket] = Field(default_factory=list)
+    capabilities: list[ExtensionCapability] = Field(default_factory=list)
+    first_seen_at: datetime | None = None
+    people_count: int = Field(
+        default=0,
+        description="Distinct people whose credentials reported this extension",
+    )
 
 
 class ExtensionCoverage(BaseModel):

@@ -202,7 +202,7 @@ func TestHookExecutableClassification(t *testing.T) {
 		{`TOKEN=PRIVATE bash -c 'echo PRIVATE'`, "unknown", false},
 		{`bash -c 'preloop agents permission-hook'`, "bash", false},
 	} {
-		got := scan.hookCommand(tc.command)
+		got := scan.hookCommand(tc.command, "user")
 		if got.Executable != tc.executable || got.PreloopManaged != tc.managed {
 			t.Fatalf("classification: %+v", got)
 		}

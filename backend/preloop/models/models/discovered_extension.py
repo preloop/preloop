@@ -97,6 +97,8 @@ class DiscoveredExtension(Base):
     event: Mapped[str | None] = mapped_column(String(32))
     hook_count: Mapped[int | None]
     details: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    # Capability keys derived from details at write time, for filtering.
+    capabilities: Mapped[list[str] | None] = mapped_column(JSONB)
     id_hashed: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     present: Mapped[bool] = mapped_column(Boolean, server_default=text("true"))
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

@@ -48,8 +48,44 @@ export interface ExtensionDetails {
     matcher?: string;
     matcher_withheld?: boolean;
     count: number;
-    commands: Array<{ executable: string; preloop_managed: boolean }>;
+    commands: Array<{
+      executable: string;
+      preloop_managed: boolean;
+      script?: boolean;
+      in_project?: boolean;
+    }>;
   }>;
+  /** Schema 5 decision metadata; hosts only, never URLs or paths. */
+  marketplace?: string;
+  homepage_host?: string;
+  repository_host?: string;
+  license?: string;
+  modified_at?: string;
+  tools_declared?: boolean;
+  allowed_tools?: string[];
+  hook_events?: string[];
+  bundle_names?: {
+    skills?: string[];
+    commands?: string[];
+    agents?: string[];
+    mcp_servers?: string[];
+  } | null;
+  transport?: '' | 'stdio' | 'http' | 'sse';
+  command?: string;
+  url_host?: string;
+}
+export type ExtensionCapabilityKey =
+  | 'shell'
+  | 'files_read'
+  | 'files_write'
+  | 'network'
+  | 'hooks'
+  | 'mcp'
+  | 'scripts'
+  | 'unknown';
+export interface ExtensionCapability {
+  key: ExtensionCapabilityKey;
+  label: string;
 }
 export interface ExtensionKey {
   details?: ExtensionDetails | null;
@@ -57,6 +93,8 @@ export interface ExtensionKey {
   extension_kind: 'plugin' | 'skill' | 'hook' | 'command' | 'mcp_server';
   extension_id: string;
   approval_state: ExtensionApprovalState;
+  /** Derived on the server from details; absent on older servers. */
+  capabilities?: ExtensionCapability[];
   /** Undefined means the decision could not be read; null means no constraint. */
   version_constraint?: string | null;
 }
@@ -85,6 +123,10 @@ export interface ExtensionAggregate extends ExtensionKey {
   effective_state?: ExtensionEffectiveState;
   pin_count?: number;
   content_hashes?: ContentHashBucket[];
+  /** Earliest first sighting across devices; absent on older servers. */
+  first_seen_at?: string | null;
+  /** People whose credentials reported it; absent on older servers. */
+  people_count?: number;
 }
 export interface ExtensionCoverage {
   fingerprint: string;
@@ -108,6 +150,7 @@ export interface ExtensionFilters {
   agent_kind?: string;
   state?: ExtensionEffectiveState;
   source_kind?: ExtensionSource;
+  capability?: ExtensionCapabilityKey;
   cursor?: string;
 }
 export interface ExtensionDecision {

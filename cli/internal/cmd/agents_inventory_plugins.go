@@ -33,6 +33,7 @@ func (r *extensionRoot) claudePlugins(enabled map[string]bool, profileOnly bool)
 		r.scan.fail("extension_malformed")
 		return nil
 	}
+	r.loadMarketplaceListings(marketplaces)
 	ids := make([]string, 0, len(records))
 	for id := range records {
 		ids = append(ids, id)
@@ -227,5 +228,37 @@ func (r *extensionRoot) claudeBuiltinPlugins(enabled map[string]bool) {
 			ext.Enabled = "false"
 		}
 		r.scan.add(ext)
+	}
+}
+
+// loadMarketplaceListings reads each known marketplace's local catalog for
+// the description, author, homepage and licence it publishes per plugin. A
+// missing or unreadable catalog only leaves those fields empty.
+func (r *extensionRoot) loadMarketplaceListings(known map[string]json.RawMessage) {
+	r.scan.marketEntries = map[string]map[string]json.RawMessage{}
+	for market, raw := range known {
+		var entry struct {
+			InstallLocation string `json:"installLocation"`
+		}
+		if json.Unmarshal(raw, &entry) != nil || entry.InstallLocation == "" {
+			continue
+		}
+		path := entry.InstallLocation
+		if filepath.IsAbs(path) {
+			path, _ = filepath.Rel(r.scan.home, path)
+		}
+		if !filepath.IsLocal(path) {
+			continue
+		}
+		catalog := r.document(filepath.Join(path, ".claude-plugin", "marketplace.json"))
+		var plugins []map[string]json.RawMessage
+		if json.Unmarshal(catalog["plugins"], &plugins) != nil {
+			continue
+		}
+		for _, plugin := range plugins {
+			if name := extensionString(plugin["name"]); name != "" {
+				r.scan.marketEntries[name+"@"+market] = plugin
+			}
+		}
 	}
 }

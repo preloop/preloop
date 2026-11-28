@@ -60,6 +60,9 @@ type extensionScan struct {
 	hookHashes   map[string][]string
 	projectPaths map[string]string
 	unscanned    map[string]string
+	// marketEntries holds each installed plugin's marketplace listing, keyed
+	// by "name@marketplace", read from the local marketplace checkout.
+	marketEntries map[string]map[string]json.RawMessage
 }
 
 type extensionRoot struct {
@@ -321,7 +324,7 @@ func (r *extensionRoot) localFiles(base, scope, project string, skills bool) {
 			r.captureCommand(id, path, hash)
 		}
 		details, local := r.markdownDetails(path, id, skills, "")
-		r.scan.add(inventoryExtension{Details: details, Local: local, Kind: kind, ID: id, SourceKind: "local", Scope: scope, ProjectRefHash: project, ContentHash: hash, HashStatus: status})
+		r.scan.add(inventoryExtension{Details: details, Local: local, Version: local.Version, Kind: kind, ID: id, SourceKind: "local", Scope: scope, ProjectRefHash: project, ContentHash: hash, HashStatus: status})
 	}
 }
 
@@ -377,13 +380,13 @@ func (r *extensionRoot) hooks(raw json.RawMessage, scope, project string, files 
 				}
 			}
 			if obj.Command != "" {
-				item.Commands = append(item.Commands, r.scan.hookCommand(obj.Command))
+				item.Commands = append(item.Commands, r.scan.hookCommand(obj.Command, scope))
 				commands = append(commands, obj.Command)
 				hashes = append(hashes, extensionHash([]byte(obj.Command)))
 			}
 			for _, hook := range obj.Hooks {
 				if hook.Command != "" {
-					item.Commands = append(item.Commands, r.scan.hookCommand(hook.Command))
+					item.Commands = append(item.Commands, r.scan.hookCommand(hook.Command, scope))
 					commands = append(commands, hook.Command)
 					hashes = append(hashes, extensionHash([]byte(hook.Command)))
 				}
