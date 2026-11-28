@@ -351,3 +351,40 @@ func TestExtensionReportReasonsAndOlderServer(t *testing.T) {
 		t.Fatal("fallback mutated source or retried incorrectly")
 	}
 }
+
+func TestPreviousServerRejectsOnlyStandaloneMCPKind(t *testing.T) {
+	extensions := []inventoryExtension{{Kind: "mcp_server", ID: "example-server"}, {Kind: "skill", ID: "example-skill"}}
+	report := discoveryReportRequest{
+		Candidates: []discoveryReportCandidate{{AgentKind: "claude_code", Extensions: &extensions}},
+		Evidence: &inventoryReportEvidence{SchemaVersion: 4, Completeness: "complete", ExtensionCompleteness: "complete",
+			Applications:      []inventoryReportApplication{{AgentKind: "claude_code", Completeness: "complete", Extensions: &extensions}},
+			ScopeCompleteness: map[string]string{"user_config": "complete"}},
+	}
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			w.WriteHeader(422)
+			fmt.Fprint(w, `{"detail":[{"type":"literal_error","loc":["body","candidates",0,"extensions",0,"kind"],"input":"mcp_server"}]}`)
+			return
+		}
+		var got discoveryReportRequest
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Error(err)
+			return
+		}
+		app := got.Evidence.Applications[0]
+		if got.Evidence.SchemaVersion != 4 || got.Evidence.Completeness != "partial" || got.Evidence.ExtensionCompleteness != "partial" ||
+			got.Evidence.ScopeCompleteness["user_config"] != "partial" || app.Completeness != "partial" || app.Extensions == nil ||
+			!reflect.DeepEqual(app.Extensions, got.Candidates[0].Extensions) || !reflect.DeepEqual(*app.Extensions, extensions[1:]) {
+			t.Errorf("incorrect accepted subset: %+v", got.Evidence)
+		}
+		fmt.Fprint(w, `{"received":1}`)
+	}))
+	defer server.Close()
+	var result discoveryReportResponse
+	err := postInventoryReport(api.NewClientWithToken(server.URL, "example"), report, &result)
+	if err != nil || calls != 2 || result.Received != 1 || result.MCPServersOmitted != 1 || report.Evidence.ScopeCompleteness["user_config"] != "complete" || len(extensions) != 2 {
+		t.Fatalf("older server compatibility: calls=%d err=%v", calls, err)
+	}
+}

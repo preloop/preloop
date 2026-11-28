@@ -458,7 +458,9 @@ and evidence records. If the server also rejects v3, the existing v2 retry
 removes extensions and managed configuration. When an older server specifically
 requires a candidate for machine-wide configuration, the CLI retries the user
 inventory with the machine scope marked partial and prints the omission.
-A partial profile from an older collector stays partial when its reason is unknown.
+When a server explicitly rejects the standalone MCP server extension kind, the
+CLI keeps supported extensions, marks affected inventories partial, and reports
+the number omitted. A partial profile with an unknown reason stays partial.
 
 Extension identifiers (plugin, skill, command, MCP server and hook event names, versions,
 and marketplace names) are sent in clear. Marketplace and git URLs, hook

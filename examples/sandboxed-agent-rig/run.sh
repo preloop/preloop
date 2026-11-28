@@ -303,6 +303,12 @@ PY
   run "$svc" "claude -p 'Reply with the single word ACK.' --output-format text"
   ONBOARD_END=$(wc -l < "$TRANSCRIPT")
 
+  # Exercise both ordinary extensions and the newer project MCP server kind.
+  compose exec -T "$svc" bash -eu <<'SH'
+mkdir -p .claude/skills/example-skill
+printf '%s\n' '---' 'name: example-skill' 'description: Example skill' '---' 'Review the sample.' > .claude/skills/example-skill/SKILL.md
+printf '%s\n' '{"mcpServers":{"example-server":{"command":"echo","args":["example"]}}}' > .mcp.json
+SH
   run "$svc" "preloop agents discover --report --project . --device-ref rig-ro-settings --no-onboard-prompt"
   expect_status 0
   note "The administrator reports all local profiles on the same device."
