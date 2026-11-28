@@ -213,6 +213,8 @@
   "GET /api/v1/flows/executions/{execution_id}/host-sessions": "deny",
   "GET /api/v1/flows/executions/{execution_id}/logs": "deny",
   "GET /api/v1/flows/executions/{execution_id}/metrics": "deny",
+  "GET /api/v1/flows/executions/{execution_id}/outcome": "deny",
+  "GET /api/v1/flows/executions/{execution_id}/outcome/configurations/{revision}": "deny",
   "GET /api/v1/flows/executions/{execution_id}/result": "execution:result:read",
   "GET /api/v1/flows/executions/{execution_id}/result-export/{grant_id}": "execution:result-export:read",
   "GET /api/v1/flows/executions/{execution_id}/tool-evidence": "execution:evidence:read",
