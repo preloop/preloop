@@ -322,7 +322,6 @@ class TestScheduledTick:
         expected = datetime(2026, 1, 1, 6, tzinfo=timezone.utc)
         assert [call["since"] for call in fake.calls] == [expected, expected]
 
-
     async def test_a_precheck_failure_does_not_move_the_cursor(
         self, db_session, account, project, reader, downstream
     ) -> None:

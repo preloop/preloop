@@ -344,9 +344,7 @@ class TestOpenPullRequests:
         ]
         assert numbers == [2]
 
-    async def test_a_claim_of_unknown_age_is_stale_when_ages_count(
-        self, facts
-    ) -> None:
+    async def test_a_claim_of_unknown_age_is_stale_when_ages_count(self, facts) -> None:
         claimed = pr(1, labels=("in-progress",), label_applied_at={})
         reader = FakeReader(prs=[claimed])
         aged = {"exclude": {"claim_labels": ["in-progress"], "claim_max_age_hours": 6}}
@@ -467,9 +465,7 @@ class TestFailedCiRuns:
         assert outcome.action == "run"
 
     async def test_a_match_behind_other_workflows_is_found(self, facts) -> None:
-        reader = FakeReader(
-            runs=[failed_run(1, 0.2, "Docs"), failed_run(2, 0.5, "CI")]
-        )
+        reader = FakeReader(runs=[failed_run(1, 0.2, "Docs"), failed_run(2, 0.5, "CI")])
         outcome = await run(
             {
                 "checks": [

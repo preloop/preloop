@@ -452,7 +452,9 @@ async def test_issue_pages_are_capped() -> None:
 
 async def test_failed_runs_scan_a_full_page() -> None:
     recorder = Recorder(
-        lambda request: httpx.Response(200, json={"total_count": 0, "workflow_runs": []})
+        lambda request: httpx.Response(
+            200, json={"total_count": 0, "workflow_runs": []}
+        )
     )
     await _reader(recorder).list_failed_ci_runs(
         REPO,
