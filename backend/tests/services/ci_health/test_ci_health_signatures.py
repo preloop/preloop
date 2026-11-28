@@ -91,3 +91,15 @@ def test_caps_and_job_fallback() -> None:
         "job",
         "CI / deploy-preview / Upload",
     )
+
+
+def test_junit_report_printed_into_a_log() -> None:
+    xml = (FIXTURES / "junit_sample.xml").read_text()
+    log = "\n".join(
+        f"2026-01-01T10:00:00.0000000Z {line}"
+        for line in ["$ cat report.xml", *xml.splitlines()]
+    )
+    findings = sig.parse_log(log)
+    assert ("junit", "checkout.cart::applies a coupon", "AssertionError") in _tests(
+        findings
+    )

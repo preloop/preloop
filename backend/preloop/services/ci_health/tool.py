@@ -220,49 +220,59 @@ async def ci_health_report(ctx: Optional[Context] = None, **arguments: Any) -> d
                 + "; ".join(f"{u['repository']} ({u['reason']})" for u in unavailable)
             )
 
-        options = Options(
-            window_hours=request.window_hours,
-            branches=request.branches,
-            critical_path_jobs=request.critical_path_jobs,
-            protected_branches=request.protected_branches,
-            max_runs=request.max_runs,
-            max_failed_logs=request.max_failed_logs,
-            report_only=request.report_only,
-            report_only_days=request.report_only_days,
-            focus_urls=precheck_focus(prepared["precheck"]),
-        )
-        report, ledger = await collect(
-            targets,
-            ledger_value=prepared["ledger"],
-            now=now,
-            options=options,
-            ledger_updates=[u.model_dump() for u in request.ledger_updates],
-            published_pull_requests=prepared["published"],
-            execution_id=str(bound.execution.id),
-            unavailable=unavailable,
-        )
-        ledger_mod.fit(
-            ledger, crud_flow_state.MAX_VALUE_BYTES, crud_flow_state.encoded_size
-        )
+        # Provider reads can take minutes; no database connection is held
+        # across them. Only scalar ids leave this session.
+        account_id = bound.account_id
+        flow_id = bound.flow.id
+        execution_id = bound.execution.id
 
-        def store() -> Optional[int]:
-            try:
-                row = crud_flow_state.put_state(
-                    db,
-                    account_id=bound.account_id,
-                    flow_id=bound.flow.id,
-                    key=ledger_mod.LEDGER_KEY,
-                    value=ledger,
-                    expected_version=prepared["version"],
-                    execution_id=bound.execution.id,
-                )
-            except crud_flow_state.FlowStateError as exc:
-                db.rollback()
-                logger.info("CI health ledger not saved: %s", exc.code)
-                return None
-            return row.version
+    options = Options(
+        window_hours=request.window_hours,
+        branches=request.branches,
+        critical_path_jobs=request.critical_path_jobs,
+        protected_branches=request.protected_branches,
+        max_runs=request.max_runs,
+        max_failed_logs=request.max_failed_logs,
+        report_only=request.report_only,
+        report_only_days=request.report_only_days,
+        focus_urls=precheck_focus(prepared["precheck"]),
+    )
+    report, ledger = await collect(
+        targets,
+        ledger_value=prepared["ledger"],
+        now=now,
+        options=options,
+        ledger_updates=[u.model_dump() for u in request.ledger_updates],
+        published_pull_requests=prepared["published"],
+        execution_id=str(execution_id),
+        unavailable=unavailable,
+    )
+    ledger_mod.fit(
+        ledger, crud_flow_state.MAX_VALUE_BYTES, crud_flow_state.encoded_size
+    )
 
-        version = await run_db_off_loop(store)
+    def store(db: Any) -> Optional[int]:
+        # A fresh session: the binding is checked again before the write, and
+        # the compare-and-set guards against a concurrent run.
+        flow_state_tools.bound_execution(db, context, NAME)
+        try:
+            row = crud_flow_state.put_state(
+                db,
+                account_id=account_id,
+                flow_id=flow_id,
+                key=ledger_mod.LEDGER_KEY,
+                value=ledger,
+                expected_version=prepared["version"],
+                execution_id=execution_id,
+            )
+        except crud_flow_state.FlowStateError as exc:
+            db.rollback()
+            logger.info("CI health ledger not saved: %s", exc.code)
+            return None
+        return row.version
+
+    with get_session_factory()() as db:
+        version = await run_db_off_loop(lambda: store(db))
 
     report["ledger"]["saved"] = version is not None
     report["ledger"]["version"] = version

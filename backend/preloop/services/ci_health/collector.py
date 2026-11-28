@@ -228,9 +228,14 @@ async def collect(
                 job_name = base_job_name(job.name)
                 ids = []
                 for signature in found.signatures:
+                    # The id stays computed from the canonical text; what is
+                    # stored and returned is scrubbed.
+                    shown = signature.as_dict()
+                    shown["test"] = scrub_secrets(shown["test"]) or ""
+                    shown["error"] = scrub_secrets(shown["error"]) or ""
                     entry = ledger_mod.record_failure(
                         ledger,
-                        signature=signature.as_dict(),
+                        signature=shown,
                         repository=target.key,
                         job=job_name,
                         head_sha=run.head_sha,
@@ -374,13 +379,24 @@ async def refresh_pull_requests(
         ledger: Ledger to update in place.
         targets: Scanned repositories.
     """
-    by_repo = {t.repository.lower(): t for t in targets}
     refreshed = 0
     for pr in ledger["pull_requests"]:
         if pr.get("state") != "open" or refreshed >= MAX_PR_REFRESH:
             continue
         parsed = pull_request_repository(str(pr.get("url") or ""))
-        target = by_repo.get(parsed[1].lower()) if parsed else None
+        target = (
+            next(
+                (
+                    t
+                    for t in targets
+                    if t.repository.lower() == parsed[1].lower()
+                    and _same_host(t, parsed[0])
+                ),
+                None,
+            )
+            if parsed
+            else None
+        )
         if parsed is None or target is None:
             continue
         refreshed += 1
@@ -400,3 +416,16 @@ async def refresh_pull_requests(
                     entry["status"] = "fixed"
                     entry["status_at"] = pr.get("merged_at")
                     entry["linked"] = (entry.get("linked") or [])[-4:] + [pr["url"]]
+
+
+def _same_host(target: Target, host: str) -> bool:
+    """Whether a pull request URL host belongs to the target's provider.
+
+    GitHub's API lives on ``api.<host>`` (``api.github.com``); GitLab's on the
+    instance host itself.
+    """
+    api_host = urlparse(target.provider.transport.base_url).netloc.lower()
+    host = host.lower()
+    if target.provider.name == "github":
+        return api_host in (host, f"api.{host}")
+    return api_host == host

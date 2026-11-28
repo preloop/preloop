@@ -89,7 +89,7 @@ All arguments are optional.
   - pytest summary and `FAILED`/`ERROR` lines
   - `go test` (`--- FAIL:` with its package, panics)
   - vitest and jest
-  - JUnit XML, including GitLab's pipeline test report
+  - JUnit XML printed into a job log, and GitLab's pipeline test report
 
   A failed job whose log names no test gets a job-level signature
   (`workflow / job / failed step`). Messages are normalized (numbers, hex
