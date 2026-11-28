@@ -1252,11 +1252,9 @@ BUILTIN_TOOL_ANNOTATIONS: Dict[str, Dict[str, Any]] = {
     ),
     # Per-flow state stored by Preloop.
     "get_flow_state": _annotations("Get flow state", read_only=True, open_world=False),
+    # Not idempotent: each write bumps the version, and a repeated
+    # compare-and-set write fails with a version conflict.
     "put_flow_state": _annotations(
-        "Put flow state",
-        read_only=False,
-        open_world=False,
-        idempotent=True,
-        destructive=True,
+        "Put flow state", read_only=False, open_world=False, destructive=True
     ),
 }

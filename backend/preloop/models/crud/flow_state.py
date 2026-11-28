@@ -15,7 +15,7 @@ from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from preloop.models import models
 
@@ -122,7 +122,10 @@ def get_state(
 def list_states(
     db: Session, *, account_id: UUID, flow_id: UUID
 ) -> list[models.FlowState]:
-    """List the values of one flow, ordered by key.
+    """List the keys of one flow, ordered by key.
+
+    The value column is deferred: a listing reports metadata only, and
+    reading ``row.value`` on a returned row costs one query per row.
 
     Args:
         db: Database session.
@@ -135,6 +138,7 @@ def list_states(
     return list(
         db.scalars(
             select(models.FlowState)
+            .options(defer(models.FlowState.value))
             .filter_by(account_id=account_id, flow_id=flow_id)
             .order_by(models.FlowState.key)
         )
@@ -189,6 +193,13 @@ def put_state(
     if expected_version is None or expected_version == 0:
         existing = get_state(db, account_id=account_id, flow_id=flow_id, key=key)
         if existing is None:
+            # Creating a key: serialize on the flow row so two concurrent
+            # creations cannot both pass the key-count check.
+            db.execute(
+                select(models.Flow.id)
+                .filter_by(id=flow_id, account_id=account_id)
+                .with_for_update()
+            )
             count = db.scalar(
                 select(func.count())
                 .select_from(models.FlowState)
@@ -230,6 +241,10 @@ def put_state(
         select(models.FlowState)
         .filter_by(account_id=account_id, flow_id=flow_id, key=key)
         .with_for_update()
+        # The pre-read above may have put a stale copy in the identity map;
+        # the locked read must replace it, or the version would not advance
+        # past a write committed in between.
+        .execution_options(populate_existing=True)
     )
     if row is None:
         raise FlowStateError(

@@ -134,9 +134,8 @@ async def run(
     factory = lambda: lambda: nullcontext(db_session)  # noqa: E731
     monkeypatch.setattr(flow_state_tools, "get_session_factory", factory)
     monkeypatch.setattr(ci_tool, "get_session_factory", factory)
-    monkeypatch.setattr(
-        flow_state_tools, "require_approval", AsyncMock(return_value=(True, None))
-    )
+    policy = AsyncMock(return_value=(True, None))
+    monkeypatch.setattr(flow_state_tools, "require_approval", policy)
     monkeypatch.setattr(server, "_persist_tool_call_activity", lambda *a, **kw: None)
     tracker_client = AsyncMock()
     monkeypatch.setattr(
@@ -151,7 +150,7 @@ async def run(
     monkeypatch.setattr(ci_tool, "_adapter", adapter)
     fake_ci.pulls["7"] = {"state": "open", "merged_at": None}
     async with Client(server) as client:
-        yield client, flow, test_user
+        yield client, flow, test_user, policy
 
 
 async def _call(client: Client, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -161,7 +160,7 @@ async def _call(client: Client, arguments: dict[str, Any]) -> dict[str, Any]:
 
 @pytest.mark.asyncio
 async def test_report_and_persisted_ledger(run: Any, db_session: Session) -> None:
-    client, flow, user = run
+    client, flow, user, _ = run
     report = await _call(
         client, {"critical_path_jobs": ["test*"], "max_failed_logs": 1}
     )
@@ -209,7 +208,7 @@ async def test_report_and_persisted_ledger(run: Any, db_session: Session) -> Non
 
 @pytest.mark.asyncio
 async def test_unknown_repositories_and_bad_arguments(run: Any) -> None:
-    client, _, _ = run
+    client, _, _, _ = run
     report = await _call(
         client, {"repositories": ["example-org/app", "example-org/unsynced"]}
     )
@@ -220,3 +219,17 @@ async def test_unknown_repositories_and_bad_arguments(run: Any) -> None:
         await _call(client, {"repositories": ["example-org/unsynced"]})
     with pytest.raises(ToolError):
         await _call(client, {"window_hours": 0})
+
+
+@pytest.mark.asyncio
+async def test_policy_records_replayable_arguments(run: Any) -> None:
+    """Ledger updates reach the policy record, so an approved call replays."""
+    client, _, _, policy = run
+    first = await _call(client, {"max_failed_logs": 0})
+    signature_id = first["ledger"]["top"][0]["id"]
+    update = {"signature_id": signature_id, "status": "ignored", "note": "known"}
+    await _call(client, {"ledger_updates": [update]})
+    recorded = policy.call_args.kwargs["arguments"]
+    assert recorded["ledger_updates"] == [{**update, "linked": None}]
+    replayed = await _call(client, {k: v for k, v in recorded.items() if v is not None})
+    assert replayed["ledger"]["saved"] is True
