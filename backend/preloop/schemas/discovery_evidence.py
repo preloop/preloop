@@ -96,7 +96,10 @@ class ObservedProfile(SafeEvidenceModel):
     @model_validator(mode="after")
     def consistent_state(self) -> ObservedProfile:
         """A failed profile cannot masquerade as an empty successful scan."""
-        if (self.completeness == "complete") != (self.error_code is None):
+        # Older collectors omitted a reason when runtime probes were inconclusive.
+        if (self.completeness == "complete" and self.error_code is not None) or (
+            self.completeness == "failed" and self.error_code is None
+        ):
             raise ValueError("Profile completeness and error must agree")
         return self
 

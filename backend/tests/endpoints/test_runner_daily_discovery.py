@@ -369,3 +369,30 @@ def test_production_app_accepts_runner_credentials(
         assert schema["paths"]["/api/v1/runners/{runner_id}/" + path][method].get(
             "security"
         ) == [{"runnerToken": []}]
+
+
+def test_discovery_failure_heartbeat_preserves_clears_and_rejects_private_text() -> (
+    None
+):
+    """A rejected report updates its runner row until an explicit recovery."""
+    from preloop.api.endpoints.runners import _merge_discovery_failure
+
+    capabilities: dict = {"docker_available": True}
+    failure = {
+        "reason": "Evidence application must match a reported candidate",
+        "http_status": 422,
+        "next_attempt": "2026-11-01T00:01:00Z",
+    }
+    heartbeat = {"discovery_failure": failure}
+    assert _merge_discovery_failure(capabilities, heartbeat)
+    assert capabilities["discovery_failure"] == failure
+    for message in (
+        {},
+        heartbeat,
+        {"discovery_failure": {**failure, "reason": "private text"}},
+        {"discovery_failure": {**failure, "next_attempt": "invalid"}},
+    ):
+        assert not _merge_discovery_failure(capabilities, message)
+        assert capabilities["discovery_failure"] == failure
+    assert _merge_discovery_failure(capabilities, {"discovery_failure": None})
+    assert capabilities == {"docker_available": True}

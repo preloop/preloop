@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io"
 	"math/rand/v2"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/preloop/preloop/cli/internal/api"
@@ -21,6 +23,8 @@ type runnerDiscoveryState struct {
 	LastRun         time.Time `json:"last_run,omitempty"`
 	LastSuccess     time.Time `json:"last_success,omitempty"`
 	NextAttempt     time.Time `json:"next_attempt"`
+	FailureReason   string    `json:"failure_reason,omitempty"`
+	HTTPStatus      int       `json:"http_status,omitempty"`
 	Result          string    `json:"result"`
 	Failures        int       `json:"failures"`
 	IntervalSeconds int       `json:"interval_seconds,omitempty"`
@@ -69,8 +73,17 @@ func (s *runnerDiscoverySchedule) due(now time.Time, interval time.Duration) boo
 	return !now.Before(s.NextAttempt) && (s.LastSuccess.IsZero() || now.Sub(s.LastSuccess) >= interval*9/10)
 }
 
+// Wake for a due report between the usual policy/configuration polls.
+func (s *runnerDiscoverySchedule) pollDelay(now time.Time) time.Duration {
+	if until := s.NextAttempt.Sub(now); until > 0 && until < time.Minute {
+		return until
+	}
+	return time.Minute
+}
+
 func (s *runnerDiscoverySchedule) completed(now time.Time, interval time.Duration, err error) {
 	s.LastRun = now
+	s.FailureReason, s.HTTPStatus = "", 0
 	if err == nil {
 		s.LastSuccess, s.Failures, s.Result = now, 0, "reported"
 		s.IntervalSeconds = int(interval / time.Second)
@@ -79,7 +92,7 @@ func (s *runnerDiscoverySchedule) completed(now time.Time, interval time.Duratio
 	}
 	s.Failures++
 	s.Result = "failed; retry scheduled"
-	// Persist only a fixed result, never an API response or local path.
+	s.FailureReason, s.HTTPStatus = runnerDiscoveryFailureReason(err)
 	delay := time.Minute * time.Duration(1<<min(s.Failures-1, 6))
 	if delay >= time.Hour {
 		delay = time.Duration(float64(time.Hour) * (0.8 + 0.2*s.random()))
@@ -87,6 +100,67 @@ func (s *runnerDiscoverySchedule) completed(now time.Time, interval time.Duratio
 		delay = time.Duration(float64(delay) * (1 + 0.2*s.random()))
 	}
 	s.NextAttempt = now.Add(delay)
+}
+
+// Only fixed diagnostics leave the machine. Validation bodies can include the
+// rejected input, and transport errors can include a server URL or a local path.
+func runnerDiscoveryFailureReason(err error) (string, int) {
+	var apiErr *api.APIError
+	if errors.As(err, &apiErr) {
+		var body struct {
+			Detail json.RawMessage `json:"detail"`
+		}
+		_ = json.Unmarshal([]byte(apiErr.Body), &body)
+		var reason string
+		var fields []struct {
+			Msg string `json:"msg"`
+		}
+		if json.Unmarshal(body.Detail, &reason) != nil && json.Unmarshal(body.Detail, &fields) == nil && len(fields) > 0 {
+			reason = strings.TrimPrefix(fields[0].Msg, "Value error, ")
+		}
+		switch reason {
+		case candidateMismatchReason, "Profile completeness and error must agree",
+			"Version 3 candidates must match evidence application contexts",
+			"Candidate extensions must match application extensions",
+			"Report must describe this runner's device", "Collection window is in the future",
+			"Runner lacks report_discovery capability", "Automatic discovery disabled",
+			"Invalid runner credentials", "Runner discovery unavailable":
+			return reason, apiErr.StatusCode
+		}
+		return "Discovery request rejected", apiErr.StatusCode
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return "Could not reach the discovery service", 0
+	}
+	switch err.Error() {
+	case "extension content incomplete; retry scheduled":
+		return "Extension content upload incomplete", 0
+	case "discovery privacy salt unavailable":
+		return "Discovery privacy salt unavailable", 0
+	case "could not determine workstation identity without writing state; supply --device-ref":
+		return "Workstation identity unavailable", 0
+	}
+	return "Discovery collection or reporting failed", 0
+}
+
+type runnerDiscoveryFailure struct {
+	Reason      string    `json:"reason"`
+	HTTPStatus  int       `json:"http_status,omitempty"`
+	NextAttempt time.Time `json:"next_attempt"`
+}
+
+var lastRunnerDiscoveryFailure atomic.Pointer[runnerDiscoveryFailure]
+
+func (state runnerDiscoveryState) failure() *runnerDiscoveryFailure {
+	if state.Result != "failed; retry scheduled" {
+		return nil
+	}
+	reason := state.FailureReason
+	if reason == "" {
+		reason = "Discovery collection or reporting failed"
+	}
+	return &runnerDiscoveryFailure{Reason: reason, HTTPStatus: state.HTTPStatus, NextAttempt: state.NextAttempt}
 }
 
 func runnerDiscoveryJitter(interval time.Duration, random float64) time.Duration {
@@ -250,6 +324,7 @@ func startRunnerDiscovery(state *runnerState) func() {
 	if saved.RunnerID != state.ID || saved.Server != server {
 		saved = runnerDiscoveryState{RunnerID: state.ID, Server: server}
 	}
+	lastRunnerDiscoveryFailure.Store(saved.failure())
 	now := time.Now().UTC()
 	startupFraction := rand.Float64()
 	schedule := newRunnerDiscoverySchedule(now, saved, func() float64 { return startupFraction })
@@ -282,11 +357,12 @@ func startRunnerDiscovery(state *runnerState) func() {
 			}
 			worker.tick(time.Now().UTC(), local, loadErr)
 			if schedule.runnerDiscoveryState != saved {
+				lastRunnerDiscoveryFailure.Store(schedule.failure())
 				if saveRunnerDiscoveryState(schedule.runnerDiscoveryState) == nil {
 					saved = schedule.runnerDiscoveryState
 				}
 			}
-			timer.Reset(time.Minute)
+			timer.Reset(schedule.pollDelay(time.Now()))
 		}
 	}()
 	return func() { close(stop) }
@@ -303,6 +379,16 @@ func printRunnerDiscoveryStatus(out io.Writer) {
 		result = "not run yet"
 	}
 	fmt.Fprintf(out, "discovery: %s\n", result)
+	if result == state.Result {
+		if failure := state.failure(); failure != nil {
+			fmt.Fprintf(out, "discovery_reason: %s", failure.Reason)
+			if failure.HTTPStatus != 0 {
+				fmt.Fprintf(out, " (HTTP %d)", failure.HTTPStatus)
+			}
+			fmt.Fprintln(out)
+			fmt.Fprintf(out, "discovery_next_attempt: %s\n", failure.NextAttempt.Format(time.RFC3339))
+		}
+	}
 	if !state.LastRun.IsZero() {
 		fmt.Fprintf(out, "discovery_last_run: %s\n", state.LastRun.Format(time.RFC3339))
 	}

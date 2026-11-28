@@ -812,6 +812,31 @@ describe('RunnersView', () => {
     expect(badge().getAttribute('variant')).to.equal('neutral');
   });
 
+  it('shows a discovery rejection and retry alongside runner presence', async () => {
+    const element = await renderWith([
+      {
+        id: '11111111-1111-4111-8111-111111111111',
+        name: 'laptop',
+        status: 'online',
+        capabilities: {
+          discovery_failure: {
+            reason: 'Evidence application must match a reported candidate',
+            next_attempt: '2026-10-11T09:01:00Z',
+          },
+        },
+      },
+    ]);
+    const row = element.shadowRoot!.querySelector('tr[data-runner-id]')!;
+    expect(row.textContent).to.contain('Online');
+    expect(row.textContent).to.contain('Discovery failed');
+    expect(row.textContent).to.contain(
+      'Evidence application must match a reported candidate'
+    );
+    expect(row.querySelector('time')?.dateTime).to.equal(
+      '2026-10-11T09:01:00Z'
+    );
+  });
+
   it('falls back to status when the server sends no presence', async () => {
     const element = await renderWith([
       {

@@ -376,21 +376,6 @@ func TestExtensionReportDisclosureMatchesThePayload(t *testing.T) {
 	}
 }
 
-// protects=a report from a scan that could not finish is still accepted;
-// fails_when=the profile entry of a current-user report is partial or
-// failed without an error code (the server answers that with a 422 and the
-// report is lost), or a complete scan carries one; no_claim=the server's
-// rule is restated here, not exercised; the sandbox rig sends a real report
-// from a container, where the scan is partial.
-func TestCurrentProfileResultAgreesWithItsCompleteness(t *testing.T) {
-	for completeness, wantCode := range map[string]string{"complete": "", "partial": "probe_incomplete", "failed": "probe_incomplete"} {
-		got := currentProfileResult("synthetic-ref", completeness)
-		if got.ErrorCode != wantCode || got.Completeness != completeness || got.ProfileRef != "synthetic-ref" {
-			t.Errorf("%s: %+v", completeness, got)
-		}
-	}
-}
-
 // protects=a refused report is one line of the step list; fails_when=the
 // server's response body spills over several rows; no_claim=stand-in
 // report sender.

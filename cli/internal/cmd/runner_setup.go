@@ -320,9 +320,25 @@ func handleRunnerSetupSkip(req runnerSetupRequest, reason string) error {
 		}
 	case "already_installed":
 		if req.Env.OnDemand {
+			// A previous setup can leave the unit on disk even if systemd was
+			// unavailable. Starting an already active systemd unit is idempotent.
+			if runtime.GOOS == "linux" && req.Policy.requirement() != "forbidden" {
+				if err := setupStartRunner(); err != nil {
+					return req.serviceFailure("start", err)
+				}
+			}
 			fmt.Fprintln(req.Out, "A Preloop runner service is already installed.")
 		}
 	}
+	return nil
+}
+
+func (req runnerSetupRequest) serviceFailure(action string, cause error) error {
+	err := fmt.Errorf("could not %s the runner (%w). The runner service is not running. Run it in the foreground with preloop runner fg", action, cause)
+	if req.Env.OnDemand {
+		return err
+	}
+	fmt.Fprintf(req.Out, "%v\nTo retry service setup: %s\n", err, runnerSetupManualCommand)
 	return nil
 }
 
@@ -351,34 +367,19 @@ func installRunnerFromSetup(req runnerSetupRequest) error {
 		}
 	}
 	if err := setupInstallRunner(req.Out); err != nil {
-		fmt.Fprintf(
-			req.Out,
-			"Could not install the Preloop runner: %v\nInstall it later with: %s\n",
-			err,
-			runnerSetupManualCommand,
-		)
-		return nil
+		return req.serviceFailure("install", err)
 	}
-	started := true
-	if err := setupStartRunner(); err != nil {
-		fmt.Fprintf(
-			req.Out,
-			"Runner installed but it did not start: %v\nStart it with: preloop runner start\n",
-			err,
-		)
-		started = false
-	}
+	startErr := setupStartRunner()
 	if err := config.SetRunnerPromptAnsweredNow(); err != nil {
 		fmt.Fprintf(req.Out, "Could not record the answer: %v\n", err)
 	}
-	// A start failure already told the user what to do. Waiting for the
-	// runner to report online would only block login until the timeout.
-	if started {
-		waitForRunnerOnline(req.Out)
-		if req.tty() {
-			if err := discoverAndRegisterRunnerModelsWithTTY(req.In, req.Out, nil, true, false, req.tty()); err != nil {
-				fmt.Fprintf(req.Out, "Local models: %v. Retry with: preloop runner models --register\n", err)
-			}
+	if startErr != nil {
+		return req.serviceFailure("start", startErr)
+	}
+	waitForRunnerOnline(req.Out)
+	if req.tty() {
+		if err := discoverAndRegisterRunnerModelsWithTTY(req.In, req.Out, nil, true, false, req.tty()); err != nil {
+			fmt.Fprintf(req.Out, "Local models: %v. Retry with: preloop runner models --register\n", err)
 		}
 	}
 	return nil

@@ -841,3 +841,18 @@ func TestReportPassesOnTheCollectorsNoticesAndFailures(t *testing.T) {
 		t.Fatalf("output:\n%s", uploaded.out.String())
 	}
 }
+
+func TestRunnerStartupFailureInOnboarding(t *testing.T) {
+	enabled := true
+	selection := defaultOnboardSelection()
+	selection.Runner = &enabled
+	fake := newFakeOnboardRun(t, threeAgents()[:1], selection, "", true)
+	fake.run.setupRunner = func() error { return errors.New("the runner service did not start") }
+	if err := fake.run.execute(); err != nil {
+		t.Fatal(err)
+	}
+	output := strings.Join(strings.Fields(fake.out.String()), " ")
+	if !strings.Contains(output, "runner not ready: the runner service did not start") {
+		t.Fatalf("missing startup failure in receipt: %s", output)
+	}
+}
