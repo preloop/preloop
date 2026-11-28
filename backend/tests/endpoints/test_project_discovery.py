@@ -326,3 +326,150 @@ def test_directories_are_scoped_to_the_reporting_machine(
     candidates = discover(client)["candidates"]
     assert [c["evidence_count"] for c in candidates] == [2, 1]
     assert all(c["repository"] is None for c in candidates)
+
+
+@pytest.mark.parametrize(
+    ("provider", "host", "marker"),
+    [
+        ("github", "github.com", "pull"),
+        ("bitbucket", "bitbucket.org", "pull-requests"),
+    ],
+)
+def test_public_web_alias_merges_with_session(
+    client: TestClient,
+    db_session: Session,
+    test_user: models.User,
+    test_tracker: models.Tracker,
+    provider: str,
+    host: str,
+    marker: str,
+) -> None:
+    """A public www URL works in both a tracker configuration and a ledger key."""
+    test_tracker.tracker_type = provider
+    test_tracker.url = f"https://www.{host}"
+    p = project(db_session, test_tracker, "team/example")
+    work(db_session, session(db_session, test_user.account_id), host=host)
+    db_session.add(
+        models.IssueCostPullRequest(
+            account_id=test_user.account_id,
+            pr_key=f"https://www.{host}/team/example/{marker}/7",
+            merged_at=RECENT,
+        )
+    )
+    db_session.flush()
+    (candidate,) = discover(client)["candidates"]
+    assert candidate["project_id"] == str(p.id)
+    assert candidate["repository"] == f"{host}/team/example"
+    (evidence,) = candidate["evidence"]
+    assert evidence["sources"] == ["sessions", "tracker"]
+
+
+@pytest.mark.parametrize("scope_rule", ["INCLUDE", "EXCLUDE"])
+def test_project_scopes_filter_candidates_and_evidence(
+    client: TestClient,
+    db_session: Session,
+    test_user: models.User,
+    test_tracker: models.Tracker,
+    scope_rule: str,
+) -> None:
+    """Session facts cannot expose a project or issue outside the tracker's scope."""
+    visible = project(db_session, test_tracker, "team/visible")
+    excluded = project(db_session, test_tracker, "team/excluded")
+    db_session.add(
+        models.TrackerScopeRule(
+            tracker_id=test_tracker.id,
+            scope_type="PROJECT",
+            rule_type=scope_rule,
+            identifier=visible.identifier
+            if scope_rule == "INCLUDE"
+            else excluded.identifier,
+        )
+    )
+    for p in [visible, excluded]:
+        db_session.add(
+            models.Issue(
+                tracker_id=test_tracker.id,
+                project_id=p.id,
+                title="Example",
+                external_id="1",
+                last_updated_external=RECENT.replace(tzinfo=None),
+            )
+        )
+    work(db_session, session(db_session, test_user.account_id), path="team/excluded")
+    db_session.flush()
+    candidates = discover(client)["candidates"]
+    assert {c["project_id"] for c in candidates} == {str(visible.id), None}
+    (repo,) = (c for c in candidates if c["project_id"] is None)
+    assert repo["possible_project_ids"] == []
+    assert repo["coverage"] == {"sessions": "observed", "tracker": "unknown"}
+    assert all(e["sources"] == ["sessions"] for e in repo["evidence"])
+
+
+def test_runtime_session_permission_required(client: TestClient) -> None:
+    """Grant project access while denying session access at the account hook."""
+    from preloop.plugins import account_hooks
+
+    def authorize(
+        ctx: account_hooks.AuthorizationContext, action: str, resource: object
+    ) -> account_hooks.Decision:
+        if action == "view_runtime_sessions":
+            return account_hooks.Decision("deny", reason="Session access denied")
+        return account_hooks.ALLOW
+
+    previous = account_hooks.get_authorizer()
+    account_hooks.register_authorizer(authorize)
+    try:
+        response = client.get(URL)
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Session access denied"
+    finally:
+        account_hooks.register_authorizer(previous)
+
+
+def test_flow_links_exclude_otherwise_independent_sessions(
+    client: TestClient,
+    db_session: Session,
+    test_user: models.User,
+) -> None:
+    """Either ledger can establish that a regular-looking session belongs to a flow."""
+    flow = models.Flow(
+        account_id=test_user.account_id,
+        name="Example",
+        prompt_template="Example",
+        agent_config={},
+    )
+    db_session.add(flow)
+    db_session.flush()
+    execution = models.FlowExecution(
+        flow_id=flow.id,
+        trigger_event_details={"payload": {"scheduled_at": RECENT.isoformat()}},
+    )
+    db_session.add(execution)
+    db_session.flush()
+    via_activity = session(db_session, test_user.account_id)
+    via_usage = session(db_session, test_user.account_id)
+    work(db_session, via_activity)
+    work(db_session, via_usage)
+    db_session.add(
+        models.RuntimeSessionActivity(
+            account_id=test_user.account_id,
+            runtime_session_id=via_activity.id,
+            flow_execution_id=execution.id,
+            activity_type="user_prompt",
+            timestamp=RECENT,
+        )
+    )
+    db_session.add(
+        models.ApiUsage(
+            account_id=test_user.account_id,
+            runtime_session_id=via_usage.id,
+            flow_execution_id=execution.id,
+            endpoint="/v1/messages",
+            method="POST",
+            status_code=200,
+            duration=0.1,
+            action_type="model_gateway",
+        )
+    )
+    db_session.flush()
+    assert discover(client)["candidates"] == []

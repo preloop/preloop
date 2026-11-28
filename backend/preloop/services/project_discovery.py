@@ -26,6 +26,11 @@ _DEFAULT_HOST = {
     "gitlab": "gitlab.com",
     "bitbucket": "bitbucket.org",
 }
+# The merge ledger preserves the web host spelling. Private forge hosts are exact.
+_PUBLIC_WEB_ALIASES = {
+    "github.com": "www.github.com",
+    "bitbucket.org": "www.bitbucket.org",
+}
 _PATH = re.compile(r"[\w.-]+(?:/[\w.-]+)+", re.ASCII)
 _HOST = re.compile(r"[a-z0-9.-]+(?::[0-9]+)?", re.ASCII)
 
@@ -60,9 +65,10 @@ def _host(value: object) -> str | None:
             return f"{host}:{url.port}"
     except ValueError:
         return None
-    return {"api.github.com": "github.com", "api.bitbucket.org": "bitbucket.org"}.get(
-        host, host
-    )
+    for canonical, web_alias in _PUBLIC_WEB_ALIASES.items():
+        if host in (web_alias, f"api.{canonical}"):
+            return canonical
+    return host
 
 
 class _Catalog:
@@ -70,6 +76,7 @@ class _Catalog:
 
     def __init__(self, projects: list[models.Project]) -> None:
         self.projects: dict[UUID, ProjectDiscoveryCandidate] = {}
+        self.ledger_repositories: set[str] = set()
         self.paths: dict[str, set[UUID]] = defaultdict(set)
         self.directories: dict[str, set[UUID]] = defaultdict(set)
         self.hosts: dict[UUID, str | None] = {}
@@ -94,6 +101,12 @@ class _Catalog:
                 for name in [path, *(aliases if isinstance(aliases, list) else [])]:
                     if alias := _path(name):
                         self.paths[alias].add(p.id)
+                        if host:
+                            self.ledger_repositories.add(f"{host}/{alias}")
+                            if host in _PUBLIC_WEB_ALIASES:
+                                self.ledger_repositories.add(
+                                    f"{_PUBLIC_WEB_ALIASES[host]}/{alias}"
+                                )
                         self.directories[alias.rsplit("/", 1)[-1]].add(p.id)
 
     def repository(
@@ -208,17 +221,15 @@ def discover_projects(
         if projects
         else []
     )
-    names = {
-        f"{catalog.hosts[i]}/{path}"
-        for path, ids in catalog.paths.items()
-        for i in ids
-        if catalog.hosts[i]
-    }
     merges = (
         facts.merges(
-            db, account_id=account_id, repositories=names, start=start, end=end
+            db,
+            account_id=account_id,
+            repositories=catalog.ledger_repositories,
+            start=start,
+            end=end,
         )
-        if names
+        if catalog.ledger_repositories
         else []
     )
     cap = facts.FACT_LIMIT
