@@ -156,6 +156,15 @@ func (r *manualRigServer) handle(w http.ResponseWriter, req *http.Request) {
 			}
 		}
 		reply(404, map[string]interface{}{"detail": "not found"})
+	case req.Method == http.MethodGet && path == prefix+"/agents/enrollment/identity":
+		switch req.Header.Get("Authorization") {
+		case "Bearer agt_SYNTHETICCONSOLE":
+			reply(200, map[string]string{"agent_id": "agent-1"})
+		case "Bearer agt_SYNTHETICOTHER":
+			reply(200, map[string]string{"agent_id": "agent-2"})
+		default:
+			reply(401, map[string]string{"detail": "invalid credential"})
+		}
 	case req.Method == http.MethodGet && path == prefix+"/agents":
 		items := []map[string]interface{}{}
 		for _, agent := range r.agents {
@@ -1029,5 +1038,64 @@ func TestManualReonboardReportsUnwritableExistingGate(t *testing.T) {
 	after, err := os.ReadFile(hookPath)
 	if err != nil || string(after) != original {
 		t.Fatalf("unwritable hook changed: %v", err)
+	}
+}
+
+func TestResumeMCPOnlyWithReplacementKey(t *testing.T) {
+	keys := map[string]string{
+		"console":             "agt_SYNTHETICCONSOLE",
+		"older pending setup": "agt_SYNTHETICCONSOLE",
+		"another agent":       "agt_SYNTHETICOTHER",
+		"revoked":             "agt_SYNTHETICREVOKED",
+	}
+	for name, key := range keys {
+		t.Run(name, func(t *testing.T) {
+			rig := newManualRigServer(t)
+			home := newManualRigHome(t)
+			home.lockSettings(t)
+			_, _ = runManualRigOnboard(t, rig, home.agent, managedEnrollmentOptions{NoModelRouting: true})
+			state, err := loadManualResumeState(home.agent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if name == "older pending setup" {
+				delete(rig.enrollments[state.EnrollmentID], "validation_result")
+			}
+
+			applyRigResult(t, home, func(s string) string { return strings.ReplaceAll(s, syntheticAgentKey, key) })
+			var out bytes.Buffer
+			err = resumeManualEnrollment(rig.client(), state, manualResumeOptions{SkipLiveValidate: true}, &out)
+			valid := key == "agt_SYNTHETICCONSOLE"
+			if (err == nil) != valid || rig.probeCalls != 0 || strings.Contains(out.String(), key) {
+				t.Fatalf("replacement key validation, got success=%t, model probes=%d", err == nil, rig.probeCalls)
+			}
+			updates := rig.sent(http.MethodPost, "/validate")
+			if !valid {
+				if len(updates) != 0 {
+					t.Fatal("invalid key completed the enrollment")
+				}
+				return
+			}
+			if len(updates) != 1 || updates[0]["status"] != "applied" || !strings.Contains(out.String(), "MCP only") {
+				t.Fatal("expected a completed MCP-only enrollment")
+			}
+		})
+	}
+}
+
+func TestManualClaudeAPIKeyConfigSelectsProbedModel(t *testing.T) {
+	rig := newManualRigServer(t)
+	home := newManualRigHome(t)
+	home.lockSettings(t)
+	_, _ = runManualRigOnboard(t, rig, home.agent, managedEnrollmentOptions{})
+	applyRigResult(t, home, func(s string) string { return s })
+	doc, err := loadJSONDocument(home.settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selector := lookupString(doc, "model")
+	alias := lookupString(doc, "env", "ANTHROPIC_CUSTOM_MODEL_OPTION")
+	if selector != "sonnet" || alias != "anthropic/claude-sonnet-4-5" || lookupString(doc, "env", "ANTHROPIC_DEFAULT_SONNET_MODEL") != alias {
+		t.Fatal("the client can resolve sonnet to a model other than the probed alias")
 	}
 }

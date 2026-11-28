@@ -20,6 +20,7 @@ from preloop.schemas.agent_enrollment import (
     EnrollmentExchangeResponse,
     EnrollmentGrantRequest,
     EnrollmentGrantResponse,
+    EnrollmentIdentity,
 )
 from preloop.services.agent_enrollment import (
     acknowledge_apply,
@@ -96,7 +97,7 @@ def _app_credential(
     token: str = Depends(oauth2_scheme),
     db: Session = Depends(get_db_session),
 ) -> models.ApiKey:
-    """Authenticate the app itself for its sole configuration acknowledgment."""
+    """Authenticate the app itself for local enrollment checks."""
     key = crud_api_key.get_by_key(db, key=token)
     _authenticate_with_api_key(db, key, allow_managed_agent=True)
     if (
@@ -105,6 +106,23 @@ def _app_credential(
     ):
         raise HTTPException(403, "App credential required")
     return key
+
+
+@router.get("/identity", response_model=EnrollmentIdentity)
+def enrollment_identity(
+    response: Response, key: models.ApiKey = Depends(_app_credential)
+) -> EnrollmentIdentity:
+    """Identify an active agent credential during manual onboarding.
+
+    Args:
+        response: HTTP response carrying the cache policy.
+        key: Authenticated durable key.
+
+    Returns:
+        The managed agent to which the key was issued.
+    """
+    _no_cache(response)
+    return EnrollmentIdentity(agent_id=key.context_data["managed_agent_id"])
 
 
 @router.post("/applied", response_model=EnrollmentApplyResponse)

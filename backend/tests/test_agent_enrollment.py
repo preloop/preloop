@@ -506,6 +506,11 @@ def test_real_bearer_exchange_and_self_acknowledgment(
         )
         assert again.status_code in {401, 403}
         runtime_headers = {"Authorization": f"Bearer {runtime}"}
+        identity_path = "/api/v1/agents/enrollment/identity"
+        identity = client.get(identity_path, headers=runtime_headers)
+        assert identity.status_code == 200
+        assert identity.json() == {"agent_id": response.json()["apps"][0]["agent_id"]}
+        assert client.get(identity_path, headers=headers).status_code in {401, 403}
         ack = client.post("/api/v1/agents/enrollment/applied", headers=runtime_headers)
         assert ack.status_code == 200, ack.text
         assert ack.json() == {"state": "configured"}

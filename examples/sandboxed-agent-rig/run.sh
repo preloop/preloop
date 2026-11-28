@@ -404,6 +404,24 @@ variant_ro_everything() {
 }
 
 # --- Variant 3 ------------------------------------------------------------
+reset_mock_requests() {
+  compose exec -T mock-anthropic python -c 'import urllib.request; urllib.request.urlopen("http://localhost:8080/_rig/reset", data=b"{}").close()'
+}
+
+expect_mock_model() {
+  compose exec -T mock-anthropic python - "$1" <<'PY' | tee -a "$TRANSCRIPT"
+import json
+import sys
+import urllib.request
+
+with urllib.request.urlopen("http://localhost:8080/_rig/requests") as response:
+    requests = json.load(response)["requests"]
+models = [r["model"] for r in requests if r["path"] == "/v1/messages"]
+assert set(models) == {"claude-sonnet-4-5"}, f"Unexpected mock request models: {models}"
+print(f"{sys.argv[1]} reached the mocked Messages API using {', '.join(models)}.")
+PY
+}
+
 variant_wrong_owner() {
   local svc=agent-wrong-owner
   begin wrong-owner "the mount is writable but settings.json belongs to another uid; upstream is an API key"
@@ -425,10 +443,20 @@ JSON
   note "The file's owner applies the complete result."
   host "sudo cp <complete result> <the mounted settings.json>"
   compose exec -T -u 0 "$svc" bash -c 'cat "$(ls -d /home/agent/.preloop/manual-setup/* | grep -v -- -offboard | head -1)/settings.json" > /home/agent/.claude/settings.json'
+  compose exec -T -u 0 "$svc" bash -c 'install -m 600 -o agent -g agent /home/agent/.preloop/manual-setup/*/preloop-control.merge.json /home/agent/.claude/preloop-control.json'
+  reset_mock_requests
   run "$svc" "preloop agents onboard --resume 'Claude Code'"
   expect_status 0
   expect "✓ Onboarded Claude Code"
   expect "Gateway validation: passed"
+
+  expect_mock_model "Gateway probe"
+  note "One native request using the written settings and the client's default model."
+  reset_mock_requests
+  run "$svc" "claude -p 'Reply with the single word ACK.' --output-format text"
+  expect_status 0
+  grep -qx 'ACK' "$TRANSCRIPT"
+  expect_mock_model "Native Claude"
 
   note "Offboard, removing the block as the file's owner."
   run "$svc" "preloop agents offboard 'Claude Code' --yes --remove-model yes --remove-mcp-servers no"
@@ -445,23 +473,63 @@ JSON
 variant_no_login() {
   local svc=agent-no-login
   begin no-login "read-only settings and no Claude login anywhere"
-  run_tty "$svc" '' "preloop agents onboard 'Claude Code' --yes"
+  run_tty "$svc" 'm\n\nlater\n' "preloop agents onboard 'Claude Code' --no-credential-import"
   expect_status 3
-  host "cp <complete result from the sandbox> state/no-login/claude/settings.json"
-  compose exec -T "$svc" bash -c 'cat "$(ls -d ~/.preloop/manual-setup/* | grep -v -- -offboard | head -1)/settings.json"' > "$OUT/.no-login.json"
-  python3 - "$OUT/.no-login.json" state/no-login/claude/settings.json <<'PY'
-import sys
-with open(sys.argv[2], "r+") as handle:
-    handle.seek(0)
-    handle.write(open(sys.argv[1]).read())
-    handle.truncate()
+  expect "m MCP only"
+  note "Issue a replacement key through the console's credential API and fill the pending settings block."
+  host "apply the console merge block to the read-only mount's source"
+  compose exec -T -e RIG_TOKEN="$RIG_PRELOOP_TOKEN" "$svc" python3 - <<'PY' | python3 -c 'import json, sys; from pathlib import Path; doc=json.load(sys.stdin); Path(sys.argv[1]).write_text(json.dumps(doc))' state/no-login/claude/settings.json
+import json
+import os
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+
+def request(path: str, body: dict | None = None) -> Any:
+    """Call the local console API as the account owner."""
+    req = urllib.request.Request(
+        os.environ["PRELOOP_URL"] + "/api/v1" + path,
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={
+            "Authorization": "Bearer " + os.environ["RIG_TOKEN"],
+            "Content-Type": "application/json",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=15) as response:
+        return json.load(response)
+
+
+def merge(document: dict, block: dict) -> None:
+    """Apply the console's JSON merge block to the existing document."""
+    for name, value in block.items():
+        if isinstance(document.get(name), dict) and isinstance(value, dict):
+            merge(document[name], value)
+        else:
+            document[name] = value
+
+
+agent, = request("/agents")["items"]
+path = "/agents/" + agent["id"]
+setup = request(path + "/manual-setup")
+assert setup["pending"]
+change, = [f for f in setup["instructions"]["files"] if f["path"].endswith("/settings.json")]
+block = json.dumps(change["merge"])
+assert "<AGENT_KEY>" in block and not change.get("remove")
+key = request(path + "/credentials", {"name": "manual-setup-rig"})["token"]
+settings = json.loads(Path(change["path"]).read_text())
+merge(settings, json.loads(block.replace("<AGENT_KEY>", key).replace("<AGENT_KEY_LAST_20>", key[-20:])))
+print(json.dumps(settings))
 PY
-  rm -f "$OUT/.no-login.json"
   run "$svc" "preloop agents onboard --resume 'Claude Code'"
   expect_status 0
   expect "✓ Onboarded Claude Code"
   refute "Gateway validation: passed"
+  expect "Replacement MCP key verified for this agent"
+  expect "Gateway validation: not applicable (MCP only)"
   run "$svc" "preloop agents onboard --resume 'Claude Code'"
+  expect_status 1
+  expect "no manual setup is recorded"
   server_state | tee -a "$TRANSCRIPT"
 }
 

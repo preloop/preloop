@@ -162,9 +162,16 @@ func resumeManualEnrollment(
 	}
 	validationResult = mergeStringMaps(validationResult, defaultManagedLiveValidationResult(agent))
 
+	routesModel, recorded := enrollment.ValidationResult["model_routing"].(bool)
+	if !recorded {
+		// Older pending enrollments have only the server's planned document.
+		// A broken local route must never downgrade its required gateway probe.
+		routesModel = lookupString(enrollment.ManagedConfig, "model_provider") == "preloop" ||
+			lookupString(enrollment.ManagedConfig, "env", "ANTHROPIC_BASE_URL") == strings.TrimRight(state.BaseURL, "/")+"/anthropic"
+	}
 	status := "applied"
 	probeRan := false
-	if effective != nil && supportsManagedLiveValidation(agent) && !opts.SkipLiveValidate {
+	if routesModel && effective != nil && supportsManagedLiveValidation(agent) && !opts.SkipLiveValidate {
 		fmt.Fprint(output, "Sending one real request through the gateway with this configuration...") //nolint:errcheck
 		outcome, probeErr := runManualResumeProbe(client, agent, validationResult, effective, detail)
 		if outcome != nil && len(outcome.ValidationResult) > 0 {
@@ -184,7 +191,13 @@ func resumeManualEnrollment(
 		}
 	}
 
-	if otherKey && status != "validated" {
+	if otherKey && !routesModel {
+		if err := verifyManualMCPKey(client, state.AgentID, plan, effective); err != nil {
+			printManualLine(output, "✗ The replacement MCP key could not be verified: %s. The setup is still pending.", err)
+			return &manualNotAppliedError{Agent: displayName, Problems: 1}
+		}
+		printManualLine(output, "  ✓ Replacement MCP key verified for this agent.")
+	} else if otherKey && status != "validated" {
 		printManualLine(output, "✗ %s is NOT onboarded: the key in place is not the one issued for this setup, and no real request was made to prove it works.", displayName)
 		printManualLine(output, "  Put the key the CLI printed in place, or rerun without --skip-live-validate.")
 		return &manualNotAppliedError{Agent: displayName, Problems: 1}
@@ -200,7 +213,7 @@ func resumeManualEnrollment(
 	}
 	removeManualResumeState(state.AgentName, state.ConfigPath)
 
-	if opts.SkipLiveValidate && status != "validated" && effective != nil && supportsManagedLiveValidation(agent) {
+	if routesModel && opts.SkipLiveValidate && status != "validated" && effective != nil && supportsManagedLiveValidation(agent) {
 		// No request was made, so nothing shows that the route, or a
 		// subscription login behind it, works: do not call it onboarded.
 		printManualLine(output, "Configured %s; the change is in place but the route and any subscription login behind it were NOT verified (gateway validation skipped).", displayName)
@@ -212,7 +225,7 @@ func resumeManualEnrollment(
 	switch {
 	case status == "validated":
 		printManualLine(output, "  Gateway validation: passed (one real request, recorded in the console)")
-	case opts.SkipLiveValidate:
+	case opts.SkipLiveValidate && routesModel:
 	case !probeRan:
 		printManualLine(output, "  Gateway validation: not applicable (MCP only)")
 	}
@@ -221,6 +234,31 @@ func resumeManualEnrollment(
 		printManualLine(output, "  Delete the saved instructions, they contain the agent key: %s", state.BundleDir)
 	}
 	printManualLine(output, "  Undo: preloop agents offboard %s", shellQuoteAgentName(displayName))
+	return nil
+}
+
+// verifyManualMCPKey checks the key in the applied MCP entry against the
+// authenticated CLI instance. File contents never choose the destination.
+func verifyManualMCPKey(client *api.Client, agentID string, plan *manualApplyPlan, effective map[string]interface{}) error {
+	server, _ := asObjectMap(lookupMCPServerContainer(effective)["preloop"])
+	header := firstNonEmptyString(lookupString(server, "headers", "Authorization"), lookupString(server, "http_headers", "Authorization"))
+	token, ok := strings.CutPrefix(header, "Bearer ")
+	if !ok || strings.TrimSpace(token) == "" {
+		return errors.New("the managed MCP entry needs a bearer key")
+	}
+	if file := plan.fileForRole(writeRoleConfig); file != nil && len(missingMergeKeys(file.Merge, effective, "", sha256Hex(token))) != 0 {
+		return errors.New("use the same replacement key throughout the required configuration")
+	}
+	var identity struct {
+		AgentID string `json:"agent_id"`
+	}
+	if err := api.NewGatewayProbeClient(client.BaseURL(), token).Get(api.RESTPrefix+"/agents/enrollment/identity", &identity); err != nil {
+		// Do not echo a server response that might contain credential material.
+		return errors.New("the instance could not authenticate the installed key")
+	}
+	if identity.AgentID != agentID {
+		return errors.New("the installed key belongs to a different agent")
+	}
 	return nil
 }
 

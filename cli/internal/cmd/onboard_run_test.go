@@ -841,3 +841,17 @@ func TestReportPassesOnTheCollectorsNoticesAndFailures(t *testing.T) {
 		t.Fatalf("output:\n%s", uploaded.out.String())
 	}
 }
+
+func TestReviewOffersMCPOnlyWithoutCredential(t *testing.T) {
+	agent := AgentConfig{Name: "Claude Code", ConfigPath: filepath.Join(t.TempDir(), "settings.json")}
+	fake := newFakeOnboardRun(t, []AgentConfig{agent}, defaultOnboardSelection(), "m\ny\n", false)
+	fake.run.planAgent = func(agent AgentConfig, opts managedEnrollmentOptions) (*enrollmentPlanState, error) {
+		return &enrollmentPlanState{agent: agent, opts: opts, managedGatewayEnabled: !opts.NoModelRouting}, nil
+	}
+	if err := fake.run.execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(fake.out.String(), "MCP only") || !fake.appliedOpts[agent.Name].NoModelRouting {
+		t.Fatal("review did not offer and apply the MCP-only choice")
+	}
+}

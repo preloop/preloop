@@ -1757,6 +1757,32 @@ paths:
       security:
       - bearerAuth: []
       x-restricted-ci: deny
+  /api/v1/agents/enrollment/identity:
+    get:
+      tags:
+      - Agent enrollment
+      summary: Enrollment Identity
+      description: "Identify an active agent credential during manual onboarding.\n\
+        \nArgs:\n    response: HTTP response carrying the cache policy.\n    key:\
+        \ Authenticated durable key.\n\nReturns:\n    The managed agent to which the\
+        \ key was issued."
+      operationId: enrollment_identity_api_v1_agents_enrollment_identity_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnrollmentIdentity'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/agents/enrollment/applied:
     post:
       tags:
@@ -41764,6 +41790,17 @@ components:
       title: EnrollmentGrantResponse
       description: One-time token-file envelope, delivered separately from managed
         settings.
+    EnrollmentIdentity:
+      properties:
+        agent_id:
+          type: string
+          format: uuid
+          title: Agent Id
+      type: object
+      required:
+      - agent_id
+      title: EnrollmentIdentity
+      description: The agent bound to the authenticated durable credential.
     ErrorResponseGroup:
       properties:
         method:
