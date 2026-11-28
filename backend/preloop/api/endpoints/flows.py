@@ -29,6 +29,7 @@ from preloop.api.flow_preconditions import (
     require_flow_revision,
     set_flow_etag,
 )
+from preloop.api.heavy_routes import heavy_route
 from preloop.api.loop_safety import run_db_off_loop
 from preloop.api.traffic_attribution import set_reason_code
 from preloop.models.schemas.flow import CiFlowPreflightRead
@@ -4376,6 +4377,9 @@ class PrecheckEvaluateResponse(BaseModel):
     response_model=PrecheckEvaluateResponse,
     summary="Evaluate a flow's pre-check without starting a run",
 )
+# Its own pool: an evaluation can hold the thread for the pre-check timeout,
+# which must not starve the shared worker pool other sync endpoints use.
+@heavy_route
 @require_permission("execute_flows")
 def evaluate_flow_precheck(
     *,

@@ -199,3 +199,11 @@ def test_the_summary_counts_skips_in_the_window(
     assert stats["skipped_count"] == 4
     assert stats["runs"] == 0
     assert stats["last_skipped_at"]
+
+
+def test_the_dry_run_uses_the_heavy_route_pool() -> None:
+    """An evaluation can hold its thread for the timeout; keep it off the
+    shared worker pool."""
+    from preloop.api.endpoints import flows
+
+    assert getattr(flows.evaluate_flow_precheck, "__heavy_route__", False)
