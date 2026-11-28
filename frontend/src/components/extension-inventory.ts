@@ -42,6 +42,17 @@ import {
   updateExtensionContentSettings,
   type ExtensionContentSettings,
 } from '../extension-content-api';
+import {
+  CAPABILITY_FILTER_LABELS,
+  EXTENSION_KIND_LABELS,
+  SOURCE_LABELS,
+  bundleSummary,
+  childrenOf,
+  displayName,
+  extensionPurpose,
+  extensionSource,
+  groupBundled,
+} from './extension-decision';
 
 // Exclusive lower bound: this release has no extension collector.
 export const EXTENSION_COLLECTOR_VERSION_FLOOR = '1.0.2';
@@ -237,6 +248,9 @@ export class ExtensionInventory extends LitElement {
   @state() private downloading = false;
   @state() private stateFilter = '';
   @state() private sourceFilter = '';
+  @state() private capabilityFilter = '';
+  /** Plugins whose bundled skills are shown beneath them. */
+  @state() private openBundles = new Set<string>();
   @state() private search = '';
   @state() private detailDevices: InstalledExtension[] = [];
   @state() private deviceCursor: string | null = null;
@@ -364,7 +378,49 @@ export class ExtensionInventory extends LitElement {
       }
       .identity {
         overflow-wrap: anywhere;
-        min-width: 150px;
+        min-width: 220px;
+        max-width: 44ch;
+      }
+      .kind-line {
+        margin-top: 2px;
+      }
+      .source .meta {
+        overflow-wrap: anywhere;
+      }
+      .caps {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: grid;
+        gap: 2px;
+        min-width: 160px;
+      }
+      .cap {
+        font-size: var(--console-text-meta);
+      }
+      .cap.unknown {
+        color: var(--console-meta-color);
+      }
+      .bundled-row td.identity {
+        padding-left: 28px;
+      }
+      .bundle-toggle::part(base) {
+        padding: 0;
+        height: auto;
+        line-height: 1.4;
+      }
+      .facts {
+        display: grid;
+        grid-template-columns: max-content 1fr;
+        gap: 4px 16px;
+        margin: 8px 0;
+      }
+      .facts dt {
+        color: var(--console-meta-color);
+      }
+      .facts dd {
+        margin: 0;
+        overflow-wrap: anywhere;
       }
       .number {
         text-align: right;
@@ -592,6 +648,8 @@ export class ExtensionInventory extends LitElement {
           ExtensionEffectiveState | undefined,
         source_kind: (this.sourceFilter || undefined) as
           ExtensionSource | undefined,
+        capability: (this.capabilityFilter ||
+          undefined) as ExtensionFilters['capability'],
         cursor: append ? (this.page?.next_cursor ?? undefined) : undefined,
       };
       const finding = this.showFullInventory ? undefined : this.finding;
@@ -889,7 +947,7 @@ export class ExtensionInventory extends LitElement {
     const pinned = new Map(this.pins.map((pin) => [pin.content_hash, pin]));
     const canPin = this.canManage && row.approval_state === 'approved';
     return html`<tr class="hashes">
-      <td colspan=${this.selectable ? 8 : 7}>
+      <td colspan=${this.selectable ? 7 : 6}>
         <ul aria-label=${`Content hashes for ${row.extension_id}`}>
           ${(row.content_hashes ?? []).map((bucket) => {
             const pin = bucket.content_hash
@@ -1210,7 +1268,7 @@ export class ExtensionInventory extends LitElement {
       .sort((a, b) => b[1] - a[1])
       .map(
         ([kind, count]) =>
-          `${count} ${label(kind).toLowerCase()}${count === 1 ? '' : 's'}`
+          `${count} ${(EXTENSION_KIND_LABELS[kind as ExtensionKey['extension_kind']] ?? label(kind)).replace(/^(?!MCP)./, (c) => c.toLowerCase())}${count === 1 ? '' : 's'}`
       )
       .join(', ');
     return html`<div class="summary">
@@ -1243,12 +1301,78 @@ export class ExtensionInventory extends LitElement {
     </div>`;
   }
 
-  private extensionIdentity(row: ExtensionKey): TemplateResult {
+  private extensionIdentity(
+    row: InstalledExtension | ExtensionAggregate
+  ): TemplateResult {
     const details = row.details;
-    return html`<strong>${details?.name || row.extension_id}</strong>
+    const purpose = extensionPurpose(row);
+    const kind =
+      EXTENSION_KIND_LABELS[row.extension_kind] ?? label(row.extension_kind);
+    const bundled = details?.bundles ? bundleSummary(row) : '';
+    const name = displayName(row);
+    const versions =
+      'fingerprint' in row ? (row.version ? [row.version] : []) : row.versions;
+    return html`<strong title=${row.extension_id}>${name}</strong>
       ${details?.name && details.name !== row.extension_id ? html`<span class="meta">${row.extension_id}</span>` : nothing}
-      ${details?.description ? html`<p class="description">${details.description}</p>` : details?.description_withheld ? html`<span class="meta">Description withheld for privacy</span>` : html`<span class="meta">No description reported</span>`}
-      ${details?.invocation ? html`<span class="invocation">${details.invocation}</span>` : nothing}`;
+      ${
+        purpose
+          ? html`<p class="description">${purpose}</p>`
+          : details?.description_withheld
+            ? html`<span class="meta">Description withheld for privacy</span>`
+            : nothing
+      }
+      <span class="meta kind-line"
+        >${agentKindLabel(row.agent_kind)} ·
+        ${kind}${versions.length ? html` · ${versions.join(', ')}` : nothing}${bundled ? html` · ${bundled}` : nothing}</span
+      >
+      ${details?.invocation && row.extension_kind !== 'hook' ? html`<span class="invocation">${details.invocation}</span>` : nothing}`;
+  }
+
+  /** What it can do, in plain words. Nothing is shown for an old server. */
+  private capabilityList(
+    row: InstalledExtension | ExtensionAggregate
+  ): TemplateResult | typeof nothing {
+    const caps = row.capabilities;
+    if (!caps?.length) return nothing;
+    return html`<ul class="caps" aria-label="What it can do">
+      ${caps.map(
+        (cap) =>
+          html`<li class=${cap.key === 'unknown' ? 'cap unknown' : 'cap'}>
+            ${cap.key === 'unknown' && cap.label === 'Unknown' ? 'Not known' : cap.label}
+          </li>`
+      )}
+    </ul>`;
+  }
+
+  private sourceCell(
+    row: InstalledExtension | ExtensionAggregate
+  ): TemplateResult {
+    const source = extensionSource(row);
+    return html`${source.label}${source.detail ? html`<span class="meta">${source.detail}</span>` : nothing}`;
+  }
+
+  /** Toggle for a plugin's bundled skills, when they are on this page. */
+  private bundleToggle(
+    row: InstalledExtension | ExtensionAggregate,
+    count: number
+  ): TemplateResult | typeof nothing {
+    if (!count) return nothing;
+    const key = detailKey(row);
+    const open = this.openBundles.has(key);
+    return html`<sl-button
+      size="small"
+      variant="text"
+      class="bundle-toggle"
+      aria-expanded=${open ? 'true' : 'false'}
+      @click=${() => {
+        const next = new Set(this.openBundles);
+        if (open) next.delete(key);
+        else next.add(key);
+        this.openBundles = next;
+      }}
+      >${open ? 'Hide' : 'Show'} ${count} bundled
+      ${count === 1 ? 'skill' : 'skills'}</sl-button
+    >`;
   }
 
   private detailsToggle(
@@ -1396,6 +1520,73 @@ export class ExtensionInventory extends LitElement {
     </div>`;
   }
 
+  /** Publisher, licence, version and tooling facts, as one definition list. */
+  private facts(row: InstalledExtension | ExtensionAggregate): TemplateResult {
+    const details = row.details;
+    const versions =
+      'fingerprint' in row ? (row.version ? [row.version] : []) : row.versions;
+    const items: Array<[string, string]> = [];
+    if (details?.author) items.push(['Publisher', details.author]);
+    if (details?.marketplace) items.push(['Marketplace', details.marketplace]);
+    if (details?.plugin) items.push(['Bundled by', details.plugin]);
+    if (details?.homepage_host) items.push(['Homepage', details.homepage_host]);
+    if (details?.repository_host)
+      items.push(['Repository', details.repository_host]);
+    if (versions.length) items.push(['Versions seen', versions.join(', ')]);
+    if (details?.license) items.push(['Licence', details.license]);
+    if (details?.modified_at)
+      items.push(['Last modified', details.modified_at]);
+    if (details?.tools_declared || details?.allowed_tools?.length)
+      items.push([
+        'Allowed tools',
+        details.allowed_tools?.length
+          ? details.allowed_tools.join(', ')
+          : 'None declared',
+      ]);
+    if (details?.script_count != null && row.extension_kind !== 'plugin')
+      items.push(['Bundled scripts', String(details.script_count)]);
+    if (details?.hook_events?.length && !details.bundle_names)
+      items.push(['Hook events', details.hook_events.join(', ')]);
+    if (details?.transport)
+      items.push(['Transport', details.transport.toUpperCase()]);
+    if (details?.command) items.push(['Starts', details.command]);
+    if (details?.url_host) items.push(['Host', details.url_host]);
+    return items.length
+      ? html`<dl class="facts">
+          ${items.map(
+            ([term, value]) =>
+              html`<dt>${term}</dt>
+                <dd>${value}</dd>`
+          )}
+        </dl>`
+      : html``;
+  }
+
+  /** The names of what a plugin bundles. */
+  private bundleNames(
+    row: InstalledExtension | ExtensionAggregate
+  ): TemplateResult | typeof nothing {
+    const names = row.details?.bundle_names;
+    if (!names) return nothing;
+    const groups = (
+      [
+        ['Skills', names.skills],
+        ['Commands', names.commands],
+        ['Agents', names.agents],
+        ['MCP servers', names.mcp_servers],
+        ['Hook events', row.details?.hook_events],
+      ] as Array<[string, string[] | undefined]>
+    ).filter(([, values]) => values?.length);
+    if (!groups.length) return nothing;
+    return html`<dl class="facts bundle-names" aria-label="Plugin contents">
+      ${groups.map(
+        ([term, values]) =>
+          html`<dt>${term}</dt>
+            <dd>${(values ?? []).join(', ')}</dd>`
+      )}
+    </dl>`;
+  }
+
   private detailsRow(
     row: InstalledExtension | ExtensionAggregate
   ): TemplateResult {
@@ -1415,12 +1606,13 @@ export class ExtensionInventory extends LitElement {
         ? [row.content_hash ?? null]
         : (row.content_hashes ?? []).map((bucket) => bucket.content_hash);
     return html`<tr class="extension-details">
-      <td colspan=${this.fingerprint ? 5 : this.selectable ? 8 : 7}>
-        ${'fingerprint' in row ? html`<p>Version: ${row.version ?? 'Unknown'} · Source: ${label(row.source_kind)} · Enabled: ${label(row.enabled)}</p>` : nothing}
-        ${details?.author ? html`<p>Author: ${details.author}</p>` : nothing}
-        ${details?.plugin ? html`<p>Bundled by ${details.plugin}</p>` : nothing}
-        ${details?.script_count != null ? html`<p>Bundled scripts: ${details.script_count}</p>` : nothing}
+      <td
+        colspan=${this.fingerprint ? (this.selectable ? 6 : 5) : this.selectable ? 7 : 6}
+      >
+        ${'fingerprint' in row ? html`<p>Source: ${SOURCE_LABELS[row.source_kind] ?? label(row.source_kind)} · Enabled: ${label(row.enabled)}</p>` : nothing}
+        ${this.facts(row)}
         ${details?.bundles ? html`<p class="plugin-contents">Plugin contents: ${details.bundles.skills} ${details.bundles.skills === 1 ? 'skill' : 'skills'}, ${details.bundles.commands} ${details.bundles.commands === 1 ? 'command' : 'commands'}, ${details.bundles.hooks} ${details.bundles.hooks === 1 ? 'hook' : 'hooks'}, ${details.bundles.mcp_servers} MCP ${details.bundles.mcp_servers === 1 ? 'server' : 'servers'}, ${details.bundles.agents} ${details.bundles.agents === 1 ? 'agent' : 'agents'}</p>` : nothing}
+        ${this.bundleNames(row)}
         ${
           details?.hook_matchers?.length
             ? html`<ul aria-label="Hook matchers">
@@ -1431,7 +1623,7 @@ export class ExtensionInventory extends LitElement {
                         >${group.matcher_withheld ? 'Matcher withheld for privacy' : group.matcher || 'All tools / no matcher'}</strong
                       >: ${group.count} commands
                       <ul>
-                        ${group.commands.map((command) => html`<li><code>${command.executable}</code>${command.preloop_managed ? ' (Preloop-managed)' : ''}</li>`)}
+                        ${group.commands.map((command) => html`<li><code>${command.executable}</code>${command.preloop_managed ? ' (Preloop-managed)' : ''}${command.script ? (command.in_project ? ' · script in the project' : ' · runs a script file') : ''}</li>`)}
                       </ul>
                     </li>`
                 )}
@@ -1497,22 +1689,94 @@ export class ExtensionInventory extends LitElement {
     </tr>`;
   }
 
-  private deviceRow(row: InstalledExtension): TemplateResult {
-    return html`<tr
-      class=${this.expanded === detailKey(row) ? 'review-row' : ''}
-    >
-      <td data-label="Agent">${agentKindLabel(row.agent_kind)}</td>
-      <td data-label="Kind">${label(row.extension_kind)}</td>
+  private grouped(): ReturnType<
+    typeof groupBundled<InstalledExtension | ExtensionAggregate>
+  > {
+    const rows = [...(this.page?.items ?? [])].sort(
+      (a, b) =>
+        a.extension_kind.localeCompare(b.extension_kind) ||
+        (a.details?.name || a.extension_id).localeCompare(
+          b.details?.name || b.extension_id
+        )
+    );
+    return groupBundled(rows);
+  }
+
+  private sortedRows(): (InstalledExtension | ExtensionAggregate)[] {
+    return this.grouped().top;
+  }
+
+  private rowWithChildren(
+    row: InstalledExtension | ExtensionAggregate
+  ): TemplateResult {
+    const children = childrenOf(this.grouped().children, row);
+    const open = this.openBundles.has(detailKey(row));
+    return html`${this.extensionRow(row, children.length)}
+    ${this.expanded === detailKey(row) ? html`${this.detailsRow(row)}${'fingerprint' in row ? nothing : this.hashList(row)}` : nothing}
+    ${
+      open
+        ? children.map(
+            (child) =>
+              html`${this.extensionRow(child, 0, true)}${this.expanded === detailKey(child) ? html`${this.detailsRow(child)}${'fingerprint' in child ? nothing : this.hashList(child)}` : nothing}`
+          )
+        : nothing
+    }`;
+  }
+
+  private extensionRow(
+    row: InstalledExtension | ExtensionAggregate,
+    bundled: number,
+    child = false
+  ): TemplateResult {
+    const device = 'fingerprint' in row;
+    const firstSeen = row.first_seen_at;
+    const classes = [
+      this.expanded === detailKey(row) ? 'review-row' : '',
+      child ? 'bundled-row' : '',
+    ]
+      .filter(Boolean)
+      .join(' ');
+    return html`<tr class=${classes}>
+      ${
+        this.selectable && !device
+          ? html`<td class="selection">
+              <input
+                type="checkbox"
+                aria-label=${`Select ${row.extension_id}`}
+                .checked=${this.selected.has(keyOf(row))}
+                ?disabled=${this.loading || !!this.busy}
+                @change=${() => this.toggleSelection(row)}
+              />
+            </td>`
+          : this.selectable
+            ? html`<td class="selection"></td>`
+            : nothing
+      }
       <td class="identity" data-label="Extension">
-        ${this.extensionIdentity(row)}${row.id_hashed ? html`<span class="meta">Hashed identifier</span>` : nothing}
+        ${this.extensionIdentity(row)}${device && row.id_hashed ? html`<span class="meta">Hashed identifier</span>` : nothing}
+        ${this.bundleToggle(row, bundled)}
       </td>
-      <td data-label="First seen" title=${row.first_seen_at}>
-        ${formatRelativeTime(row.first_seen_at)}
+      <td class="source" data-label="Source">${this.sourceCell(row)}</td>
+      <td class="capabilities" data-label="What it can do">
+        ${this.capabilityList(row)}
+      </td>
+      ${
+        device
+          ? nothing
+          : html`<td class="number" data-label="Installed on">
+              ${row.device_count}
+              ${row.device_count === 1 ? 'device' : 'devices'}
+              ${row.people_count ? html`<span class="meta">${row.people_count} ${row.people_count === 1 ? 'person' : 'people'}</span>` : nothing}
+            </td>`
+      }
+      <td data-label="First seen" title=${firstSeen ?? nothing}>
+        ${firstSeen ? formatRelativeTime(firstSeen) : nothing}
       </td>
       <td data-label="Approval">
-        ${this.approval(row)}${this.stateBadges(row.effective_state)}
+        ${this.approval(row)}${this.stateBadges(row.effective_state, device ? undefined : row.pin_count)}
         ${this.detailsToggle(row)}
         ${
+          device &&
           this.canManage &&
           row.content_hash &&
           row.effective_state !== 'approved'
@@ -1585,7 +1849,20 @@ export class ExtensionInventory extends LitElement {
           }}
         >
           <sl-option value="">All sources</sl-option
-          >${sources.map((source) => html`<sl-option value=${source}>${label(source)}</sl-option>`)}
+          >${sources.map((source) => html`<sl-option value=${source}>${SOURCE_LABELS[source]}</sl-option>`)}
+        </sl-select>
+        <sl-select
+          size="small"
+          label="Can"
+          class="capability-filter"
+          .value=${this.capabilityFilter}
+          @sl-change=${(event: Event) => {
+            this.capabilityFilter = (event.target as HTMLSelectElement).value;
+            void this.refresh();
+          }}
+        >
+          <sl-option value="">Anything</sl-option
+          >${Object.entries(CAPABILITY_FILTER_LABELS).map(([key, text]) => html`<sl-option value=${key}>${text}</sl-option>`)}
         </sl-select>
         <sl-button
           size="small"
@@ -1607,72 +1884,18 @@ export class ExtensionInventory extends LitElement {
                 <thead>
                   <tr>
                     ${this.selectable ? html`<th class="selection"><span class="sr-only">Select</span></th>` : nothing}
-                    <th>Agent</th>
-                    <th>Kind</th>
                     <th>Extension</th>
-                    ${
-                      this.fingerprint
-                        ? html`<th>First seen</th>`
-                        : html`<th class="number">Devices</th>
-                            <th>Versions seen</th>
-                            <th>Sources</th>`
-                    }
+                    <th>Source</th>
+                    <th>What it can do</th>
+                    ${this.fingerprint ? nothing : html`<th class="number">Installed on</th>`}
+                    <th>First seen</th>
                     <th class="approval-heading">
                       Approval ${this.howApprovalsWork()}
                     </th>
                   </tr>
                 </thead>
                 <tbody>
-                  ${[...this.page.items]
-                    .sort(
-                      (a, b) =>
-                        a.extension_kind.localeCompare(b.extension_kind) ||
-                        (a.details?.name || a.extension_id).localeCompare(
-                          b.details?.name || b.extension_id
-                        )
-                    )
-                    .map((row) =>
-                      'fingerprint' in row
-                        ? html`${this.deviceRow(row)}${this.expanded === detailKey(row) ? this.detailsRow(row) : nothing}`
-                        : html`<tr>
-                              ${
-                                this.selectable
-                                  ? html`<td class="selection">
-                                      <input
-                                        type="checkbox"
-                                        aria-label=${`Select ${row.extension_id}`}
-                                        .checked=${this.selected.has(keyOf(row))}
-                                        ?disabled=${this.loading || !!this.busy}
-                                        @change=${() => this.toggleSelection(row)}
-                                      />
-                                    </td>`
-                                  : nothing
-                              }
-                              <td data-label="Agent">
-                                ${agentKindLabel(row.agent_kind)}
-                              </td>
-                              <td data-label="Kind">
-                                ${label(row.extension_kind)}
-                              </td>
-                              <td class="identity" data-label="Extension">
-                                ${this.extensionIdentity(row)}
-                              </td>
-                              <td class="number" data-label="Devices">
-                                ${row.device_count}
-                              </td>
-                              <td data-label="Versions seen">
-                                ${row.versions.join(', ') || 'Unknown'}
-                              </td>
-                              <td data-label="Sources">
-                                ${row.source_kinds.map(label).join(', ')}
-                              </td>
-                              <td data-label="Approval">
-                                ${this.approval(row)}${this.stateBadges(row.effective_state, row.pin_count)}
-                                ${this.detailsToggle(row)}
-                              </td>
-                            </tr>
-                            ${this.expanded === detailKey(row) ? html`${this.detailsRow(row)}${this.hashList(row)}` : nothing}`
-                    )}
+                  ${this.sortedRows().map((row) => this.rowWithChildren(row))}
                 </tbody>
               </table>
             </div>`
@@ -1682,12 +1905,14 @@ export class ExtensionInventory extends LitElement {
             ? this.emptyText &&
               !this.stateFilter &&
               !this.sourceFilter &&
+              !this.capabilityFilter &&
               !this.search.trim()
               ? html`<p class="empty">${this.emptyText}</p>
                   ${this.agentKind || !this.page.coverage?.length ? this.reportSteps() : nothing}`
               : this.page.coverage?.length ||
                   this.stateFilter ||
                   this.sourceFilter ||
+                  this.capabilityFilter ||
                   this.search.trim()
                 ? html`<p class="empty">
                     No extensions reported for this selection.

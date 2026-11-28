@@ -197,7 +197,7 @@ func assertReportIsPrivate(t *testing.T, home string, raw []byte) discoveryRepor
 	// protects=v3 metadata binding; fails_when=extensions lack their hashed
 	// context; no_claim=fixture server, not backend validation.
 	if report.Evidence != nil {
-		if report.Evidence.SchemaVersion != 4 || len(report.Evidence.Applications) != len(report.Candidates) {
+		if report.Evidence.SchemaVersion != 5 || len(report.Evidence.Applications) != len(report.Candidates) {
 			t.Fatal("invalid v3 evidence")
 		}
 		for i, candidate := range report.Candidates {
@@ -298,7 +298,7 @@ func TestDiscoveryReportDisclosesAcceptedEvidence(t *testing.T) {
 					return
 				}
 				posts++
-				if legacy && posts <= 2 {
+				if legacy && posts <= 3 {
 					w.WriteHeader(http.StatusUnprocessableEntity)
 					_, _ = w.Write([]byte(`{"detail":[{"loc":["body","evidence","schema_version"],"type":"literal_error"}]}`))
 					return

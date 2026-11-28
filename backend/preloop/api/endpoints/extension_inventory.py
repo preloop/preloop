@@ -30,6 +30,7 @@ from preloop.schemas.discovered_extension import (
     ExtensionPolicyFile,
     SourceKind,
 )
+from preloop.schemas.extension_capabilities import CapabilityKey
 from preloop.services.fleet_findings import evaluate_fleet_findings
 from preloop.utils.permissions import ensure_permission_in_oss, require_permission
 
@@ -62,6 +63,7 @@ def list_extensions(
     q: str | None = Query(default=None, max_length=300),
     extension_kind: ExtensionKind | None = None,
     extension_id: str | None = Query(default=None, pattern=IDENTIFIER_PATTERN),
+    capability: CapabilityKey | None = None,
     limit: int = Query(default=50, ge=1, le=500),
     cursor: str | None = Query(default=None, max_length=8192),
     current_user: models.User = Depends(get_current_active_user),
@@ -81,6 +83,7 @@ def list_extensions(
             q=q,
             extension_kind=extension_kind,
             extension_id=extension_id,
+            capability=capability,
             limit=limit,
             cursor=cursor,
         )

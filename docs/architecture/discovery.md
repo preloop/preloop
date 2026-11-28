@@ -299,6 +299,15 @@ Provider callback adapters can reuse account-owned encrypted secret references a
 
 ## Extension inventory and content
 
+Reports carry bounded v5 metadata per extension: descriptions from front
+matter, the plugin manifest or its marketplace listing (bodies and READMEs stay
+in the opt-out content pass), invocation, publisher, marketplace, homepage and
+repository hosts, licence, declared tools, hook events, bundle contents and MCP
+transport. The server derives a plain-words capability list from those facts
+(`preloop/schemas/extension_capabilities.py`), stores its keys per row for the
+console's capability filter, and computes the labels at read time for the
+"What it can do" column.
+
 Installed agent extension inventory, including standalone MCP servers, uses a
 bounded, metadata-only v4 discovery contract. Nullable JSONB `details` carries
 bounded descriptions and invocation.

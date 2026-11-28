@@ -591,19 +591,43 @@ Each v4 extension can carry one optional `details` object:
 
 | Field | Source |
 | --- | --- |
-| `name`, `description` | Skill `SKILL.md` YAML front matter; command front matter supplies its description; plugin manifests supply their description. Bodies are never used as description fallbacks. |
+| `name`, `description` | Skill `SKILL.md` YAML front matter; command front matter supplies its description; plugin manifests supply their description, and since schema 5 a plugin without one uses its marketplace listing's. Bodies and READMEs are never used as description fallbacks; they reach the server only through the content pass and its opt-outs. |
 | `description_withheld` | True when the privacy filter removes the description. |
 | `invocation` | Generated from the harness, skill or command name and invocation controls; hook records name the event. |
-| `script_count` | Number of regular files in a skill's `scripts/` directory, recursively. |
+| `script_count` | Number of regular files in a skill's `scripts/` and `bin/` directories, recursively. Schema 5 plugins: hook commands that run a file by path. |
 | `plugin` | Parent plugin identifier for a bundled skill. |
 | `author` | The plugin manifest's `author.name`, or string-form author. Email and URL fields are excluded. |
 | `bundles` | Counts of skills, commands, hooks, MCP servers and agents in conventional plugin locations and safe manifest-declared locations. |
-| `hook_matchers` | Per matcher: sanitized matcher text, command count, and one `{executable, preloop_managed}` classification per command. Private matchers have `matcher_withheld: true`. |
+| `hook_matchers` | Per matcher: sanitized matcher text, command count, and one `{executable, preloop_managed}` classification per command. Private matchers have `matcher_withheld: true`. Schema 5 adds `script` (the command runs a file by path, also behind `bash`, `python3` and similar) and `in_project` (that file belongs to the project that configured the hook). |
+
+Schema 5 adds decision metadata, so an approver can judge an extension
+without reading it first:
+
+| Field | Source |
+| --- | --- |
+| `marketplace` | The marketplace name of a plugin or bundled skill. |
+| `homepage_host`, `repository_host` | Plugins: the host name only of the manifest's or marketplace listing's `homepage` and `repository`. Paths, ports and addresses are never sent. |
+| `license` | An SPDX-like manifest or front-matter value, or a name recognized from the first lines of a `LICENSE` file. |
+| `modified_at` | The newest modification day (UTC) among the extension's files. |
+| `tools_declared`, `allowed_tools` | Skills and commands: `allowed-tools` front matter. Plugins: the union of what their skills, commands (`allowed-tools`) and agents (`tools`) declare; `tools_declared` is false when any component declares none. A tool rule that names a path is reduced to the tool name. |
+| `hook_events` | Hook events a skill registers in front matter, or a plugin registers in its hook files. |
+| `bundle_names` | Plugins: names of bundled skills, commands, agents and MCP servers, up to 50 each. |
+| `transport`, `command`, `url_host` | MCP servers: `stdio`, `http` or `sse`; the executable basename of a stdio server; the host name of a remote one. Arguments, environment, headers and URL paths are never read into the report. |
+
+The console derives a "What it can do" list from these facts (runs shell
+commands, reads or writes files, network access, registers hooks, adds MCP
+tools, executes scripts) and says "Not known" when no fact supports one. A
+collector reporting schema 5 to an older server retries once with schema 4
+details.
 
 All authored text is checked against the case-insensitive home-path segment
-rule used for local identifiers before truncation. A matching description is
-omitted and marked withheld. Other unsafe text is omitted. Text containing a
-path or URL is also withheld. Controls and format characters are stripped,
+rule used for local identifiers before truncation. Since schema 5, a
+description keeps its other words: each word that looks like a path or URL, or
+contains the account's home directory name, is replaced by `…`, and the
+description is withheld only when nothing readable remains or the credential
+redactor used for extension content finds anything in it. Generic segments
+(`Users`, `home`, one- and two-letter segments) do not hide words. Other unsafe
+text is omitted. Controls and format characters are stripped,
 whitespace is collapsed, and each text field is limited to 300 Unicode
 characters. The server validates lengths, text shape, allowed fields and
 counts; it cannot independently know a device's private login or home path.

@@ -273,7 +273,7 @@ func TestAllUsersInventoryCommandOfflineAndReport(t *testing.T) {
 				if err := json.Unmarshal(rec.report, &payload); err != nil {
 					t.Fatal(err)
 				}
-				if payload.Evidence == nil || payload.Evidence.SchemaVersion != 4 || len(payload.Candidates) != 1 {
+				if payload.Evidence == nil || payload.Evidence.SchemaVersion != 5 || len(payload.Candidates) != 1 {
 					t.Fatalf("bad report %+v", payload)
 				}
 			}

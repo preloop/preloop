@@ -23,7 +23,7 @@ func addDiscoveryExtensions(report *discoveryReportRequest, salt, home string, d
 	deps.ExtensionSalt = salt
 	scan := collectAgentInventory(deps)
 	ref := inventoryProfileRef(salt, report.WorkstationFingerprint, home)
-	evidence := &inventoryReportEvidence{SchemaVersion: 4, ObservationID: fmt.Sprintf("%x-%x-%x-%x-%x", id[:4], id[4:6], id[6:8], id[8:10], id[10:]), CollectorVersion: report.CLIVersion, OSFamily: report.OS, DetectorVersion: inventoryDetectorVersion, SourceEnvironment: "unknown", StartedAt: scan.ObservedAt, EndedAt: deps.Now().UTC(), ScanScope: []string{"user_config"}, Completeness: "complete", Errors: []string{}, Profiles: []inventoryProfileResult{{ProfileRef: ref, Completeness: "complete"}}, Applications: []inventoryReportApplication{}}
+	evidence := &inventoryReportEvidence{SchemaVersion: 5, ObservationID: fmt.Sprintf("%x-%x-%x-%x-%x", id[:4], id[4:6], id[6:8], id[8:10], id[10:]), CollectorVersion: report.CLIVersion, OSFamily: report.OS, DetectorVersion: inventoryDetectorVersion, SourceEnvironment: "unknown", StartedAt: scan.ObservedAt, EndedAt: deps.Now().UTC(), ScanScope: []string{"user_config"}, Completeness: "complete", Errors: []string{}, Profiles: []inventoryProfileResult{{ProfileRef: ref, Completeness: "complete"}}, Applications: []inventoryReportApplication{}}
 	// Extension coverage follows the supported collectors, independently of
 	// unrelated application/runtime probes and missing discovery candidates.
 	evidence.ExtensionErrors = inventoryExtensionErrors(scan)
@@ -156,6 +156,17 @@ func postInventoryReport(client inventoryReportClient, report discoveryReportReq
 	}
 	if !rejectedSchema {
 		return err
+	}
+	if report.Evidence.SchemaVersion == 5 {
+		// A server from before decision metadata: keep the v4 details.
+		report, _ = projectReportExtensions(report, func(exts []inventoryExtension) []inventoryExtension {
+			for i := range exts {
+				exts[i].Details = exts[i].Details.schema4()
+			}
+			return exts
+		})
+		report.Evidence.SchemaVersion = 4
+		return postInventoryReport(client, report, response)
 	}
 	if report.Evidence.SchemaVersion == 4 {
 		report, _ = projectReportExtensions(report, func(exts []inventoryExtension) []inventoryExtension {

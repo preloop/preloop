@@ -219,7 +219,9 @@ func TestMCPInventoryHashesDefinitionsAndKeepsLocalPrecedence(t *testing.T) {
 		t.Fatal("explicit project scan lost local scope or its precedence")
 	}
 	stdout, _, err := runExtensions(t, "show", "mcp_server", "example", "--agent", "claude-code", "--project", project)
-	if err != nil || strings.Contains(stdout, "private-argument") || strings.Contains(stdout, "local-server") {
+	// The executable basename is reported metadata (schema 5); arguments,
+	// environment and the project's own definition are not.
+	if err != nil || strings.Contains(stdout, "private-argument") || strings.Contains(stdout, "project-server") {
 		t.Fatal("MCP show must expose only metadata and file locations")
 	}
 	if err := os.RemoveAll(project); err != nil {
