@@ -181,6 +181,23 @@ describe('AttentionView', () => {
       }));
       fetchStub
         .withArgs(
+          sinon.match((input: unknown) =>
+            String(input).endsWith('/fleet/device-fleet')
+          )
+        )
+        .callsFake(async () =>
+          json({
+            items: [
+              {
+                device_key: fleetExtensionFindings[0].device_key,
+                hostname: 'workstation-east',
+                users: [{ label: 'Jane Doe' }],
+              },
+            ],
+          })
+        );
+      fetchStub
+        .withArgs(
           sinon.match((input: unknown) => String(input).includes('/features'))
         )
         .callsFake(async () =>
@@ -243,6 +260,9 @@ describe('AttentionView', () => {
           section.textContent!.split('Inventory shows files found on disk.')
         ).to.have.length(2);
         expect(section.textContent).not.to.contain('T10:00:00Z');
+        expect(section.textContent).to.contain(
+          'On workstation-east · Associated with Jane Doe'
+        );
         const link = new URL(
           section.querySelector<HTMLAnchorElement>('a.row-title')!.href
         );
