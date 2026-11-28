@@ -514,9 +514,7 @@ def build_resume_details(
         "resume_mode": resume_mode,
         "history": history[-10:],
     }
-    details[ANSWERS_PROMPT_KEY] = answers_prompt_block(
-        answer, resume_mode=resume_mode
-    )
+    details[ANSWERS_PROMPT_KEY] = answers_prompt_block(answer, resume_mode=resume_mode)
     return details
 
 

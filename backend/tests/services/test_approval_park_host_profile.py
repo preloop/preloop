@@ -403,9 +403,9 @@ def test_host_resume_wording_matches_the_workspace_mode(
     flow = SimpleNamespace(agent_type="claude_code", agent_config=config)
     assert approval_park.park_resume_mode(flow, _parked()) == mode
     assert phrase in native_flow_park.parked_message("r", None, resume_mode=mode)
-    prompt = approval_park.build_resume_details(
-        _parked(), _answer(), resume_mode=mode
-    )[approval_park.ANSWERS_PROMPT_KEY]
+    prompt = approval_park.build_resume_details(_parked(), _answer(), resume_mode=mode)[
+        approval_park.ANSWERS_PROMPT_KEY
+    ]
     expected = "fresh checkout" if workspace is None else "same authorized directory"
     assert expected in prompt
 
