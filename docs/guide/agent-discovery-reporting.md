@@ -477,6 +477,7 @@ only by SHA-256 hashes; project references use the config-path hashing scheme
 | Agent | Kind | Known locations below the profile home | Collected metadata |
 | --- | --- | --- | --- |
 | Claude Code | Plugin | `.claude/plugins/installed_plugins.json` (version 2), `known_marketplaces.json`, installed content under `cache/<marketplace>/<name>/<version>/` | Name and marketplace, manifest version (falling back to record version), description, author name, component counts, source hash, enabled state |
+| Claude Code | Built-in plugin | None: compiled into the Claude Code binary; reported for any profile with a `.claude` directory | Identifier `<name>@builtin`, `source_kind` `builtin`, user scope, enabled state from `enabledPlugins` in `.claude/settings.json`; no version, install path, description or content hash |
 | Claude Code | Skill | `.claude/skills/<name>/SKILL.md` | Directory identifier, front matter name and description, invocation, script count, tree hash |
 | Claude Code | Hook | `hooks` in `.claude/settings.json`; JSON event mappings in `.claude/hooks/` | Event, matchers, command counts, executable basenames, Preloop classification, aggregate hash |
 | Claude Code | Command | `.claude/commands/*.md` | File stem, front matter description, slash invocation, file hash |
@@ -504,7 +505,17 @@ current contract intentionally retains portable content hashes.
 
 The plugin layouts were verified with Claude Code 2.1.332 and Codex CLI 0.172.0
 using their plugin managers. Claude's install registry is authoritative: unused
-cache entries and marketplace catalogs are not installs. The undocumented
+cache entries and marketplace catalogs are not installs. Built-in plugins are the
+exception: Claude Code registers them from its own binary at startup, so no
+file records them. The collector reports the default set `claude plugin list`
+shows under "Built-in plugins" (`cc-plugin-agents-md`,
+`cc-plugin-plugin-authoring` and `cc-plugin-privacy` on 2.1.328 through
+2.1.332) and marks one disabled when settings hold
+`enabledPlugins["<name>@builtin"]: false`. Built-ins that Claude Code gates off
+by default are not listed. The collector does not probe the Claude Code
+version, so a profile from a build older than these built-ins still lists
+them. Built-in sources need no approval decision and do not open
+`new_since_baseline` findings. The undocumented
 `plugins/store/` layout is not collected. Codex selects the `local` cache version
 when present, otherwise the highest version (SemVer for full semantic versions,
 lexical order otherwise), and reads portable `plugin.json`, then

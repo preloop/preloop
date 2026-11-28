@@ -395,6 +395,9 @@ type gatewayUsageSearchItem struct {
 }
 
 type aiModelResponse struct {
+	IsBuiltIn                 bool                   `json:"is_built_in"`
+	IsShared                  bool                   `json:"is_shared"`
+	ReadOnly                  bool                   `json:"read_only"`
 	ID                        string                 `json:"id"`
 	Name                      string                 `json:"name"`
 	ProviderName              string                 `json:"provider_name"`
@@ -411,6 +414,11 @@ type aiModelResponse struct {
 	UpdatedAt                 *api.Time              `json:"updated_at"`
 	HasAPIKey                 bool                   `json:"has_api_key"`
 	IsDefault                 bool                   `json:"is_default"`
+}
+
+// Onboarding updates the selected model's routing metadata on apply.
+func (m aiModelResponse) editableForOnboarding() bool {
+	return !m.IsBuiltIn && !m.IsShared && !m.ReadOnly
 }
 
 type aiModelCreateRequest struct {
@@ -1670,6 +1678,18 @@ func parseClaudeManagedGatewayUpstream(agent AgentConfig) (*managedGatewayUpstre
 			)
 		}
 	}
+	if modelRef == "" && !claudeUsesBedrock(document) {
+		// A subscription login with no model in settings is Claude Code's
+		// stock setup: it runs its own family default. Offer that default
+		// instead of leaving the picker with account API-key models only.
+		if token, _ := resolveClaudeAuthToken(document); isClaudeCodeOAuthAccessToken(token) {
+			modelRef = claudeSubscriptionDefaultSelector()
+			notes = append(
+				notes,
+				fmt.Sprintf("Claude Code has no model set; offering its subscription default (%s).", modelRef),
+			)
+		}
+	}
 	if modelRef == "" {
 		return nil, nil
 	}
@@ -1875,6 +1895,16 @@ func stripClaudeContextWindowSuffix(modelRef string) (string, bool) {
 		return trimmed, false
 	}
 	return base, true
+}
+
+// claudeSubscriptionDefaultSelector is the family Claude Code runs on a
+// subscription login when settings name no model: fable on builds with the
+// built-in fable default, opus before that.
+func claudeSubscriptionDefaultSelector() string {
+	if claudeCodeVersionHasBuiltinFable(claudeCodeInstalledVersion()) {
+		return "fable"
+	}
+	return "opus"
 }
 
 func isClaudeCodeOAuthAccessToken(token string) bool {
@@ -6177,7 +6207,7 @@ func findReusableAIModel(
 	fingerprintMatches := make([]*aiModelResponse, 0)
 	aliasMatches := make([]*aiModelResponse, 0)
 	for i := range models {
-		if models[i].ProviderName != parsed.ProviderName {
+		if !models[i].editableForOnboarding() || models[i].ProviderName != parsed.ProviderName {
 			continue
 		}
 		if models[i].ModelIdentifier != parsed.ModelID {
@@ -6220,7 +6250,7 @@ func findReusableManagedGatewayAIModel(
 	fingerprintMatches := make([]*aiModelResponse, 0)
 	aliasMatches := make([]*aiModelResponse, 0)
 	for i := range models {
-		if managedGatewayAliasConflictsWithIdentity(models[i]) {
+		if !models[i].editableForOnboarding() || managedGatewayAliasConflictsWithIdentity(models[i]) {
 			continue
 		}
 		if models[i].ProviderName != upstream.ProviderName ||

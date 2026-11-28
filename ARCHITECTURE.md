@@ -82,7 +82,7 @@ graph LR
 | [Plugin health](docs/plugin-health.md) | Eager plugin discovery, fatal extension failures, authenticated fleet status and durable job completion evidence. |
 | [Sync](docs/architecture/sync.md) | Tracker polling, NATS scheduler/worker, issue tracker clients, and tracker scope rules. |
 | [Data model](docs/architecture/data-model.md) | `preloop.models`, PostgreSQL + PGVector, schema, and backend project layout. |
-| [MCP](docs/architecture/mcp.md) | FastMCP integration, dynamic tool filtering, and the HTTP MCP request path. |
+| [MCP](docs/architecture/mcp.md) | FastMCP integration, dynamic tool filtering, scoped flow inspection and change proposals, and the HTTP MCP request path. |
 | [MCP protocol compatibility](docs/architecture/mcp-protocol-compatibility.md) | SDK 2 / FastMCP 4 APIs, modern and legacy transport matrix, validation and no-replay boundary. |
 | [Realtime](docs/architecture/realtime.md) | Unified WebSocket, account-scoped pub/sub, execution snapshots and durable sequence cursors, and bounded flow lifecycle startup. |
 | [Security](docs/architecture/security.md) | Auth and tenancy, optional account sign-in strength hooks and enrollment-only sessions, generation-based session revocation and live WebSocket teardown across replicas, account-scoped member sign-out, separate machine credentials, restricted CI identities, owned review execution admission, principal-bound callbacks, redaction, secret custody, audit integrity and `preloop.security`. |

@@ -275,8 +275,10 @@ Prometheus datasource (`gen_ai_client_operation_duration_seconds_*`,
 
 Token counts and cost are also span attributes (`gen_ai.usage.input_tokens`,
 `gen_ai.usage.output_tokens`, `preloop.usage.estimated_cost_usd`), visible in
-the trace view. MCP tool spans appear only for calls made with a runtime
-session token.
+the trace view. MCP tool spans carry the runtime session of the call: the
+session a runtime session token names, or, for an onboarded agent's durable
+credential, the agent's current open session. A call with neither has no
+session to correlate and exports no tool span.
 
 ## What is exported
 
@@ -284,8 +286,9 @@ session token.
 | ------ | ---- | ----- |
 | Span per completion/response | After the `ApiUsage` row is written | Streaming and non-streaming. Attributes include tokens and `preloop.usage.estimated_cost_usd` matching that row. |
 | Span per `GET /openai/v1/models` | After the model list is built | No conversation id. |
-| Span per MCP tool call | After execution, only if a runtime session id is present | `gen_ai.operation.name=execute_tool`. Linked to the last in-process model span for that session when available. Tool arguments are never attributes. |
+| Span per MCP tool call | After execution, only if a runtime session is known (runtime session token, or the onboarded agent's current session) | `gen_ai.operation.name=execute_tool`. Linked to the last in-process model span for that session when available. Tool arguments are never attributes. |
 | Duration histogram | Same as the spans above | `gen_ai.client.operation.duration` (seconds), low-cardinality attributes only. |
+| Inference duration histogram | Per model call span (`chat`, `generate_content`) | `gen_ai.client.inference.duration` (seconds), same value and attributes as `gen_ai.client.operation.duration`. The current GenAI semantic conventions name inference duration this way; both names are published so existing dashboards keep working. New dashboards should use the inference name for model calls; tool calls are only on the operation name. |
 | Token usage histogram | Per model call span | `gen_ai.client.token.usage` (`{token}`), one point per call for `gen_ai.token.type=input` and one for `output`. |
 | Cost counter | Per model call with a non-zero recorded cost | `preloop.usage.cost` (`USD`), equal to `preloop.usage.estimated_cost_usd` on the span. |
 

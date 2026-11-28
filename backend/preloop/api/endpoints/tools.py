@@ -51,6 +51,7 @@ from preloop.services.policy.loader import _detect_condition_type
 from preloop.services.policy_evaluator import evaluate_cel_expression
 from preloop.services.tool_schema_tokens import estimate_tool_schema_tokens
 from preloop.services.tool_usage_stats import ToolUsageStatsService
+from preloop.schemas.flow_change import FLOW_DEFINITION_TOOLS
 from preloop.schemas.gateway_usage import GatewayUsageByTool
 from preloop.schemas.tool_summary import ToolRuleIndexRow, ToolSummaryResponse
 from preloop.utils.audit import log_config_change
@@ -88,6 +89,7 @@ router = APIRouter()
 # Define builtin tools metadata
 # NOTE: Implementations live in initialize_mcp.py; shared defs in builtin_defs.py
 BUILTIN_TOOLS = [
+    *FLOW_DEFINITION_TOOLS,
     REQUEST_APPROVAL_TOOL,
     ASK_USER_TOOL,
     PERMISSION_PROMPT_TOOL,

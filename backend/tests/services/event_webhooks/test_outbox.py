@@ -20,6 +20,7 @@ from preloop.models.models.webhook_endpoint import (
 from preloop.services.event_webhooks import outbox
 from preloop.services.event_webhooks.events import (
     EVENT_APPROVAL_CREATED,
+    EVENT_FLEET_FINDING,
     EVENT_POLICY_DENIED,
     EVENT_TEST,
 )
@@ -565,3 +566,42 @@ def test_credential_rejection_episode_emits_one_account_delivery(
     assert rows[0].payload["type"] == EVENT_AI_MODEL_CREDENTIAL_REJECTED
     assert rows[0].payload["data"]["model_name"] == model.name
     assert STORED_KEY not in str(rows[0].payload)
+
+
+def test_fleet_finding_filter_receives_every_transition(
+    db_session, account, make_endpoint
+):
+    """An account endpoint filtered to ``fleet.finding`` gets each transition.
+
+    The fleet provider emits one event per lifecycle transition keyed on
+    ``fleet:<finding>:<opened_at>:<state>``: open, resolve, and a later
+    recovery that reopens the finding with a new ``opened_at``.
+    """
+    wanted, _ = make_endpoint(
+        url="https://example.com/fleet", event_types=[EVENT_FLEET_FINDING]
+    )
+    make_endpoint(url="https://example.com/other", event_types=[EVENT_POLICY_DENIED])
+    finding = str(uuid.uuid4())
+    transitions = [
+        ("2026-01-01T00:00:00+00:00", "open"),
+        ("2026-01-01T00:00:00+00:00", "resolved"),
+        ("2026-01-02T00:00:00+00:00", "open"),
+    ]
+
+    for opened_at, state in transitions:
+        result = outbox.enqueue_event(
+            db_session,
+            account_id=account.id,
+            event_type=EVENT_FLEET_FINDING,
+            data={"type": "fleet_finding", "finding_id": finding, "state": state},
+            natural_key=f"fleet:{finding}:{opened_at}:{state}",
+        )
+        assert result.endpoints_matched == 1
+
+    rows = _deliveries(db_session, account.id)
+    assert {row.endpoint_id for row in rows} == {wanted.id}
+    assert [row.payload["data"]["state"] for row in rows] == [
+        "open",
+        "resolved",
+        "open",
+    ]

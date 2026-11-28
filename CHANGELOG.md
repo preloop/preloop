@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The Anthropic gateway router (`/anthropic/v1`) answers a model allowlist
+  denial with `400 invalid_request_error` instead of `403 permission_error`.
+  Claude Code read the 403 as a login failure and told the user to run
+  `/login`; with a 400 it shows the allowlist message as is (#2590). Usage and
+  audit rows still record the denial as 403 `model_not_allowed`; the OpenAI
+  and Gemini routers are unchanged.
+- The gateway also publishes the `gen_ai.client.inference.duration` histogram
+  for model calls, next to `gen_ai.client.operation.duration`, which is kept
+  for existing dashboards (#2596).
+
 ### Added
 
 - `preloop agents onboard --no-model-routing` onboards MCP only: no model
@@ -73,6 +85,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   checks agent files.
 
 ### Fixed
+
+- An MCP tool call from an onboarded agent's durable credential now exports
+  its `execute_tool` span under the agent's current runtime session, so it
+  shares `gen_ai.conversation.id` with that session's chat spans (#2593).
+- A session-scoped runtime token that names a builtin tool enabled by default
+  (for example `get_approval_status`) now gets that tool without an explicit
+  tool configuration, matching what the account owner sees (#2594).
+- Polling an approved request that an agent's permission hook recorded (for
+  example Claude Code's native `ToolSearch`) with `get_approval_status` no
+  longer fails with an unknown-tool error. It returns the decision with
+  `execution: not_run_hook_recorded` and the call's `tool_origin`, and says
+  that the harness does not resume the call, so the agent has to issue it
+  again (#2595).
+- A flow run that parks on an approval no longer ends `STOPPED` when its
+  runner exits: the runner's stop report releases the lease and the run waits
+  for the decision. On a private-runner host profile the decision starts a
+  fresh run of the task that carries the answer, and the agent is told so when
+  it parks instead of being promised its session back (#2598).
+- A native command approval raised by the onboarded Claude Code hook inside a
+  host-profile flow run is linked to that execution and parks it, so the run
+  no longer carries on and publishes while the approval is pending (#2597).
+- GitLab feedback binds to the flow's own merge request: the repository
+  identity comes from the hook's `project` id instead of the id-less legacy
+  `repository` object (#2599).
+- A published merge request URL keeps a non-default port, so links to a
+  self-hosted GitLab on a custom port open (#2600).
 
 - `preloop policy apply` now records a policy version for every successful
   apply, prints its number, and `preloop policy list` and rollback can use it.

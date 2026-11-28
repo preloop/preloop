@@ -23,6 +23,7 @@ from typing import Any, Optional, Tuple
 from sqlalchemy import String, and_, cast, func, select
 from sqlalchemy.exc import IntegrityError
 
+from preloop.utils.approval_origin import TOOL_ORIGIN_MARKER
 from preloop.models import models
 from preloop.models.db.session import get_async_db_session
 from preloop.schemas.subject_governance import (
@@ -380,6 +381,24 @@ async def resolve_workflow(
 
     logger.info("Created default Agent Tool Approvals workflow %s", workflow.id)
     return workflow
+
+
+def hook_tool_origin(tool_name: str, tool_origin: Optional[str]) -> str:
+    """Server-side origin of a hook-checked call: ``"mcp"`` or ``"native"``.
+
+    Cursor's MCP hook sets ``tool_origin="mcp"``; Claude Code and Codex
+    report an MCP tool only by its ``mcp__server__tool`` name.
+
+    Args:
+        tool_name: Tool name the hook reported.
+        tool_origin: Hook-reported origin, when the adapter sends one.
+
+    Returns:
+        ``"mcp"`` for an MCP tool call, otherwise ``"native"``.
+    """
+    if tool_origin == "mcp" or parse_mcp_tool_name(tool_name):
+        return "mcp"
+    return "native"
 
 
 def parse_mcp_tool_name(tool_name: str) -> Optional[Tuple[str, str]]:
@@ -860,6 +879,13 @@ async def request_agent_permission(
             approval_tool_args = dict(tool_input or {})
             approval_tool_args.pop(native_flow_park.NATIVE_PARK_MARKER, None)
             approval_tool_args.pop(NATIVE_DELIVERY_WARNING, None)
+            # Server-set, never caller-set: get_approval_status reports the
+            # decision of a hook-recorded request without running it and
+            # names its origin (#2595). Claude Code reports MCP tools as
+            # ``mcp__server__tool`` without a tool_origin.
+            approval_tool_args[TOOL_ORIGIN_MARKER] = hook_tool_origin(
+                tool_name, tool_origin
+            )
             delivery_warning = None
             if flow_execution_id is None and (
                 matched_require is not None or not (approvals_off or flow_policy_label)
@@ -1008,9 +1034,14 @@ async def request_agent_permission(
             )
         )
         if parked:
+            mode = await run_db_off_loop(
+                lambda: native_flow_park.resume_mode(flow_execution_id)
+            )
             return (
                 "park",
-                native_flow_park.parked_message(request_id, expires_at),
+                native_flow_park.parked_message(
+                    request_id, expires_at, resume_mode=str(mode)
+                ),
                 request_id,
                 False,
             )

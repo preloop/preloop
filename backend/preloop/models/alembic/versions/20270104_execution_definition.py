@@ -5,7 +5,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision = "20270104_execution_definition"
-down_revision = "20270102_runner_flow_grant"
+down_revision = "20270104_flow_change_proposal"
 branch_labels = None
 depends_on = None
 

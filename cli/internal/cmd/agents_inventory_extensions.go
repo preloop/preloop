@@ -608,6 +608,7 @@ func (scan *extensionScan) collect(profileOnly bool, explicitProjects ...string)
 		settings := root.document(filepath.Join(".claude", "settings.json"))
 		enabled := root.extensionEnabled(settings)
 		plugins := root.claudePlugins(enabled, profileOnly)
+		root.claudeBuiltinPlugins(enabled)
 		installedProjects := map[string]bool{}
 		for _, plugin := range plugins {
 			if plugin.Scope == "project" {

@@ -3854,6 +3854,35 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             "parked_at": row.parked_at,
         }
 
+    def holds_park(self, execution: Any) -> bool:
+        """True when a runner's exit must not end this execution.
+
+        Parking stops the runner job on purpose. The runner then reports
+        ``complete`` with ``STOPPED``, which would overwrite the parked
+        status and strand the decision with nothing to resume (#2598).
+        Covers the parked and resuming statuses, and a park request the
+        orchestrator has not confirmed yet (the exit can arrive first).
+
+        Args:
+            execution: The flow execution row.
+
+        Returns:
+            True when the row is parked, resuming, or about to park.
+        """
+        status = str(getattr(execution, "status", "") or "")
+        if status in {
+            self.WAITING_FOR_HUMAN_STATUS,
+            self.WAITING_FOR_CHILDREN_STATUS,
+            self.RESUMING_STATUS,
+        }:
+            return True
+        return (
+            status not in self.TERMINAL_EXECUTION_STATUSES
+            and getattr(execution, "park_request_id", None) is not None
+            and getattr(execution, "resume_execution_id", None) is None
+            and getattr(execution, "stop_requested_at", None) is None
+        )
+
     def confirm_park(
         self,
         db: Session,

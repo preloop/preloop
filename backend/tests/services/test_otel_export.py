@@ -406,3 +406,43 @@ def test_empty_endpoint_and_headers_are_unset(monkeypatch, enabled: bool) -> Non
     emit_gateway_usage(_usage())
     assert built == []
     assert otel_export.parse_otlp_headers("") == {}
+
+
+def test_model_call_dual_publishes_inference_duration(
+    otel_memory_exporter, monkeypatch
+) -> None:
+    """Inference calls emit the current and the legacy duration name (#2596)."""
+    sink: list = []
+    meter = _RecordingMeter(sink)
+    monkeypatch.setattr(otel_export.metrics, "get_meter", lambda *_a, **_k: meter)
+    emit_gateway_usage(_usage())
+    durations = {
+        name: (value, attrs)
+        for name, value, attrs in sink
+        if name.endswith(".duration")
+    }
+    assert set(durations) == {
+        "gen_ai.client.inference.duration",
+        "gen_ai.client.operation.duration",
+    }
+    assert meter.units["gen_ai.client.inference.duration"] == "s"
+    assert (
+        durations["gen_ai.client.inference.duration"]
+        == durations["gen_ai.client.operation.duration"]
+    )
+    assert (
+        durations["gen_ai.client.inference.duration"][1]["gen_ai.operation.name"]
+        == "chat"
+    )
+
+
+def test_tool_call_keeps_only_operation_duration(
+    otel_memory_exporter, monkeypatch
+) -> None:
+    """execute_tool is not inference, so it keeps the operation metric only."""
+    sink: list = []
+    meter = _RecordingMeter(sink)
+    monkeypatch.setattr(otel_export.metrics, "get_meter", lambda *_a, **_k: meter)
+    emit_tool_call(tool_name="search", runtime_session_id=str(uuid4()))
+    names = {name for name, _value, _attrs in sink}
+    assert names == {"gen_ai.client.operation.duration"}

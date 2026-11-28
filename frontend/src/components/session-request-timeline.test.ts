@@ -297,6 +297,12 @@ describe('SessionRequestTimeline cache accounting', () => {
       el.shadowRoot?.querySelector('[data-testid="cache-hit-ratio"]')
         ?.textContent
     ).to.include('88.9%');
+    // The ratio names its denominator, since other views divide by all
+    // prompt tokens including cache writes (#2591).
+    expect(
+      el.shadowRoot?.querySelector('[data-testid="cache-hit-ratio-basis"]')
+        ?.textContent
+    ).to.include('writes excluded');
     expect(
       el.shadowRoot?.querySelector('[data-testid="cache-write-tokens"]')
         ?.textContent
@@ -402,4 +408,61 @@ it('shows provider policy refusals in the request timeline', async () => {
     ></session-request-timeline>`
   );
   expect(element.shadowRoot!.textContent).to.contain('Provider policy refusal');
+});
+
+describe('SessionRequestTimeline API-equivalent estimate (#2592)', () => {
+  it('labels a subscription request estimate beside its $0 spend', async () => {
+    const el = (await fixture(
+      html`<session-request-timeline
+        .requests=${[
+          makeRequest({
+            id: 'sub',
+            estimated_cost: 0,
+            api_equivalent_cost: 0.25,
+          }),
+          makeRequest({ id: 'metered' }),
+        ]}
+        .subscriptionUsage=${{
+          request_count: 3,
+          prompt_tokens: 300,
+          completion_tokens: 30,
+          total_tokens: 330,
+          api_equivalent_cost: 0.75,
+          api_equivalent_cost_is_estimate: true,
+          covered_requests: 2,
+          coverage: 2 / 3,
+          billed: null,
+          billed_available: false,
+        }}
+      ></session-request-timeline>`
+    )) as SessionRequestTimeline;
+    await el.updateComplete;
+    const rows = el.shadowRoot!.querySelectorAll(
+      '[data-testid="request-api-equivalent"]'
+    );
+    expect(rows.length).to.equal(1);
+    expect(rows[0].textContent).to.contain('$0.25');
+    expect(rows[0].textContent).to.contain('at API prices');
+    const session = el
+      .shadowRoot!.querySelector('[data-testid="session-api-equivalent"]')!
+      .textContent!.replace(/\s+/g, ' ');
+    expect(session).to.contain('At least $0.75');
+    expect(session).to.contain('2 of 3 subscription requests');
+    expect(session).to.contain('not a bill');
+  });
+
+  it('shows nothing extra for a metered-only session', async () => {
+    const el = (await fixture(
+      html`<session-request-timeline
+        .requests=${[makeRequest({ id: 'metered' })]}
+      ></session-request-timeline>`
+    )) as SessionRequestTimeline;
+    await el.updateComplete;
+    expect(
+      el.shadowRoot!.querySelector('[data-testid="session-api-equivalent"]')
+    ).to.equal(null);
+    expect(
+      el.shadowRoot!.querySelector('[data-testid="request-api-equivalent"]')
+    ).to.equal(null);
+  });
 });

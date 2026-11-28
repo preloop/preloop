@@ -8,9 +8,12 @@ and credentials stay on the runner host. Native success uses a distinct
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 from uuid import UUID
+
+logger = logging.getLogger(__name__)
 
 HOST_EXEC_AGENT_TYPE = "cursor"
 #: Agent types that run only as a named host profile, mapped to the harness
@@ -1093,6 +1096,14 @@ def apply_runner_completion_to_execution(
         trusted_evidence_upload,
     )
 
+    if crud_flow_execution.holds_park(execution):
+        # The orchestrator stopped this job to park the run on a decision.
+        # The runner's exit releases the lease; it does not end the run.
+        logger.info(
+            "Runner exit of parked execution %s released its lease; status kept",
+            getattr(execution, "id", "unknown"),
+        )
+        return
     cleaned = sanitize_captured_result(result) if result is not None else None
     crud_flow_execution.apply_runner_completion(
         db,

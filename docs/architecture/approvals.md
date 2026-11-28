@@ -166,8 +166,24 @@ with a single conditional UPDATE (so a decision that arrives twice resumes once)
 and creates a new execution carrying `_resume` plus the answer, exactly like the
 PR-comment continuation. Harnesses with native session resume (Claude, Codex,
 Gemini, OpenCode) continue the same session; others restart with the answer in
-`payload.answers.<request_id>`. No harness can inject a value as the return of a
-tool call in a session that was killed, so the answer arrives as the next turn,
+`payload.answers.<request_id>`. A private-runner host profile (the operator's
+own Claude Code, Codex, Copilot or Cursor CLI on the runner host) has no
+container checkpoint and the launch refuses `_resume` for it, so its park
+resumes as a fresh run of the task: the continuation omits `_resume`, carries
+the answer, records `_answers.restarted_fresh` and `_answers.resume_mode`, and
+its prompt says how the run restarts. The agent is told this when it parks,
+instead of being promised its session back: the `parked_for_human` result
+carries `resume_mode` (`native_session`, `fresh_checkout`,
+`authorized_directory` or `authorized_directory_dirty_ok`), and the native
+hook's deny reason uses the same wording. A host profile that works in an
+authorized directory reuses it as it is; without `allow_dirty` the agent is
+told to commit or stash before stopping, because the runner refuses a dirty
+directory (`workspace_dirty`). Parking stops the runner
+job, and the runner then reports `complete` with `STOPPED`; that report only
+releases the lease of a parked, resuming or about-to-park row
+(`crud_flow_execution.holds_park`) and never ends the run. No harness can
+inject a value as the return of a tool call in a session that was killed, so
+the answer arrives as the next turn,
 naming the request id and repeating the question. An expired window resumes the
 run with an explicit `expired` answer so the agent finishes gracefully rather
 than the platform reporting a missing result. `ExecutionMonitor` sweeps parked
@@ -177,7 +193,13 @@ for the 50 percent and 90 percent window reminders.
 **Native commands in unattended flow runs.** When the permission-check
 credential is an execution-scoped flow token, the call comes from an
 unattended run (a private-runner host profile), and a call that needs a human
-never holds the hook. `request_agent_permission` creates the approval with the
+never holds the hook. A Claude Code host profile runs the operator's onboarded
+hook, which authenticates with the managed agent's key and reports
+`PRELOOP_FLOW_EXECUTION_ID`; that id is treated the same way once
+`native_flow_park.verified_host_execution` confirms a live execution in the
+caller's account leased as a `host_exec` job to a runner the same user
+registered. An unverified id is ignored and the call is handled as an ordinary
+interactive approval. `request_agent_permission` creates the approval with the
 execution id, the resolved approval window and a `_preloop_native_park`
 marker (execution id and a fingerprint of the tool input without Preloop
 markers or `cwd`), requests the park, and answers `deny` with `parked: true`

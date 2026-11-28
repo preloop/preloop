@@ -512,7 +512,7 @@ func TestUpdateDiscoversAndOffersMissingAgentIntegrationsEveryTime(t *testing.T)
 		if err := updateAgentIntegrations(cmd); err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(out.String(), "Apply to 2 agents? [Y/n/c/e]:") || !strings.Contains(out.String(), "Nothing was changed.") {
+		if !strings.Contains(out.String(), "Apply to 2 agents? [Y/n/c/e/m]:") || !strings.Contains(out.String(), "Nothing was changed.") {
 			t.Fatalf("update %d did not offer the review: %s", i, out.String())
 		}
 		for _, name := range []string{"Codex CLI", "Hermes"} {

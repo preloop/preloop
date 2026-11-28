@@ -540,11 +540,12 @@ async def test_endpoint_applies_flow_policy_to_bound_session(
         managed_agent_name="Claude Code",
     )
     grant = _grant(("Bash",))
-    # identity, agent's open session, origin session, flow grant, note claim.
+    # identity, agent's open session, origin session, host-execution check
+    # (#2597; not a host lease here), flow grant, note claim.
     monkeypatch.setattr(
         endpoint,
         "run_db_off_loop",
-        AsyncMock(side_effect=[identity, None, None, grant, None, None]),
+        AsyncMock(side_effect=[identity, None, None, None, grant, None, None]),
     )
     monkeypatch.setattr(endpoint, "_permission_check_base_url", lambda: "https://e")
     service = AsyncMock(return_value=("allow", "policy", "req-1", False))

@@ -624,7 +624,11 @@ func manualStepsWaitingError(outcomes []agentOnboardingOutcome) error {
 // show prints the review: compact, or the full text with --explain.
 func (r *onboardRun) show(plan onboardPlan, withMenu bool) {
 	if withMenu {
-		plan.OptionNotes = append(plan.OptionNotes, "c change   e explain everything   n cancel")
+		menu := "c change   e explain everything   n cancel"
+		if plan.offerMCPOnly() {
+			menu = "m MCP only   " + menu
+		}
+		plan.OptionNotes = append(plan.OptionNotes, menu)
 	}
 	if r.sel.Explain {
 		r.explain(plan)
@@ -1023,7 +1027,11 @@ func (p *plainReviewer) Review(plan onboardPlan) (onboardPlan, reviewDecision, e
 	r.show(plan, true)
 	for {
 		applicable := applicableAgents(plan)
-		answer, err := promptForTextInput(r.input, r.output, fmt.Sprintf("Apply to %s? [Y/n/c/e]: ", agentCountLabel(applicable)))
+		choices := "Y/n/c/e"
+		if plan.offerMCPOnly() {
+			choices += "/m"
+		}
+		answer, err := promptForTextInput(r.input, r.output, fmt.Sprintf("Apply to %s? [%s]: ", agentCountLabel(applicable), choices))
 		if err != nil {
 			return plan, reviewCancel, fmt.Errorf("failed to read confirmation: %w", err)
 		}
@@ -1034,18 +1042,26 @@ func (p *plainReviewer) Review(plan onboardPlan) (onboardPlan, reviewDecision, e
 			return plan, reviewCancel, nil
 		case "e", "explain", "?":
 			r.explain(plan)
+			continue
+		case "m", "mcp":
+			if !plan.offerMCPOnly() {
+				fmt.Fprintln(r.output, "Choose one of the displayed options.") //nolint:errcheck
+				continue
+			}
+			r.sel.ModelRouting = false
 		case "c", "change":
 			if err := p.change(plan); err != nil {
 				return plan, reviewCancel, err
 			}
-			plan = r.plan()
-			if len(plan.Agents) == 0 {
-				return plan, reviewApply, nil
-			}
-			r.show(plan, true)
 		default:
-			fmt.Fprintln(r.output, "Answer y to apply, n to cancel, c to change something, e to read everything.") //nolint:errcheck
+			fmt.Fprintln(r.output, "Choose one of the displayed options.") //nolint:errcheck
+			continue
 		}
+		plan = r.plan()
+		if len(plan.Agents) == 0 {
+			return plan, reviewApply, nil
+		}
+		r.show(plan, true)
 	}
 }
 

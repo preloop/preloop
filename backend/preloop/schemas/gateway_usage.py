@@ -1165,6 +1165,14 @@ class RuntimeSessionRequestItem(BaseModel):
     completion_tokens: int = 0
     total_tokens: int = 0
     estimated_cost: float = 0.0
+    api_equivalent_cost: Optional[float] = Field(
+        None,
+        description=(
+            "Subscription requests only: an ESTIMATE of what the call would "
+            "cost at pay-per-use API prices. Never a billed amount; null for "
+            "metered or unpriced requests."
+        ),
+    )
     endpoint: Optional[str] = None
     #: Credential class that authorized the request (``api_key``,
     #: ``oauth_mcp_token`` or ``user_token``). API consumers can tell a
@@ -1249,6 +1257,10 @@ class RuntimeSessionRequestListResponse(BaseModel):
     # a defaulted zeroed-out summary would silently mask an endpoint that
     # forgot to compute it.
     cache_summary: RuntimeSessionCacheSummary
+    # Subscription workload over the whole session: $0 spend, with the
+    # API-equivalent ESTIMATE kept apart from it. Null without subscription
+    # requests (#2592).
+    subscription_usage: Optional[SubscriptionUsageSummary] = None
 
 
 class RuntimeSessionSummaryInsight(BaseModel):

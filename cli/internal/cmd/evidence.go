@@ -141,6 +141,9 @@ func runEvidenceVerify(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	if !report.SignatureOK || !report.ContentOK {
+		report.Proves = unverifiedProvenance(report)
+	}
 	if evidenceJSON {
 		encoder := json.NewEncoder(cmd.OutOrStdout())
 		encoder.SetIndent("", "  ")
@@ -174,7 +177,9 @@ func verifyPeriodExport(cmd *cobra.Command, archive io.Reader, report *evidenceV
 		"Not that the records were true when written."
 
 	if result.Signature == nil {
-		report.Problems = append(report.Problems, "this archive carries no signature")
+		report.Problems = append(report.Problems,
+			"this archive carries no signature.json; a flow evidence pack is signed in a "+
+				"detached receipt, so verify it with --execution <execution-id>")
 		return nil
 	}
 	report.KeyID = result.Signature.KeyID
@@ -322,4 +327,24 @@ func printEvidenceVerify(cmd *cobra.Command, report evidenceVerifyReport) {
 		fmt.Fprintf(out, "  - %s\n", problem)
 	}
 	fmt.Fprintf(out, "\nWhat this shows: %s\n", report.Proves)
+}
+
+// unverifiedProvenance is what a run shows when the signature did not verify:
+// at most that the bytes agree with themselves, never where they came from.
+func unverifiedProvenance(report evidenceVerifyReport) string {
+	if !report.ContentOK && report.SignatureOK {
+		return "the signature over the manifest verifies, but the member bytes do " +
+			"not match that manifest, so the archive was altered after it was built."
+	}
+	if !report.ContentOK {
+		return "nothing: the contents did not verify and the signature did not verify."
+	}
+	if report.Kind == "evidence_pack" {
+		return "the archive digest matches the one the receipt names, but the " +
+			"signature did not verify, so provenance is unverified."
+	}
+	return "the member digests match the archive's own manifest, but the " +
+		"signature did not verify, so provenance is unverified: this does not " +
+		"show Preloop built the archive. A flow evidence pack carries its " +
+		"signature in a detached receipt; verify it with --execution <execution-id>."
 }

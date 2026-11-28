@@ -413,7 +413,8 @@ def test_subject_allowed_models_is_enforced(client, db_session, test_user):
     assert counted.status_code == 429
     assert counted.json()["error"]["type"] == "permission_error"
 
-    # Same allowlist on a plain request through the key scope stays 403.
+    # Same allowlist on a plain request through the key scope is a 400
+    # invalid_request_error: Claude Code reads a 403 as a login failure (#2590).
     plain_key, plain_token = _key(db_session, test_user, trusted=False, name="plain")
     account.meta_data = set_subject_governance(
         account.meta_data,
@@ -427,7 +428,8 @@ def test_subject_allowed_models_is_enforced(client, db_session, test_user):
         headers=_headers(plain_token),
         json={"model": ALIAS, "messages": [{"role": "user", "content": "Hi"}]},
     )
-    assert plain.status_code == 403
+    assert plain.status_code == 400
+    assert plain.json()["error"]["type"] == "invalid_request_error"
 
 
 # --- Sessions and attribution -----------------------------------------------

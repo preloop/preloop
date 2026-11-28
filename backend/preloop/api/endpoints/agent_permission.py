@@ -34,11 +34,11 @@ from preloop.config import settings
 from preloop.models import models
 from preloop.models.crud import (
     crud_api_key,
-    crud_managed_agent,
     crud_runtime_session,
 )
 from preloop.models.db.session import get_session_factory
 from preloop.services import operator_notes
+from preloop.services.agent_current_session import current_agent_session_id
 from preloop.services.agent_permission_service import request_agent_permission
 from preloop.services.session_hook_events import (
     is_prompt_event,
@@ -303,26 +303,11 @@ def _current_agent_session_id(identity: PermissionIdentity) -> Optional[UUID]:
     Never raises: without a session the check still decides the call, it is
     only unattributed, which is how it behaved before.
     """
-    try:
-        with get_session_factory()() as db:
-            agent = crud_managed_agent.get_for_account(
-                db,
-                account_id=identity.account_id,
-                agent_id=str(identity.managed_agent_id),
-            )
-            if agent is None or agent.runtime_session_id is None:
-                return None
-            session = crud_runtime_session.get_account_session(
-                db,
-                account_id=identity.account_id,
-                runtime_session_id=agent.runtime_session_id,
-            )
-            if session is None or session.ended_at is not None:
-                return None
-            return session.id
-    except Exception:
-        logger.warning("Agent session lookup failed on permission check")
-        return None
+    return current_agent_session_id(
+        identity.account_id,
+        identity.managed_agent_id,
+        session_factory=get_session_factory(),
+    )
 
 
 def _records_native_tool_call(payload: "AgentPermissionCheckRequest") -> bool:
@@ -1003,6 +988,7 @@ async def _agent_permission_check(
     tool_input.pop("_preloop_repository", None)
     tool_input.pop("_preloop_source", None)
     tool_input.pop("_preloop_origin", None)
+    tool_input.pop("_preloop_tool_origin", None)
     if payload.session_id or payload.model:
         tool_input["_preloop_origin"] = {
             "session_id": (payload.session_id or "").strip() or None,
@@ -1040,6 +1026,31 @@ async def _agent_permission_check(
         tool_input["_preloop_repository"] = payload.repository.model_dump(
             exclude_unset=True, exclude_none=True
         )
+
+    if (
+        payload.flow_execution_id
+        and identity.managed_agent_id is not None
+        and identity.flow_execution_id is None
+    ):
+        # A host-profile flow run: the operator's onboarded hook reports the
+        # execution it runs for. Once verified, the approval belongs to that
+        # execution and parks it instead of denying while the run goes on.
+        from preloop.services import native_flow_park
+
+        linked = await run_db_off_loop(
+            lambda: native_flow_park.verified_host_execution(
+                account_id=identity.account_id,
+                user_id=identity.user_id,
+                execution_id=payload.flow_execution_id,
+                managed_agent_id=identity.managed_agent_id,
+            )
+        )
+        if linked is not None:
+            identity = replace(
+                identity,
+                flow_id=linked["flow_id"],
+                flow_execution_id=linked["execution_id"],
+            )
 
     flow_policy_label: Optional[str] = None
     if (

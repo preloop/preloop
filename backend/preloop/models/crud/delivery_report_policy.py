@@ -169,6 +169,22 @@ def code_repositories(
     return repositories
 
 
+def repository_push_time(metadata: Any, tracker_type: str) -> Optional[datetime]:
+    """Return the original push time stored by sync, when the provider supplies it."""
+    if not isinstance(metadata, dict):
+        return None
+    value = metadata.get("pushed_at")
+    if value is None and tracker_type == "github":
+        value = metadata.get("updated_at")
+    if not isinstance(value, str):
+        return None
+    try:
+        pushed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return pushed if pushed.tzinfo else pushed.replace(tzinfo=timezone.utc)
+
+
 def active_report_projects(
     db: Session, *, account_id: Any, start: datetime, end: datetime
 ) -> set[str]:
@@ -223,18 +239,7 @@ def active_report_projects(
                 break
     active = set()
     for project_id, name, metadata, tracker_type in rows:
-        pushed = None
-        if isinstance(metadata, dict):
-            value = metadata.get("pushed_at")
-            if value is None and tracker_type == "github":
-                value = metadata.get("updated_at")
-            if isinstance(value, str):
-                try:
-                    pushed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-                    if pushed.tzinfo is None:
-                        pushed = pushed.replace(tzinfo=timezone.utc)
-                except ValueError:
-                    pass
+        pushed = repository_push_time(metadata, tracker_type)
         if (
             pushed is None
             or pushed >= start

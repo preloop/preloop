@@ -71,7 +71,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
-    def _record(self, kind: str, stale: bool) -> None:
+    def _record(self, kind: str, stale: bool, model: str | None) -> None:
         with _LOCK:
             _REQUESTS.append(
                 {
@@ -79,13 +79,14 @@ class Handler(BaseHTTPRequestHandler):
                     "path": self.path.split("?")[0],
                     "credential": kind,
                     "rejected": stale,
+                    "model": model,
                 }
             )
 
-    def _reject_if_stale(self) -> bool:
+    def _reject_if_stale(self, model: str | None = None) -> bool:
         kind, value = _credential_kind(self.headers)
         stale = "stale" in value
-        self._record(kind, stale)
+        self._record(kind, stale, model)
         if kind == "none":
             self._send_json(
                 401,
@@ -153,7 +154,7 @@ class Handler(BaseHTTPRequestHandler):
                 _REQUESTS.clear()
             self._send_json(200, {"status": "reset"})
             return
-        if self._reject_if_stale():
+        if self._reject_if_stale(body.get("model")):
             return
         if path == "/v1/messages/count_tokens":
             self._send_json(200, {"input_tokens": 12})
