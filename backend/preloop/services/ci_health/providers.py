@@ -27,6 +27,8 @@ from .models import (
 from .transport import BudgetExhaustedError, HttpTransport, LruCache, ProviderError
 
 PAGE_SIZE = 100
+#: Job pages read per run (1000 jobs); a run beyond it is read in part.
+MAX_JOB_PAGES = 10
 JOB_CACHE: LruCache[tuple[str, str, str, str, int], list[CiJob]] = LruCache(5000)
 FINDINGS_CACHE: LruCache[tuple[str, str, str, str], sig.LogFindings] = LruCache(2000)
 
@@ -174,12 +176,18 @@ class GitHubActions:
         if cached is not None:
             run.jobs, run.jobs_complete = cached, True
             return
-        body = await self._get(
-            f"/repos/{repo}/actions/runs/{run.id}/jobs",
-            {"filter": "all", "per_page": PAGE_SIZE},
-        )
+        raw_list: list[dict[str, Any]] = []
+        for page in range(1, MAX_JOB_PAGES + 1):
+            body = await self._get(
+                f"/repos/{repo}/actions/runs/{run.id}/jobs",
+                {"filter": "all", "per_page": PAGE_SIZE, "page": page},
+            )
+            batch = (body or {}).get("jobs") or []
+            raw_list.extend(batch)
+            if len(batch) < PAGE_SIZE:
+                break
         jobs = []
-        for raw in (body or {}).get("jobs") or []:
+        for raw in raw_list:
             failed_step = next(
                 (
                     s.get("name")
@@ -342,10 +350,15 @@ class GitLabCi:
             run.jobs, run.jobs_complete = cached, True
             run.attempt = max((j.attempt for j in cached), default=1)
             return
-        raw_jobs = await self._get(
-            f"/projects/{project}/pipelines/{run.id}/jobs",
-            {"include_retried": "true", "per_page": PAGE_SIZE},
-        )
+        raw_jobs: list[dict[str, Any]] = []
+        for page in range(1, MAX_JOB_PAGES + 1):
+            batch = await self._get(
+                f"/projects/{project}/pipelines/{run.id}/jobs",
+                {"include_retried": "true", "per_page": PAGE_SIZE, "page": page},
+            )
+            raw_jobs.extend(batch or [])
+            if len(batch or []) < PAGE_SIZE:
+                break
         attempts: dict[str, int] = {}
         jobs = []
         for raw in sorted(raw_jobs or [], key=lambda j: int(j.get("id") or 0)):

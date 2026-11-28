@@ -83,6 +83,7 @@ CI_HEALTH_REPORT_TOOL: dict[str, Any] = {
     "source": "builtin",
     "default_enabled": False,
     "requires_tracker": True,
-    "required_tracker_types": [],
+    # Only GitHub and GitLab have CI adapters.
+    "required_tracker_types": ["github", "gitlab"],
     "schema": _schema(),
 }

@@ -341,3 +341,61 @@ def test_ledger_fit_keeps_open_signatures() -> None:
 )
 def test_pull_request_repository(url: str, expected: Any) -> None:
     assert pull_request_repository(url) == expected
+
+
+@pytest.mark.asyncio
+async def test_jobs_beyond_the_first_page_are_read(fake_ci: FakeCi) -> None:
+    """A run with more than 100 jobs: a failure on page 2 is counted."""
+    from tests.services.ci_health.conftest import load
+
+    real = load("github/jobs_103.json")["jobs"]
+    filler = [
+        {**real[0], "id": 900000 + i, "name": f"matrix ({i}/100)"} for i in range(100)
+    ]
+
+    def jobs(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params.get("page", "1"))
+        batch = filler if page == 1 else real
+        return httpx.Response(200, json={"jobs": batch}, headers=fake_ci.headers)
+
+    fake_ci.overrides[r"/actions/runs/103/jobs$"] = jobs
+    report, ledger = await _collect(fake_ci)
+    github = _repo(report, "github")
+    assert any(f["job"] == "frontend" for f in github["failures"])
+    assert "103" in ledger["counted_runs"]["github:example-org/app"]
+
+
+@pytest.mark.asyncio
+async def test_pull_request_refresh_uses_the_matching_provider(
+    fake_ci: FakeCi,
+) -> None:
+    """The same path on GitHub and GitLab: only GitHub reads a github.com PR."""
+    from preloop.services.ci_health.collector import refresh_pull_requests
+
+    github, gitlab = make_providers(fake_ci, Budget(max_requests=50))
+    ledger = ledger_mod.empty(NOW)
+    ledger["pull_requests"] = [
+        {"url": "https://github.com/example-org/app/pull/7", "state": "open"}
+    ]
+    fake_ci.pulls["7"] = {"state": "open", "merged_at": None}
+    await refresh_pull_requests(
+        ledger,
+        [Target(gitlab, "example-org/app"), Target(github, "example-org/app")],
+    )
+    hosts = {r.url.host for r in fake_ci.requests}
+    assert hosts == {"api.github.com"}
+
+
+@pytest.mark.asyncio
+async def test_signature_text_is_scrubbed_but_ids_stay_stable(
+    fake_ci: FakeCi,
+) -> None:
+    secret = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+    log = f"--- FAIL: TestConnect (0.01s)\npanic: auth failed with token {secret}\n"
+    fake_ci.overrides[r"/actions/jobs/1034/logs$"] = lambda request: httpx.Response(
+        200, text=log
+    )
+    report, ledger = await _collect(fake_ci)
+    dumped = str(ledger["signatures"]) + str(report["ledger"]["top"])
+    assert secret not in dumped
+    assert any(e["test"] == "TestConnect" for e in ledger["signatures"].values())

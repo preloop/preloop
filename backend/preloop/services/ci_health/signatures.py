@@ -212,7 +212,32 @@ def parse_log(text: str) -> LogFindings:
     # go test without a trailing package line (truncated log).
     for test in go_pending:
         findings.add(Signature("go", test, "fail"))
+    # A JUnit report printed into the log (a step that cats its report).
+    junit = _junit_block(text)
+    if junit:
+        findings = merge([findings, parse_junit(junit)])
     return findings
+
+
+_JUNIT_OPEN = re.compile(r"<testsuites?\b")
+
+
+def _junit_block(text: str) -> Optional[str]:
+    """The first JUnit document in a log, with CI line prefixes removed."""
+    if "<testsuite" not in text:
+        return None
+    lines = [clean_line(line) for line in text.splitlines()]
+    joined = "\n".join(lines)
+    match = _JUNIT_OPEN.search(joined)
+    if not match:
+        return None
+    tag = (
+        "testsuites" if joined.startswith("<testsuites", match.start()) else "testsuite"
+    )
+    end = joined.find(f"</{tag}>", match.start())
+    if end < 0:
+        return None
+    return joined[match.start() : end + len(tag) + 3]
 
 
 def parse_junit(document: str | bytes) -> LogFindings:
