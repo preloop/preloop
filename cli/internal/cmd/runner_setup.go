@@ -334,7 +334,7 @@ func handleRunnerSetupSkip(req runnerSetupRequest, reason string) error {
 }
 
 func (req runnerSetupRequest) serviceFailure(action string, cause error) error {
-	err := fmt.Errorf("could not %s the runner service: %w. The runner service is not running. Run it in the foreground with: preloop runner fg", action, cause)
+	err := fmt.Errorf("could not %s the runner (%w). The runner service is not running. Run it in the foreground with preloop runner fg", action, cause)
 	if req.Env.OnDemand {
 		return err
 	}
