@@ -160,6 +160,7 @@ def build(binding, head):
     if token:
         headers["Authorization"] = "Bearer " + token
     auth = b64(("x-access-token:" + gh_token).encode())
+    # This API requires bearer authentication and a JSON object.
 """
 
 

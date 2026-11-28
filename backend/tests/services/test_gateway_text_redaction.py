@@ -245,6 +245,11 @@ _CASES: list[tuple[str, str, list[tuple[str, int]]]] = [
     ("Bearer abcdEFGHijkl", f"Bearer {_REDACTED}", [("bearer_token", 1)]),
     ("bearer abc.def.ghi", f"bearer {_REDACTED}", [("bearer_token", 1)]),
     ("bearer abcdefgh123", f"bearer {_REDACTED}", [("bearer_token", 1)]),
+    ("bearer abcdefgh=", f"bearer {_REDACTED}=", [("bearer_token", 1)]),
+    ("bearer abcdefgh+/ end", f"bearer {_REDACTED}+/ end", [("bearer_token", 1)]),
+    ('"bearer abcdefgh=="', f'"bearer {_REDACTED}=="', [("bearer_token", 1)]),
+    # A sentence-final period stays prose.
+    ("Use bearer authentication.", "Use bearer authentication.", []),
     (f"Bearer {_JWT}", f"Bearer {_REDACTED}", [("bearer_token", 1)]),
     # The header rule masks any value, prose-shaped or not.
     (
