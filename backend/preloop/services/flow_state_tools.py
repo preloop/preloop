@@ -255,12 +255,10 @@ async def put_flow_state(
             f"flow_state_key_reserved: keys under '{crud_flow_state.RESERVED_PREFIX}'"
             " are written by the platform"
         )
-    await _approved(
-        name,
-        context,
-        {"key": request.key, "expected_version": request.expected_version},
-        ctx,
-    )
+    # The full request, value included: the policy layer stores these
+    # arguments and an approved call is replayed from them, and the approver
+    # must see what is written.
+    await _approved(name, context, request.model_dump(mode="json"), ctx)
 
     def run() -> dict[str, Any]:
         with get_session_factory()() as db:
