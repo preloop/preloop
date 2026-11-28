@@ -88,6 +88,31 @@ def due(f: Any) -> models.ChatWork:
     return row
 
 
+async def answer(f: Any, app: Any, row: models.ChatWork) -> str:
+    """Process work until ``row`` has its own reply.
+
+    The worker claims the oldest due row of any account, so one
+    ``process_one`` call need not handle the row this test just queued.
+
+    Args:
+        f: Chat database fixture.
+        app: Application used for authenticated API calls.
+        row: Work item whose reply is awaited.
+
+    Returns:
+        The reply recorded on ``row``.
+    """
+    for _ in range(20):
+        f.db.refresh(row)
+        if row.reply is not None:
+            return row.reply
+        if not await process_one(f.db, app):
+            break
+    f.db.refresh(row)
+    assert row.reply is not None, "queued chat work was never answered"
+    return row.reply
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "status,text",
@@ -239,20 +264,25 @@ async def test_unavailable_alias(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("other_work_queued", [False, True])
 async def test_inflight_bound(
     fixture_db: Any,
     real_app: Any,
     chat_flow: models.Flow,
     delivery: AsyncMock,
     dispatch: Any,
+    other_work_queued: bool,
 ) -> None:
     """A second question cannot start overlapping work for the same flow."""
-    receive(fixture_db, text="/ask docs First")
-    await process_one(fixture_db.db, real_app)
-    receive(fixture_db, text="/ask docs Second")
-    await process_one(fixture_db.db, real_app)
+    if other_work_queued:
+        receive(fixture_db, text="/help")
+    first = await answer(
+        fixture_db, real_app, receive(fixture_db, text="/ask docs First")
+    )
+    assert first.startswith("Flow started.")
+    second = receive(fixture_db, text="/ask docs Second")
     assert (
-        delivery.call_args.args[2]
+        await answer(fixture_db, real_app, second)
         == "You already have a chat run in progress for this flow."
     )
     assert len(dispatch) == 1
