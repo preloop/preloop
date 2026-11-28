@@ -179,9 +179,13 @@ def audit_actions(db: Session, account_id: Any) -> list[str]:
 
 
 def second_account(db: Session) -> models.User:
-    """Another account with its own user."""
+    """Another account whose user owns it, as a real second tenant would.
+
+    Ownership keeps a refused permission (403 under role-based access) from
+    standing in for the isolation result (404) the callers assert.
+    """
     account = crud_account.create(db, obj_in={"organization_name": "Example other"})
-    return crud_user.create(
+    user = crud_user.create(
         db,
         obj_in={
             "account_id": account.id,
@@ -190,6 +194,9 @@ def second_account(db: Session) -> models.User:
             "hashed_password": "synthetic",
         },
     )
+    account.primary_user_id = user.id
+    db.flush()
+    return user
 
 
 def test_upload_then_read_shows_the_bytes_behind_the_hash(

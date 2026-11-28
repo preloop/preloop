@@ -86,6 +86,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Account-wide approval statistics no longer fail on PostgreSQL with
+  `function jsonb_path_exists(jsonb, character varying) does not exist`; the
+  response filter is passed as a `jsonpath`.
 - An MCP tool call from an onboarded agent's durable credential now exports
   its `execute_tool` span under the agent's current runtime session, so it
   shares `gen_ai.conversation.id` with that session's chat spans (#2593).
