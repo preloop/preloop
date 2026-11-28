@@ -302,3 +302,27 @@ configured TTL (at most 300 seconds); expiry shortens it. Safe grant metadata
 flows into policy and tool-call audits, whose account-scoped consent index is
 built concurrently. Synthetic simulation does no introspection HTTP. See
 [Delegated grants](../guide/grant-introspection.md).
+
+## Current flow definitions and change proposals
+
+Grant `inspect_flows` to a flow to let its executions list and inspect current
+definitions in its project. The `request` argument takes a project UUID and an
+optional flow UUID. Listing returns up to 50 visible flows and a `next_after`
+cursor. The caller and target must each select exactly that one trigger project.
+The server checks account membership, the caller's launch revision, tracker
+scope, flow visibility and the tool policy. A change to the calling definition
+requires a new execution to establish scope.
+
+`propose_flow_change` takes the flow ID and exact revision from inspection.
+It accepts a wall-clock timeout, USD or iteration ceiling, and the count of an
+existing interval schedule. The schedule keeps its unit, timezone and payload.
+Each proposal records before and after values, reason, a caller-reported metric
+and sample size, expected outcome, evaluation window in days, access changes,
+target and proposer. The server validates the combined configuration under a
+revision lock. Submitting the same review from the same execution returns the
+same SHA-256 digest.
+
+`get_flow_change_proposal` takes the project ID, flow ID and digest. It returns
+the original document and the current revision so a reviewer can identify a
+stale base. Submission and review leave the flow definition at its existing
+revision. Human approval and application are separate follow-up work.
