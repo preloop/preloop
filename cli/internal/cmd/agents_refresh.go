@@ -44,13 +44,13 @@ MCP server config, local backups, and the agent's currently selected model
 companion to onboard, not a re-onboard.
 
 Per agent kind:
-  Claude Code   Removes the managed model env pins. By default the stock
-                opus/sonnet/haiku family pins are dropped so Claude Code
-                uses its own built-in defaults. With subscription OAuth
+  Claude Code   Keeps the pinning choice saved during onboarding.
+                API-key accounts default to registered family models. On
+                subscription OAuth, stock families normally use Claude Code's
+                built-in defaults. With subscription OAuth
                 and family autoregistration enabled, new ids register on
-                first use after a Claude Code update. API-key accounts
-                should use --pin-model-families or run preloop models sync
-                before selecting newly released ids. On Claude Code
+                first use after a Claude Code update. Run preloop models sync
+                to discover new models for API-key routes. On Claude Code
                 2.1.321+ with subscription OAuth the Fable pair (and a
                 Fable custom model option) is dropped too, because those
                 builds ship a built-in fable default. Older builds and
@@ -62,10 +62,9 @@ Per agent kind:
                 the newer bound release is added to them (allowed models
                 that do not name the family are never widened). Newly released Anthropic
                 family models are still imported into the account catalog and
-                bound to this agent. Pass --pin-model-families (or onboard
-                with it) for API-key accounts or a gateway whose family
-                autoregistration is disabled; the choice is persisted in the local enrollment
-                state and honoured by later flag-less runs.
+                bound to this agent. Pass --pin-model-families to pin
+                subscription routes when gateway autoregistration is disabled.
+                Later refreshes keep this choice.
                 With pins enabled, candidates are verified against the live
                 Anthropic model list before upgrading; an authorized current
                 pin stays when the live list is unavailable or lacks the

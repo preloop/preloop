@@ -115,6 +115,9 @@ func resumeManualEnrollment(
 	default:
 		return fmt.Errorf("the setup for %s is in state %q and cannot be resumed; run onboarding again", displayName, enrollment.Status)
 	}
+	if !manualApplySupported(agent) {
+		return fmt.Errorf("manual resume is not supported for %s", displayName)
+	}
 	plan, err := manualApplyPlanFromPayload(enrollment.ManagedConfig["manual_apply"])
 	if err != nil {
 		return fmt.Errorf("cannot read the pending setup for %s: %w", displayName, err)
@@ -162,15 +165,8 @@ func resumeManualEnrollment(
 	}
 	validationResult = mergeStringMaps(validationResult, defaultManagedLiveValidationResult(agent))
 
-	routesModel, recorded := enrollment.ValidationResult["model_routing"].(bool)
-	if !recorded {
-		// Older pending enrollments have only the server's planned document.
-		// A broken local route must never downgrade its required gateway probe.
-		routesModel = lookupString(enrollment.ManagedConfig, "model_provider") == "preloop" ||
-			lookupString(enrollment.ManagedConfig, "env", "ANTHROPIC_BASE_URL") == strings.TrimRight(state.BaseURL, "/")+"/anthropic"
-	}
+	routesModel := manualPlanRoutesModel(agent, enrollment, plan, state.BaseURL)
 	status := "applied"
-	probeRan := false
 	if routesModel && effective != nil && supportsManagedLiveValidation(agent) && !opts.SkipLiveValidate {
 		fmt.Fprint(output, "Sending one real request through the gateway with this configuration...") //nolint:errcheck
 		outcome, probeErr := runManualResumeProbe(client, agent, validationResult, effective, detail)
@@ -178,7 +174,6 @@ func resumeManualEnrollment(
 			validationResult = outcome.ValidationResult
 		}
 		if outcome != nil && outcome.Attempted {
-			probeRan = true
 			if probeErr != nil || !outcome.Passed {
 				printManualLine(output, " failed.")
 				return reportManualProbeFailure(client, agent, displayName, validationResult, probeErr, output)
@@ -187,7 +182,8 @@ func resumeManualEnrollment(
 			status = "validated"
 		} else {
 			reason, _ := validationResult["live_validation_skip_reason"].(string)
-			printManualLine(output, " not run (%s).", firstNonEmptyString(reason, "no model route in this configuration"))
+			printManualLine(output, " not run (%s).", firstNonEmptyString(reason, "the gateway route could not be verified"))
+			return &manualNotAppliedError{Agent: displayName, Problems: 1}
 		}
 	}
 
@@ -225,8 +221,7 @@ func resumeManualEnrollment(
 	switch {
 	case status == "validated":
 		printManualLine(output, "  Gateway validation: passed (one real request, recorded in the console)")
-	case opts.SkipLiveValidate && routesModel:
-	case !probeRan:
+	case !routesModel:
 		printManualLine(output, "  Gateway validation: not applicable (MCP only)")
 	}
 	printManualLine(output, "  Configuration applied by you: %s", manualEffectiveLabel(plan, opts))
@@ -235,6 +230,24 @@ func resumeManualEnrollment(
 	}
 	printManualLine(output, "  Undo: preloop agents offboard %s", shellQuoteAgentName(displayName))
 	return nil
+}
+
+// manualPlanRoutesModel reads the enrollment's decision, including handoffs
+// saved before the CLI recorded model_routing.
+func manualPlanRoutesModel(agent AgentConfig, enrollment *managedAgentEnrollmentSummary, plan *manualApplyPlan, baseURL string) bool {
+	if routed, ok := enrollment.ValidationResult["model_routing"].(bool); ok {
+		return routed
+	}
+	if file := plan.fileForRole(writeRoleConfig); file != nil {
+		// A routed handoff necessarily writes the freshly issued key into the
+		// model provider. An MCP-only handoff leaves prior model settings alone.
+		return lookupString(file.Merge, "env", "ANTHROPIC_API_KEY") == manualAgentKeyPlaceholder ||
+			lookupString(file.Merge, "model_providers", "preloop", "experimental_bearer_token") == manualAgentKeyPlaceholder
+	}
+	// For a side-file-only handoff the CLI already wrote the main file.
+	// Use the saved adapter configuration to decide whether it needs a probe.
+	planned := managedMCPAdapterForAgent(agent).ValidateManagedConfig(enrollment.ManagedConfig, baseURL)
+	return planned["gateway_provider_ok"] == true
 }
 
 // verifyManualMCPKey checks the key in the applied MCP entry against the

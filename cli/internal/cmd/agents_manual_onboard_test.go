@@ -817,6 +817,8 @@ func TestResumeAcceptsAnotherKeyOnlyWhenARealRequestProvesIt(t *testing.T) {
 		t.Fatal("expected a pending setup")
 	}
 	state, _ := loadManualResumeState(home.agent)
+	delete(rig.enrollments[state.EnrollmentID], "validation_result") // Created before model_routing was recorded.
+
 	const consoleKey = "agt_SYNTHETICCONSOLE00000000000000000000000002"
 	applyRigResult(t, home, func(text string) string { return strings.ReplaceAll(text, syntheticAgentKey, consoleKey) })
 
@@ -884,6 +886,8 @@ func TestSideFileOnlySetupStillProbesAndCancelRestoresTheConfig(t *testing.T) {
 		t.Fatalf("the writable settings file should have been written:\n%s", output)
 	}
 	state, _ := loadManualResumeState(home.agent)
+
+	delete(rig.enrollments[state.EnrollmentID], "validation_result") // Legacy side-file-only handoff.
 
 	var resumed bytes.Buffer
 	if err := resumeManualEnrollment(rig.client(), state, manualResumeOptions{}, &resumed); err != nil {
@@ -1052,6 +1056,10 @@ func TestResumeMCPOnlyWithReplacementKey(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			rig := newManualRigServer(t)
 			home := newManualRigHome(t)
+			if name == "older pending setup" {
+				// A pre-existing URL alone never meant this plan owned model traffic.
+				mustWriteRecoveryFile(t, home.settings, fmt.Sprintf(`{"env":{"ANTHROPIC_BASE_URL":%q,"ANTHROPIC_API_KEY":"previous-key"}}`, rig.server.URL+"/anthropic"))
+			}
 			home.lockSettings(t)
 			_, _ = runManualRigOnboard(t, rig, home.agent, managedEnrollmentOptions{NoModelRouting: true})
 			state, err := loadManualResumeState(home.agent)
@@ -1097,5 +1105,22 @@ func TestManualClaudeAPIKeyConfigSelectsProbedModel(t *testing.T) {
 	alias := lookupString(doc, "env", "ANTHROPIC_CUSTOM_MODEL_OPTION")
 	if selector != "sonnet" || alias != "anthropic/claude-sonnet-4-5" || lookupString(doc, "env", "ANTHROPIC_DEFAULT_SONNET_MODEL") != alias {
 		t.Fatal("the client can resolve sonnet to a model other than the probed alias")
+	}
+}
+
+func TestLegacyManualResumeRejectsUnsupportedAgent(t *testing.T) {
+	rig := newManualRigServer(t)
+	home := newManualRigHome(t)
+	home.lockSettings(t)
+	_, _ = runManualRigOnboard(t, rig, home.agent, managedEnrollmentOptions{})
+	state, err := loadManualResumeState(home.agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delete(rig.enrollments[state.EnrollmentID], "validation_result")
+	state.AgentName = "OpenCode"
+	err = resumeManualEnrollment(rig.client(), state, manualResumeOptions{}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "manual resume is not supported") || len(rig.sent(http.MethodPost, "/validate")) != 0 {
+		t.Fatal("a setup without a manual adapter must remain pending")
 	}
 }
