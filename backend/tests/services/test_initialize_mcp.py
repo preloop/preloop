@@ -360,6 +360,74 @@ class TestRegisteredToolBehaviour:
         assert "not in this flow's allowed tools" in result["tool_execution_error"]
         assert approval.tool_result is None
 
+    @pytest.mark.parametrize(
+        "markers",
+        [
+            {
+                "_preloop_source": "claude_code",
+                "_preloop_origin": {"session_id": "native-session", "model": None},
+            },
+            {"_preloop_origin": {"session_id": "native-session", "model": None}},
+            {"_preloop_source": "codex_cli"},
+        ],
+    )
+    async def test_approved_native_tool_is_not_replayed(
+        self, mcp_server: DynamicFastMCP, markers: dict
+    ) -> None:
+        """A native harness approval keeps its decision apart from execution.
+
+        The permission hook records native calls such as Claude Code's
+        ``ToolSearch`` in the same table. Preloop cannot run a native tool and
+        the harness does not resume the call once its hook has returned, so
+        the poll reports the decision and how to proceed instead of failing
+        with an unknown-tool error (#2595).
+        """
+        tool = await mcp_server.get_tool("get_approval_status")
+        request_id = uuid4()
+        account_id = uuid4()
+        approval = models.ApprovalRequest(
+            id=request_id,
+            account_id=account_id,
+            status="approved",
+            tool_name="ToolSearch",
+            tool_args={"query": "select:mcp__example__status", **markers},
+            responses=[],
+        )
+        approval_result = MagicMock()
+        approval_result.scalar_one_or_none.return_value = approval
+        events_result = MagicMock()
+        events_result.scalars.return_value = []
+        db = AsyncMock()
+        db.execute.side_effect = [approval_result, events_result, approval_result]
+
+        @asynccontextmanager
+        async def session() -> AsyncIterator[AsyncMock]:
+            yield db
+
+        with (
+            patch(
+                "preloop.services.dynamic_fastmcp_http.get_current_user_context",
+                return_value=SimpleNamespace(account_id=str(account_id)),
+            ),
+            patch("preloop.models.db.session.get_async_db_session", new=session),
+            patch.object(
+                mcp_server,
+                "call_registered_tool_without_policy",
+                new=AsyncMock(side_effect=AssertionError("must not replay")),
+            ) as replay,
+        ):
+            result = json.loads(await tool.fn(request_id=str(request_id)))
+
+        replay.assert_not_awaited()
+        assert result["status"] == "approved"
+        assert "tool_execution_error" not in result
+        assert "tool_result" not in result
+        assert result["execution"] == "not_run_native_tool"
+        assert "ToolSearch" in result["native_tool_note"]
+        assert "again" in result["native_tool_note"]
+        # A native grant is claimed later through ``tool_result IS NULL``.
+        assert approval.tool_result is None
+
     async def _fn(self, mcp_server, name):
         tool = await mcp_server.get_tool(name)
         return tool.fn

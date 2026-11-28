@@ -223,3 +223,5 @@ Each hook calls `POST /api/v1/agents/permission-check` with the agent's managed 
 The call blocks for up to ~300 seconds while a human decides, and is **fail-closed** by default, if Preloop is unreachable, the tool call is denied (the OpenClaw plugin exposes `tool_approval_fail_open`, default `false`, to invert this).
 
 Toggle enforcement per subject with the governance setting `native_tool_approvals: enforce | off` (unset means enforce).
+
+**A decision that arrives after the hook returned.** If the hook stops waiting (or the call is declined first) and the request is approved later, the native call is not resumed: the harness has already moved on, and Preloop cannot run a native tool such as Claude Code's `ToolSearch` itself. Polling the request with `get_approval_status` returns `status: approved` with `execution: not_run_native_tool` and a `native_tool_note` that says so. The agent has to issue the call again; the new call is evaluated against the rules like any other.

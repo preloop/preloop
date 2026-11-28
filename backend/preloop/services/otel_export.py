@@ -49,6 +49,10 @@ ATTR_COST_SOURCE = "preloop.usage.cost_source"
 ATTR_STATUS_CODE = "http.response.status_code"
 ATTR_SERVER_NAME = "preloop.mcp.server_name"
 
+OPERATION_DURATION_METRIC = "gen_ai.client.operation.duration"
+INFERENCE_DURATION_METRIC = "gen_ai.client.inference.duration"
+_INFERENCE_OPERATIONS = frozenset({"chat", "generate_content", "text_completion"})
+
 # Metric-only dimension (not a span attribute) for gen_ai.client.token.usage.
 _TOKEN_TYPE_KEY = "gen_ai.token.type"
 
@@ -449,15 +453,34 @@ def _init_metrics(
 
 
 def _record_duration_metric(attrs: Mapping[str, Any], duration_s: float) -> None:
+    """Record call duration under the GenAI duration metric names.
+
+    Every call records ``gen_ai.client.operation.duration``. Inference calls
+    (``chat``, ``generate_content``, ``text_completion``) also record
+    ``gen_ai.client.inference.duration``, the name the current GenAI semantic
+    conventions use for them (#2596). Both carry the same value and
+    dimensions, so dashboards on the older name keep working while they move.
+
+    Args:
+        attrs: Span attributes of the call; only low-cardinality dimensions
+            are copied onto the metric.
+        duration_s: Call duration in seconds (negative values record 0).
+    """
     try:
         meter = metrics.get_meter(METER_NAME)
-        histogram = meter.create_histogram(
-            "gen_ai.client.operation.duration",
+        metric_attrs = _metric_dimensions(attrs)
+        value = max(duration_s, 0.0)
+        meter.create_histogram(
+            OPERATION_DURATION_METRIC,
             unit="s",
             description="Duration of a Preloop-governed model or tool call",
-        )
-        metric_attrs = _metric_dimensions(attrs)
-        histogram.record(max(duration_s, 0.0), metric_attrs)
+        ).record(value, metric_attrs)
+        if attrs.get(ATTR_OPERATION_NAME) in _INFERENCE_OPERATIONS:
+            meter.create_histogram(
+                INFERENCE_DURATION_METRIC,
+                unit="s",
+                description="Duration of a Preloop-governed model inference call",
+            ).record(value, metric_attrs)
     except Exception:
         logger.debug("OTLP duration metric record failed", exc_info=True)
 

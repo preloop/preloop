@@ -371,6 +371,43 @@ class CRUDToolConfiguration(CRUDBase[models.ToolConfiguration]):
         rows = query.distinct().all()
         return {row.tool_name for row in rows if row.tool_name}
 
+    def get_disabled_builtin_tool_names(
+        self,
+        db: Session,
+        account_id: str,
+        tool_names: List[str],
+    ) -> set[str]:
+        """Names among ``tool_names`` an account-wide builtin row disables.
+
+        Only account-wide rows (no MCP server, no managed-agent scope) count:
+        they are the ones that hide a builtin from every caller in the
+        account.
+
+        Args:
+            db: Database session.
+            account_id: Account to look in.
+            tool_names: Builtin tool names to check.
+
+        Returns:
+            The subset of ``tool_names`` with an explicit disabled row.
+        """
+        if not tool_names:
+            return set()
+        rows = (
+            db.query(self.model.tool_name)
+            .filter(
+                self.model.account_id == account_id,
+                self.model.tool_source == "builtin",
+                self.model.is_enabled.is_(False),
+                self.model.mcp_server_id.is_(None),
+                self.model.managed_agent_id.is_(None),
+                self.model.tool_name.in_(tool_names),
+            )
+            .distinct()
+            .all()
+        )
+        return {row.tool_name for row in rows if row.tool_name}
+
 
 crud_tool_configuration = CRUDToolConfiguration()
 

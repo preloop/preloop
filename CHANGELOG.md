@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The Anthropic gateway router (`/anthropic/v1`) answers a model allowlist
+  denial with `400 invalid_request_error` instead of `403 permission_error`.
+  Claude Code read the 403 as a login failure and told the user to run
+  `/login`; with a 400 it shows the allowlist message as is (#2590). Usage and
+  audit rows still record the denial as 403 `model_not_allowed`; the OpenAI
+  and Gemini routers are unchanged.
+- The gateway also publishes the `gen_ai.client.inference.duration` histogram
+  for model calls, next to `gen_ai.client.operation.duration`, which is kept
+  for existing dashboards (#2596).
+
 ### Added
 
 - `preloop agents onboard --no-model-routing` onboards MCP only: no model
@@ -73,6 +85,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   checks agent files.
 
 ### Fixed
+
+- An MCP tool call from an onboarded agent's durable credential now exports
+  its `execute_tool` span under the agent's current runtime session, so it
+  shares `gen_ai.conversation.id` with that session's chat spans (#2593).
+- A session-scoped runtime token that names a builtin tool enabled by default
+  (for example `get_approval_status`) now gets that tool without an explicit
+  tool configuration, matching what the account owner sees (#2594).
+- Polling an approved native harness tool request (for example Claude Code's
+  `ToolSearch`) with `get_approval_status` no longer fails with an unknown-tool
+  error. It returns the decision and says that Preloop cannot run a native
+  call and the harness does not resume it; the agent has to issue the call
+  again (#2595).
 
 - `preloop policy apply` now records a policy version for every successful
   apply, prints its number, and `preloop policy list` and rollback can use it.

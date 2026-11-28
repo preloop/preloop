@@ -507,6 +507,48 @@ RUNTIME_SESSION_NO_TOOLS_WARNING = (
 )
 
 
+def _implicitly_enabled_builtin_names(
+    db: Session, *, account_id: UUID, tool_names: List[str]
+) -> set[str]:
+    """Builtins enabled without a configuration row (#2594).
+
+    ``list_tools`` exposes a builtin that has no ``ToolConfiguration`` row
+    when its metadata does not default-disable it, so the account owner sees
+    it. A token scoped to that builtin must resolve it the same way instead
+    of requiring an explicit enabled row. A builtin is excluded when it is
+    default-disabled or an account-wide row disables it under its own name
+    or an alias.
+
+    Args:
+        db: Database session.
+        account_id: Account minting the token.
+        tool_names: Requested names not already resolved by a config row.
+
+    Returns:
+        The requested names that are effectively enabled builtins.
+    """
+    from preloop.api.endpoints.tools import BUILTIN_TOOLS, TOOL_NAME_ALIASES
+    from preloop.models.crud import crud_tool_configuration
+
+    default_enabled = {
+        str(tool["name"]) for tool in BUILTIN_TOOLS if tool.get("default_enabled", True)
+    }
+    candidates = [name for name in tool_names if name in default_enabled]
+    if not candidates:
+        return set()
+    aliases = {name: TOOL_NAME_ALIASES.get(name) for name in candidates}
+    disabled = crud_tool_configuration.get_disabled_builtin_tool_names(
+        db,
+        account_id=str(account_id),
+        tool_names=candidates + [a for a in aliases.values() if a],
+    )
+    return {
+        name
+        for name in candidates
+        if name not in disabled and aliases.get(name) not in disabled
+    }
+
+
 def _resolve_runtime_session_tool_restrictions(
     db: Session,
     *,
@@ -561,6 +603,13 @@ def _resolve_runtime_session_tool_restrictions(
             account_id=str(account_id),
             tool_names=normalized_tool_names,
             allowed_server_ids=server_ids,
+        )
+        allowed_tool_names |= _implicitly_enabled_builtin_names(
+            db,
+            account_id=account_id,
+            tool_names=[
+                name for name in normalized_tool_names if name not in allowed_tool_names
+            ],
         )
         missing_tool_names = [
             tool_name

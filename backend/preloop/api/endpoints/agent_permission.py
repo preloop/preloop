@@ -34,11 +34,11 @@ from preloop.config import settings
 from preloop.models import models
 from preloop.models.crud import (
     crud_api_key,
-    crud_managed_agent,
     crud_runtime_session,
 )
 from preloop.models.db.session import get_session_factory
 from preloop.services import operator_notes
+from preloop.services.agent_current_session import current_agent_session_id
 from preloop.services.agent_permission_service import request_agent_permission
 from preloop.services.session_hook_events import (
     is_prompt_event,
@@ -303,26 +303,11 @@ def _current_agent_session_id(identity: PermissionIdentity) -> Optional[UUID]:
     Never raises: without a session the check still decides the call, it is
     only unattributed, which is how it behaved before.
     """
-    try:
-        with get_session_factory()() as db:
-            agent = crud_managed_agent.get_for_account(
-                db,
-                account_id=identity.account_id,
-                agent_id=str(identity.managed_agent_id),
-            )
-            if agent is None or agent.runtime_session_id is None:
-                return None
-            session = crud_runtime_session.get_account_session(
-                db,
-                account_id=identity.account_id,
-                runtime_session_id=agent.runtime_session_id,
-            )
-            if session is None or session.ended_at is not None:
-                return None
-            return session.id
-    except Exception:
-        logger.warning("Agent session lookup failed on permission check")
-        return None
+    return current_agent_session_id(
+        identity.account_id,
+        identity.managed_agent_id,
+        session_factory=get_session_factory(),
+    )
 
 
 def _records_native_tool_call(payload: "AgentPermissionCheckRequest") -> bool:
