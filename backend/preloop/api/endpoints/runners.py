@@ -13,7 +13,7 @@ import weakref
 from copy import deepcopy
 from datetime import datetime, timezone
 from string import ascii_letters, digits
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Literal, Mapping, Optional
 from uuid import UUID, uuid4, uuid5
 
 import anyio
@@ -26,6 +26,7 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
@@ -265,6 +266,49 @@ def _can_manage_runner_fingerprints(db: Session, viewer: models.User) -> bool:
     return (
         account is not None and str(account.primary_user_id) == str(viewer.id)
     ) or user_holds_permission(db, viewer, "manage_agents")
+
+
+class RunnerDiscoveryFailure(BaseModel):
+    """Bound diagnostics on a runner heartbeat without storing a response body."""
+
+    model_config = ConfigDict(extra="forbid")
+    reason: Literal[
+        "Evidence application must match a reported candidate",
+        "Profile completeness and error must agree",
+        "Version 3 candidates must match evidence application contexts",
+        "Candidate extensions must match application extensions",
+        "Report must describe this runner's device",
+        "Collection window is in the future",
+        "Runner lacks report_discovery capability",
+        "Automatic discovery disabled",
+        "Invalid runner credentials",
+        "Runner discovery unavailable",
+        "Discovery request rejected",
+        "Could not reach the discovery service",
+        "Extension content upload incomplete",
+        "Discovery privacy salt unavailable",
+        "Workstation identity unavailable",
+        "Discovery collection or reporting failed",
+    ]
+    http_status: int | None = Field(default=None, ge=100, le=599, strict=True)
+    next_attempt: AwareDatetime
+
+
+def _merge_discovery_failure(capabilities: dict[str, Any], raw: dict[str, Any]) -> bool:
+    """Apply an explicit failure or recovery. Ignore malformed or old heartbeats."""
+    if "discovery_failure" not in raw:
+        return False
+    if raw["discovery_failure"] is None:
+        return capabilities.pop("discovery_failure", None) is not None
+    try:
+        failure = RunnerDiscoveryFailure.model_validate(raw["discovery_failure"])
+    except ValidationError:
+        return False
+    value = failure.model_dump(mode="json", exclude_none=True)
+    if capabilities.get("discovery_failure") == value:
+        return False
+    capabilities["discovery_failure"] = value
+    return True
 
 
 def _record_runner_fingerprint(
@@ -1275,17 +1319,20 @@ async def runner_ws(
                 for assignment in list(runner.assignments or []):
                     if assignment.halt_requested:
                         await close_publication(assignment.execution_id)
+                discovery_changed = False
                 if any(
                     key in raw
                     for key in (
                         "host_exec_profiles",
                         "authorized_directories",
                         "docker_available",
+                        "discovery_failure",
                     )
                 ):
                     # Each advertisement replaces only its own key: a
                     # heartbeat that carries one must not drop the other.
                     merged = dict(runner.capabilities or {})
+                    discovery_changed = _merge_discovery_failure(merged, raw)
                     if "host_exec_profiles" in raw:
                         merged.update(normalize_host_exec_advertisements(raw))
                     if "authorized_directories" in raw:
@@ -1351,7 +1398,7 @@ async def runner_ws(
                     )
                 if inventory_wanted:
                     reply["inventory_wanted"] = True
-                if inventory_changed or presence_changed:
+                if inventory_changed or presence_changed or discovery_changed:
                     emit_runner_updated(runner, db)
                 heartbeat_jobs = []
                 halts = []

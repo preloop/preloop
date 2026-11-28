@@ -6307,6 +6307,11 @@ export interface RunnerRecord {
   /** Whether the owner approves each flow before it runs here. */
   flow_execution_consent?: 'ask_me' | 'always' | 'never';
   capabilities?: {
+    discovery_failure?: {
+      reason: string;
+      http_status?: number;
+      next_attempt: string;
+    };
     host_exec_profiles?: Array<{
       name?: string;
       capabilities?: string[];

@@ -112,6 +112,9 @@ also opts out. The runner reads
 this setting every minute. Intervals are bounded to one hour through seven days;
 an invalid duration uses 24 hours. `preloop runner status` shows the last attempt,
 last successful report, result, and the opt-out instruction, even while offline.
+After a failure it also shows the reason and the next attempt. The runner row in
+the console shows this diagnostic alongside connection status until the runner
+reports recovery.
 
 Administrators with `manage_policies` can read or replace account controls at
 `GET` / `PUT /api/v1/account/runner-discovery`:
@@ -452,8 +455,12 @@ metadata on each candidate, bound to the matching app's hashed config context.
 Servers continue accepting v1, v2 and v3. On an explicit schema-version
 rejection, a v4 CLI retries with v3 after removing `details` from both candidate
 and evidence records. If the server also rejects v3, the existing v2 retry
-removes extensions and managed configuration. Other validation failures do not
-trigger a downgrade. Older CLIs continue to work against the new server.
+removes extensions and managed configuration. When an older server specifically
+requires a candidate for machine-wide configuration, the CLI retries the user
+inventory with the machine scope marked partial and prints the omission.
+When a server explicitly rejects the standalone MCP server extension kind, the
+CLI keeps supported extensions, marks affected inventories partial, and reports
+the number omitted. A partial profile with an unknown reason stays partial.
 
 Extension identifiers (plugin, skill, command, MCP server and hook event names, versions,
 and marketplace names) are sent in clear. Marketplace and git URLs, hook

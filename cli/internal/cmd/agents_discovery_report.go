@@ -69,11 +69,13 @@ type discoveryReportRequest struct {
 }
 
 type discoveryReportResponse struct {
-	Received       int  `json:"received"`
-	Created        int  `json:"created"`
-	Updated        int  `json:"updated"`
-	LegacyEvidence bool `json:"-"`
-	DetailsOmitted bool `json:"-"`
+	Received             int  `json:"received"`
+	Created              int  `json:"created"`
+	Updated              int  `json:"updated"`
+	MCPServersOmitted    int  `json:"-"`
+	ManagedConfigOmitted bool `json:"-"`
+	LegacyEvidence       bool `json:"-"`
+	DetailsOmitted       bool `json:"-"`
 }
 
 // discoveryReportingRequested reports whether the user opted in, by flag or
@@ -211,6 +213,7 @@ func sendDiscoveryReportSummary(client *api.Client, agents []AgentConfig, w io.W
 	if err != nil {
 		return summary, fmt.Errorf("failed to send discovery report: %w", err)
 	}
+	summary.Extensions -= resp.MCPServersOmitted
 	disclosure := "inventory metadata, extension identifiers, descriptions and hashes"
 	deps, _ := discoveryInventoryProbes(projects)
 	if resp.DetailsOmitted || deps.NoExtensionDetails {

@@ -342,7 +342,17 @@ PY
   run "$svc" "claude -p 'Reply with the single word ACK.' --output-format text"
   ONBOARD_END=$(wc -l < "$TRANSCRIPT")
 
-  run "$svc" "preloop agents discover --report --no-onboard-prompt"
+  # Exercise both ordinary extensions and the newer project MCP server kind.
+  compose exec -T "$svc" bash -eu <<'SH'
+mkdir -p .claude/skills/example-skill
+printf '%s\n' '---' 'name: example-skill' 'description: Example skill' '---' 'Review the sample.' > .claude/skills/example-skill/SKILL.md
+printf '%s\n' '{"mcpServers":{"example-server":{"command":"echo","args":["example"]}}}' > .mcp.json
+SH
+  run "$svc" "preloop agents discover --report --project . --device-ref rig-ro-settings --no-onboard-prompt"
+  expect_status 0
+  note "The administrator reports all local profiles on the same device."
+  compose exec -T -u 0 -e PRELOOP_TOKEN="$RIG_PRELOOP_TOKEN" "$svc" \
+    preloop agents discover --all-users --report --device-ref rig-ro-settings >/dev/null
   run "$svc" "preloop agents status 'Claude Code'"
 
   note "The complete instructions stay one flag away, and in the saved file."

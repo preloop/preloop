@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 
 	"github.com/preloop/preloop/cli/internal/api"
 )
@@ -89,10 +91,32 @@ func postInventoryReport(client inventoryReportClient, report discoveryReportReq
 	if !errors.As(err, &apiErr) || apiErr.StatusCode != 422 {
 		return inventoryReportError(err)
 	}
+	// Older evidence services required a candidate for machine settings. A
+	// setting alone cannot establish installation. Keep the user inventory
+	// and explicitly mark the omitted machine scope partial on the retry.
+	var rejection struct {
+		Detail string `json:"detail"`
+	}
+	if json.Unmarshal([]byte(apiErr.Body), &rejection) == nil && rejection.Detail == candidateMismatchReason {
+		evidence := *report.Evidence
+		evidence.Applications = slices.DeleteFunc(slices.Clone(evidence.Applications), func(app inventoryReportApplication) bool {
+			return app.ConfigScope == "managed_config"
+		})
+		if len(evidence.Applications) < len(report.Evidence.Applications) {
+			evidence.ScopeCompleteness = maps.Clone(evidence.ScopeCompleteness)
+			evidence.Errors = slices.Clone(evidence.Errors)
+			markManagedInventoryIncomplete(&evidence, "unavailable")
+			report.Evidence = &evidence
+			err := postInventoryReport(client, report, response)
+			response.ManagedConfigOmitted = err == nil
+			return inventoryReportError(err)
+		}
+	}
 	var validation struct {
 		Detail []struct {
-			Loc  []any  `json:"loc"`
-			Type string `json:"type"`
+			Loc   []any  `json:"loc"`
+			Input any    `json:"input"`
+			Type  string `json:"type"`
 		} `json:"detail"`
 	}
 	if json.Unmarshal([]byte(apiErr.Body), &validation) != nil {
@@ -100,7 +124,11 @@ func postInventoryReport(client inventoryReportClient, report discoveryReportReq
 	}
 	rejectedSchema := false
 	rejectedReasons := false
+	rejectedMCP := false
 	for _, detail := range validation.Detail {
+		if detail.Type == "literal_error" && detail.Input == "mcp_server" && extensionKindLocation(detail.Loc) {
+			rejectedMCP = true
+		}
 		if len(detail.Loc) == 3 && detail.Loc[0] == "body" && detail.Loc[1] == "evidence" && detail.Loc[2] == "extension_errors" && detail.Type == "extra_forbidden" {
 			rejectedReasons = true
 		}
@@ -108,17 +136,34 @@ func postInventoryReport(client inventoryReportClient, report discoveryReportReq
 			rejectedSchema = true
 		}
 	}
-	if !rejectedSchema && rejectedReasons {
+	if !rejectedSchema && rejectedMCP {
+		compatible, omitted := projectReportExtensions(report, func(exts []inventoryExtension) []inventoryExtension {
+			return slices.DeleteFunc(exts, func(ext inventoryExtension) bool { return ext.Kind == "mcp_server" })
+		})
+		if omitted > 0 {
+			err := postInventoryReport(client, compatible, response)
+			if err == nil {
+				response.MCPServersOmitted = omitted
+			}
+			return err
+		}
+	}
+	if !rejectedSchema && rejectedReasons && len(report.Evidence.ExtensionErrors) > 0 {
 		evidence := *report.Evidence
 		evidence.ExtensionErrors = nil
 		report.Evidence = &evidence
-		return inventoryReportError(client.Post(discoveryReportPath, report, response))
+		return postInventoryReport(client, report, response)
 	}
 	if !rejectedSchema {
 		return err
 	}
 	if report.Evidence.SchemaVersion == 4 {
-		report = withoutExtensionDetails(report)
+		report, _ = projectReportExtensions(report, func(exts []inventoryExtension) []inventoryExtension {
+			for i := range exts {
+				exts[i].Details = nil
+			}
+			return exts
+		})
 		report.Evidence.SchemaVersion = 3
 		response.DetailsOmitted = true
 		return postInventoryReport(client, report, response)
@@ -147,6 +192,8 @@ func inventoryReportError(err error) error {
 	}
 	return err
 }
+
+const candidateMismatchReason = "Evidence application must match a reported candidate"
 
 const legacyInventoryNotice = "Server accepted legacy inventory only; extension identifiers, hashes and managed configuration were not reported."
 
@@ -201,27 +248,55 @@ func inventoryExtensionErrors(scan inventoryEnvelope) []string {
 	return codes
 }
 
-// withoutExtensionDetails copies both matched lists, retaining v3 metadata.
-func withoutExtensionDetails(report discoveryReportRequest) discoveryReportRequest {
+// extensionKindLocation recognizes only the two wire locations for extension kinds.
+func extensionKindLocation(loc []any) bool {
+	if len(loc) == 7 && loc[0] == "body" && loc[1] == "evidence" && loc[2] == "applications" {
+		loc = loc[3:]
+	} else if len(loc) == 6 && loc[0] == "body" && loc[1] == "candidates" {
+		loc = loc[2:]
+	} else {
+		return false
+	}
+	return loc[1] == "extensions" && loc[3] == "kind"
+}
+
+// Project both sides of the candidate/evidence contract for an older server.
+// An omitted kind makes that application's list insufficient to prove removals.
+func projectReportExtensions(report discoveryReportRequest, project func([]inventoryExtension) []inventoryExtension) (discoveryReportRequest, int) {
 	evidence := *report.Evidence
-	evidence.Applications = append([]inventoryReportApplication{}, evidence.Applications...)
-	report.Candidates = append([]discoveryReportCandidate{}, report.Candidates...)
-	strip := func(exts *[]inventoryExtension) *[]inventoryExtension {
-		if exts == nil {
-			return nil
+	evidence.Applications = slices.Clone(evidence.Applications)
+	report.Candidates = slices.Clone(report.Candidates)
+	apply := func(list **[]inventoryExtension) int {
+		if *list == nil {
+			return 0
 		}
-		result := append([]inventoryExtension{}, (*exts)...)
-		for i := range result {
-			result[i].Details = nil
-		}
-		return &result
+		original := **list
+		projected := project(append([]inventoryExtension{}, original...))
+		*list = &projected
+		return len(original) - len(projected)
 	}
 	for i := range evidence.Applications {
-		evidence.Applications[i].Extensions = strip(evidence.Applications[i].Extensions)
+		app := &evidence.Applications[i]
+		if apply(&app.Extensions) > 0 && app.Completeness == "complete" {
+			app.Completeness = "partial"
+		}
 	}
+	omitted := 0
 	for i := range report.Candidates {
-		report.Candidates[i].Extensions = strip(report.Candidates[i].Extensions)
+		omitted += apply(&report.Candidates[i].Extensions)
+	}
+	if omitted > 0 {
+		if evidence.Completeness == "complete" {
+			evidence.Completeness = "partial"
+		}
+		if evidence.ExtensionCompleteness != "failed" {
+			evidence.ExtensionCompleteness = "partial"
+		}
+		if evidence.ScopeCompleteness["user_config"] == "complete" {
+			evidence.ScopeCompleteness = maps.Clone(evidence.ScopeCompleteness)
+			evidence.ScopeCompleteness["user_config"] = "partial"
+		}
 	}
 	report.Evidence = &evidence
-	return report
+	return report, omitted
 }

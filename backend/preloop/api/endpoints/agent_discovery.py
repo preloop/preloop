@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import hmac
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, Optional
 from uuid import UUID
 
@@ -165,6 +166,17 @@ def record_discovery_report(
             )
         try:
             if payload.evidence.schema_version >= 3:
+                # Core owns v3+ observations, including machine-wide configuration
+                # and runner attribution. The legacy writer owns v1/v2.
+                now = datetime.now(UTC)
+                if payload.evidence.ended_at > now + timedelta(minutes=5):
+                    raise HTTPException(422, "Collection window is in the future")
+                if service is not None:
+                    # Preserve eager cleanup for legacy installations. The
+                    # discovery sweeper enforces retention for every account.
+                    crud_discovery_observation.purge_expired(
+                        db, account_id=account.id, now=now
+                    )
                 observation = crud_discovery_observation.record(
                     db,
                     account_id=account.id,
@@ -180,7 +192,7 @@ def record_discovery_report(
                     evidence=payload.evidence,
                     observation_id=observation.id,
                 )
-            if service is not None:
+            else:
                 service.record(
                     db,
                     account_id=account.id,

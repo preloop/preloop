@@ -842,6 +842,21 @@ func TestReportPassesOnTheCollectorsNoticesAndFailures(t *testing.T) {
 	}
 }
 
+func TestRunnerStartupFailureInOnboarding(t *testing.T) {
+	enabled := true
+	selection := defaultOnboardSelection()
+	selection.Runner = &enabled
+	fake := newFakeOnboardRun(t, threeAgents()[:1], selection, "", true)
+	fake.run.setupRunner = func() error { return errors.New("the runner service did not start") }
+	if err := fake.run.execute(); err != nil {
+		t.Fatal(err)
+	}
+	output := strings.Join(strings.Fields(fake.out.String()), " ")
+	if !strings.Contains(output, "runner not ready: the runner service did not start") {
+		t.Fatalf("missing startup failure in receipt: %s", output)
+	}
+}
+
 func TestReviewOffersMCPOnlyWithoutCredential(t *testing.T) {
 	agent := AgentConfig{Name: "Claude Code", ConfigPath: filepath.Join(t.TempDir(), "settings.json")}
 	fake := newFakeOnboardRun(t, []AgentConfig{agent}, defaultOnboardSelection(), "m\ny\n", false)

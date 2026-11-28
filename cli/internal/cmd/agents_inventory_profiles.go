@@ -31,6 +31,16 @@ type inventoryProfileResult struct {
 	Completeness string `json:"completeness"`
 	ErrorCode    string `json:"error_code,omitempty"`
 }
+
+// probedProfileResult describes a profile whose runtime probes ran.
+func probedProfileResult(ref, completeness string) inventoryProfileResult {
+	result := inventoryProfileResult{ProfileRef: ref, Completeness: completeness}
+	if completeness != "complete" {
+		result.ErrorCode = "probe_incomplete"
+	}
+	return result
+}
+
 type inventoryProfileDependencies struct {
 	Elevated func() bool
 	Profiles func() ([]inventoryProfile, bool, error)
@@ -172,13 +182,10 @@ func collectAllUsersInventory(deps inventoryProbeDependencies, profileDeps inven
 			scoped.ExtensionSalt = salt
 			scan := collectAgentInventory(scoped)
 			root.Close()
-			state.Completeness = scan.Completeness
-			if scan.Completeness != "complete" {
-				state.ErrorCode = "probe_incomplete"
-			}
+			state = probedProfileResult(ref, scan.Completeness)
 			for _, app := range scan.Apps {
 				if len(result.Apps) >= 100 {
-					state.Completeness, state.ErrorCode = "partial", "probe_incomplete"
+					state = probedProfileResult(ref, "partial")
 					result.Scope.ErrorCode = "app_limit"
 					break
 				}

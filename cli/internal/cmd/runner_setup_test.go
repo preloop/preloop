@@ -618,21 +618,20 @@ func TestPerformRunnerSetupStartFailureSkipsOnlineWait(t *testing.T) {
 	tty := true
 	var out bytes.Buffer
 	err := performRunnerSetup(runnerSetupRequest{
+		Env:       runnerSetupEnv{OnDemand: true},
 		Out:       &out,
 		In:        strings.NewReader("y\n\n"),
 		Policy:    &runnerPolicy{Requirement: "optional"},
 		TTY:       &tty,
 		Installed: func() bool { return false },
 	})
-	if err != nil {
-		t.Fatal(err)
+	if err == nil || !strings.Contains(err.Error(), "preloop runner fg") || !strings.Contains(err.Error(), "not running") {
+		t.Fatalf("expected foreground recovery and a failed setup, got %v", err)
 	}
 	if probes != 0 {
 		t.Fatalf("start failure still polled the runner %d times", probes)
 	}
-	if !strings.Contains(out.String(), "did not start") {
-		t.Fatalf("output %q", out.String())
-	}
+
 	if strings.Contains(out.String(), "has not reported online") {
 		t.Fatalf("printed the online timeout after a start failure: %q", out.String())
 	}
