@@ -1151,7 +1151,7 @@ kept as is.
 Records stored before these reasons existed are not rewritten. One that says
 `unsafe_text` from that time usually lost control characters.
 
-Text redaction uses ruleset `2026-11-19`. Every new document stores that
+Text redaction uses ruleset `2026-11-28`. Every new document stores that
 version in `redaction_ruleset`. An observation that matched a rule also stores
 `redactions`, a list of `{"rule": "<category>", "count": <n>}`. The category is
 a fixed name. It is not the matched text and not a hash of it. Documents
@@ -1194,6 +1194,19 @@ names are `private_key`, `authorization_bearer`, `bearer_token`,
 `gitlab_pat`, `jwt`, `aws_access_key_id`, `slack_token`, `preloop_key`,
 `preloop_run_token`, and `sensitive_field` (a structured key such as
 `password` whose whole value is replaced).
+
+`Authorization: Bearer` masks whatever value follows it. A bare `bearer`
+followed by an ordinary word is prose and is left as written:
+`bearer authentication`, `Bearer Token`, `bearer token-based`. A value after
+a bare `bearer` is masked when it has a digit, an inner capital, or one of
+`. _ ~ + / =`. Ruleset `2026-11-19` masked any word of eight or more letters
+there; records written under it are not rewritten.
+
+A diff is text like any other. A credential-shaped literal on a deleted
+(`-`) line is masked the same as on an added line, because a value removed
+from the tree is still in its history and may not have been rotated. A
+review whose diff removes such a fixture therefore has incomplete evidence
+for that observation, with the rule category and count on the record.
 
 On a gateway tool observation, a real match still sets `redacted`,
 `storage_redacted`, and `capture_complete: false`. Ordinary source that
