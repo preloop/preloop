@@ -171,7 +171,7 @@ async def collect(
         ``(report, ledger)``.
     """
     ledger = ledger_mod.load(ledger_value, now)
-    refused = ledger_mod.apply_updates(ledger, ledger_updates)
+    refused = ledger_mod.apply_updates(ledger, ledger_updates, now)
     ledger_mod.record_pull_requests(ledger, published_pull_requests)
     since = now - timedelta(hours=options.window_hours)
     repositories: list[dict[str, Any]] = []
@@ -391,3 +391,12 @@ async def refresh_pull_requests(
         except (BudgetExhaustedError, ProviderError):
             continue
         pr.update(state)
+        if pr.get("state") == "merged":
+            # A merged change closes the signatures it said it fixes; one
+            # that fails again later becomes "regressed".
+            for signature_id in pr.get("signatures") or []:
+                entry = ledger["signatures"].get(signature_id)
+                if entry is not None and entry.get("status") in ("open", "regressed"):
+                    entry["status"] = "fixed"
+                    entry["status_at"] = pr.get("merged_at")
+                    entry["linked"] = (entry.get("linked") or [])[-4:] + [pr["url"]]

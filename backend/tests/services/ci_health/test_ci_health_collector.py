@@ -229,6 +229,8 @@ async def test_precheck_focus_reads_matched_runs_first(fake_ci: FakeCi) -> None:
 async def test_pull_requests_and_report_only_window(fake_ci: FakeCi) -> None:
     fake_ci.pulls["7"] = {"state": "closed", "merged_at": "2026-01-01T11:00:00Z"}
     old = ledger_mod.empty(NOW - timedelta(days=20))
+    claimed_id = "0123456789ab"
+    old["signatures"][claimed_id] = {"test": "t", "status": "open", "count": 4}
     report, ledger = await _collect(
         fake_ci,
         ledger=old,
@@ -238,12 +240,18 @@ async def test_pull_requests_and_report_only_window(fake_ci: FakeCi) -> None:
                 "execution_id": "e1",
                 "opened_at": "2026-01-01T09:30:00Z",
                 "estimated_minutes_saved_per_week": 45,
+                "signatures": [claimed_id],
             },
             {"url": "https://github.com/other-org/lib/pull/3", "execution_id": "e2"},
         ],
     )
     prs = {pr["url"]: pr for pr in ledger["pull_requests"]}
     assert prs["https://github.com/example-org/app/pull/7"]["state"] == "merged"
+    # The merged change closes the signature it claimed.
+    claimed = ledger["signatures"][claimed_id]
+    assert claimed["status"] == "fixed"
+    assert claimed["status_at"] == "2026-01-01T11:00:00Z"
+    assert claimed["linked"][-1] == "https://github.com/example-org/app/pull/7"
     # Not a scanned repository: never read with another repository's token.
     assert prs["https://github.com/other-org/lib/pull/3"]["state"] == "open"
     assert report["mode"] == {

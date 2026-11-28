@@ -20414,6 +20414,57 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/flows/{flow_id}/ci-health:
+    get:
+      tags:
+      - Flows
+      summary: Get Flow Ci Health
+      description: 'Trend, top flakes and the value summary of one flow.
+
+
+        404 when the flow has no CI health ledger yet (it never ran the
+
+        collector), so the console shows no card rather than an empty one.'
+      operationId: get_flow_ci_health_api_v1_flows__flow_id__ci_health_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      - name: days
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 30
+          minimum: 1
+          default: 7
+          title: Days
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CiHealthView'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/flows:
     post:
       tags:
@@ -38542,6 +38593,70 @@ components:
         flow whose administrator-set allowlist admits the project. A grant never
 
         names more than one project.'
+    CiHealthView:
+      properties:
+        generated_at:
+          type: string
+          title: Generated At
+        days:
+          type: integer
+          title: Days
+        first_run_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: First Run At
+        last_run_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Run At
+        ledger:
+          additionalProperties: true
+          type: object
+          title: Ledger
+        repositories:
+          additionalProperties: true
+          type: object
+          title: Repositories
+          description: 'Per repository: latest point, the point `days` ago, and a
+            series of success rate, queue p95, slowest gate p95, runner minutes and
+            rerun rate.'
+        top_flakes:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Top Flakes
+        week:
+          additionalProperties: true
+          type: object
+          title: Week
+          description: 'Value summary for the last `days`: runs, tokens, estimated
+            cost, pull requests opened and merged, failures fixed, claimed runner
+            minutes saved per week, cost per merged pull request.'
+        prior_week:
+          additionalProperties: true
+          type: object
+          title: Prior Week
+        pull_requests:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Pull Requests
+      type: object
+      required:
+      - generated_at
+      - days
+      - ledger
+      - repositories
+      - top_flakes
+      - week
+      - prior_week
+      - pull_requests
+      title: CiHealthView
+      description: '``GET /flows/{flow_id}/ci-health``: the console CI health card.'
     CiResultExportCreate:
       properties:
         pr_number:

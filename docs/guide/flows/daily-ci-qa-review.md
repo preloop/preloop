@@ -3,75 +3,149 @@
 Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
 
 The **Daily CI and QA review** preset
-(`backend/presets/023-daily-ci-qa-review.yaml`) looks at one repository's
-last day of CI every morning, and then does the work: it fixes the most
-valuable CI or test problem it found in one focused pull request, with
-tests and measured before/after numbers, and writes a short daily report.
+(`backend/presets/023-daily-ci-qa-review.yaml`) reviews your repositories'
+CI (GitHub Actions or GitLab CI) on a schedule. It keeps a ledger of the
+failures it has seen. Once it has a baseline, it fixes the most valuable
+CI or test problem in one focused pull request, with tests and measured
+before/after numbers, but only when the fix clears a value bar.
 
 ## What a run does
 
-1. **Gathers inputs**, read-only and one GitHub API request at a time:
-   workflow runs from the last `ci_window_hours` (default 24) with their
-   jobs, so it can compute durations, queue waits, failures and reruns;
-   flake signatures from failed step names and at most one annotations
-   fetch per run (no full log downloads); the coverage report; open CI,
-   test, Playwright and performance issues and pull requests, so it does
-   not duplicate work in flight; and the previous run's result for the
-   trend. It stops fetching when `X-RateLimit-Remaining` drops below 200
-   and marks the window partial.
-2. **Assesses**: success and rerun rates, p50/p95 queue wait and duration
-   per workflow and job, runner minutes, shard imbalance, top flake
-   signatures and coverage per package, compared with the previous run.
-   Candidates are ranked by time or risk removed per unit of effort.
-3. **Changes one thing, measured**: a flaky or order-dependent test fixed
-   at its cause, a CI time or runner-usage cut, a shard rebalance, new
-   tests where risk is high, a new or repaired Playwright console journey,
-   or a local performance test with a baseline. Every change carries
-   tests and the same before/after measurement.
-4. **Reports**: `/workspace/evidence/ci-qa-report.md` (one page: metrics
-   with today's and the previous value, what changed, what was left and
-   why) and `/workspace/result.json` with `"status": "success" | "failure"`,
-   the metrics, the change and the list of what was left. A day with
-   nothing worth changing is still a success; failure means the review
-   itself could not be done.
+1. **Collects, in one tool call.** The agent calls
+   [`ci_health_report`](ci-health.md), which reads CI on the server with
+   the tracker's stored credential and returns one compact report. The
+   report covers, per workflow and job:
+
+   - success and rerun rates
+   - queue and duration p50/p95, and runner minutes
+   - the critical-path gate
+   - shard imbalance and flaky jobs
+   - the failed jobs with their failure signatures (pytest, go test,
+     vitest, jest, JUnit) and failure lines
+
+   It also returns the flow's failure ledger and the previous run's
+   headline numbers. The agent never pages the CI API and never holds a
+   CI token.
+2. **Stops early when nothing changed.** If no run finished since the
+   previous run and no signature regressed, the run writes a three-line
+   report and ends without reading the repository or running tests.
+3. **Assesses.** The agent estimates the weekly value of each candidate
+   from the report: developer minutes and runner minutes saved by fixing
+   a flaky or failing signature, shortening the critical-path gate or
+   rebalancing shards. It also considers coverage, Playwright or
+   performance tests where risk is high. It drops anything an open issue
+   or pull request already covers.
+4. **Decides.** It changes nothing in report-only mode, when the flow
+   already has `max_open_pull_requests` open pull requests, or when no
+   candidate clears the value bar. Otherwise it picks the single best
+   candidate.
+5. **Changes one thing, measured**, with tests, the same before/after
+   measurement and the repository's pre-commit hooks.
+6. **Updates the ledger** (links to covering issues, "ignored" with a
+   reason). A signature the change fixes is listed in
+   `change.signatures`. The flow marks it fixed when the pull request
+   merges, and "regressed" if it fails again.
+7. **Reports**: `/workspace/evidence/ci-qa-report.md` (one page) and
+   `/workspace/result.json`. The result carries the metrics, the ranked
+   candidates with their estimates, the change with its estimated weekly
+   saving, and the pull request title and body.
+
+## Knobs
+
+All knobs live in the schedule payload, which reaches the prompt through
+`{{trigger_event.payload}}`.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `ci_repositories` | flow's repositories | Synced repository paths (`owner/name`, `group/sub/name`), GitHub or GitLab. Repositories other than the flow's own are read, never changed. |
+| `ci_window_hours` | `24` | How far back to read CI runs. |
+| `critical_path_jobs` | none | Globs of the jobs that gate a merge (`["test*", "lint"]`). Without them, a run's gate is whichever job finished last. |
+| `protected_branches` | default branch | Their failures are read first and weigh more. |
+| `report_only` | `auto` | `auto`: report only for `report_only_days` after the first run, then changes are allowed. `on` / `off` force it. |
+| `report_only_days` | `14` | Length of the report-only period. |
+| `value_threshold_dev_minutes_per_week` | `60` | A change must save at least this much developer time per week... |
+| `value_threshold_runner_minutes_per_week` | `60` | ...or this many runner minutes per week. |
+| `max_open_pull_requests` | `2` | Open pull requests from this flow at which it stops opening new ones. |
+| `focus` | none | Free-text hint, for example `flaky e2e` or `shard balance`. |
+
+The per-run budget is `agent_config.limits.max_usd` (10 USD), enforced by
+the gateway, and the wall-clock cap is `timeout_seconds` (90 minutes).
 
 ## Guardrails
 
 - The agent is read-only towards every remote: no pushes, no pull request
-  edits, no comments, no CI reruns. The platform publishes at most one
-  pull request per run, on a new branch, after the agent exits, so a run
-  never pushes to an existing pull request, approved or not. The pull
-  request body is the `pull_request.body` the agent writes in
-  `result.json`, with the before/after numbers and the tests it ran.
+  edits, no comments, no CI reruns, and no direct CI API calls. The
+  platform publishes at most one pull request per run, on a new branch,
+  after the agent exits, so a run never pushes to an existing pull
+  request, approved or not. The pull request body is the
+  `pull_request.body` the agent writes in `result.json`, with the
+  before/after numbers, the estimated saving and the tests it ran.
 - No skip, xfail, quarantine, retry wrapper or raised timeout to make a
   test green, and no weakening of CI gates.
 - Performance tests run only against services started in the run's own
   workspace with mocked upstreams; nothing loads staging or production.
-- Each run is capped by `agent_config.limits.max_usd` (10 USD by default,
-  enforced by the gateway) and `timeout_seconds` (90 minutes).
 
-## Payload
+## Results in the console
 
-| Key | Default | Meaning |
-| --- | --- | --- |
-| `previous_result_execution_id` | `last` | Baseline for the trend; see [Baseline from a previous run](repo-review-presets.md#baseline-from-a-previous-run). |
-| `ci_window_hours` | `24` | How far back to read CI runs. |
-| `ci_repositories` | none | Extra `owner/name` repositories whose CI is read for comparison, never written. |
-| `focus` | none | Free-text hint, for example `flaky e2e` or `shard balance`. |
+A flow that has run the collector gets a **CI health** card on its page:
+
+- per repository: success rate, queue p95 and the slowest gate, each with
+  the change over the last 7 days, runner minutes, and a success-rate
+  trend line;
+- the failures worth a look: regressed first, then flaky, then by count,
+  with their last sighting and the issue or pull request linked to them;
+- **value over the last 7 days**:
+  - runs (and how many a pre-check skipped)
+  - pull requests opened and merged
+  - failures fixed
+  - the runner minutes per week the merged changes claim to save (an
+    estimate from each change's own measurement)
+  - tokens and estimated cost, and cost per merged pull request
+
+The same data is `GET /api/v1/flows/{flow_id}/ci-health?days=7`.
+
+## Running it often, cheaply
+
+For a busy repository, an interval schedule (every 2 hours, say) gives
+faster feedback. A tick with no new CI result costs a handful of provider
+requests and one short model turn, because the collector caches completed
+runs and the run stops early. With the flow pre-check stage (#2541), a tick
+with nothing new does not start a run at all. For example, run only when
+the default branch is red or a CI run failed since the last run:
+
+<!-- example: fragment -->
+```yaml
+precheck:
+  version: 1
+  applies_to: [schedule]
+  run_if: any
+  max_skip_hours: 24
+  checks:
+    - id: main_red
+      type: default_branch_ci
+      state: failing
+    - id: new_failures
+      type: failed_ci_runs
+      since: last_run
+```
+
+The runs the pre-check matched are read first by the collector. With
+`max_skip_hours: 24`, the flow still reviews once a day even when nothing
+failed.
 
 ## Setting it up
 
 Clone the preset, add the repository to the flow's git clone
-configuration, and set the schedule's timezone to the team's zone (the
-schedule is evaluated in that zone, so 06:00 stays 06:00 across DST). The
-schedule payload reaches the agent through `{{trigger_event.payload}}` in
-the prompt; keep that line if you customize the prompt.
+configuration (and any other repositories to `ci_repositories`), and set
+the schedule's timezone to the team's zone (the schedule is evaluated in
+that zone, so 06:00 stays 06:00 across DST). Set `critical_path_jobs` to
+the jobs your branch protection requires. Keep the
+`{{trigger_event.payload}}` line if you customize the prompt.
 
-The agent reads CI with the repository's tracker token, which the run
-exports as `PRELOOP_GIT_TOKEN_1` (one variable per configured repository).
-The prompt restricts it to GET requests. To read another repository's CI
-(`ci_repositories`), the tracker token must have read access to Actions
-there; without any usable token the run writes a failure report saying so.
+Every repository must be synced in the account, on a GitHub or GitLab
+tracker whose credential can read CI: Actions read on GitHub, or
+`read_api` on GitLab. The collector reports a repository it cannot read
+under `unavailable`, and the run says so.
 
 The preset uses legacy publication: the platform pushes the agent's commit
 to a new branch and opens the pull request. Isolated publication also
@@ -123,7 +197,8 @@ stored personal access token, which may be long-lived, or an App
 installation token) with every API scope that credential has, so an agent
 that reads it can call the provider's API as that credential. Enable it
 only on profiles you trust with that access, and connect the repository
-with a dedicated minimal-scope token (contents read/write, and actions
-read if the flow reads CI) when you do.
+with a dedicated minimal-scope token (contents read/write) when you do.
+The collector reads CI with the stored tracker credential on the server, so
+the agent itself needs no CI access.
 A run whose agent writes `result.json` with `"status": "failure"` ends
 FAILED with the agent's summary as the error.

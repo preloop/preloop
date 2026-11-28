@@ -168,3 +168,17 @@ the URLs of the runs it matched (for example a "new failed runs" check)
 are read first. They are listed in `precheck_focus`. The pre-check decides
 *whether* a run is worth starting, using a few cheap requests. The collector
 does the heavier reading inside the run.
+
+## In the console
+
+The flow page shows a **CI health** card for any flow with a ledger:
+
+- per repository: success rate, queue p95 and the slowest gate, with the
+  change over 7 days and a trend line;
+- the failures worth a look;
+- the value the flow delivered over the last 7 days.
+
+The data is `GET /api/v1/flows/{flow_id}/ci-health?days=N` (`view_flows`).
+It is built from the ledger and the flow's executions (tokens, estimated
+cost, published pull requests), and calls no provider. See
+[Daily CI and QA review](daily-ci-qa-review.md#results-in-the-console).

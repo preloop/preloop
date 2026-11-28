@@ -27,7 +27,7 @@ repository's cursor, so overlapping windows never double-count.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, Iterable, Mapping, Optional
 
 LEDGER_KEY = "preloop.ci_health"
@@ -152,6 +152,7 @@ def record_failure(
     entry["jobs"] = sorted(set(entry.get("jobs") or []) | {job})[:10]
     if entry.get("status") in ("fixed", "quiet"):
         entry["status"] = "regressed" if entry["status"] == "fixed" else "open"
+        entry["status_at"] = stamp
     return entry
 
 
@@ -187,6 +188,7 @@ def age(ledger: dict[str, Any], now: datetime) -> None:
             and (now - last > QUIET_AFTER)
         ):
             entry["status"] = "quiet"
+            entry["status_at"] = now.isoformat()
     if len(entries) > MAX_SIGNATURES:
         order = sorted(
             entries,
@@ -200,13 +202,16 @@ def age(ledger: dict[str, Any], now: datetime) -> None:
 
 
 def apply_updates(
-    ledger: dict[str, Any], updates: Iterable[Mapping[str, Any]]
+    ledger: dict[str, Any],
+    updates: Iterable[Mapping[str, Any]],
+    now: Optional[datetime] = None,
 ) -> list[dict[str, str]]:
     """Apply an agent's status, link and note changes.
 
     Args:
         ledger: Ledger to update.
         updates: ``{"signature_id", "status"?, "linked"?, "note"?}`` items.
+        now: When the change was made; stored as ``status_at``.
 
     Returns:
         Refusals as ``{"signature_id", "reason"}``.
@@ -223,6 +228,8 @@ def apply_updates(
             if status not in SETTABLE_STATUSES:
                 refused.append({"signature_id": key, "reason": "invalid status"})
                 continue
+            if entry.get("status") != status:
+                entry["status_at"] = (now or datetime.now(UTC)).isoformat()
             entry["status"] = status
         linked = update.get("linked")
         if isinstance(linked, str) and linked.startswith(("https://", "http://")):

@@ -86,3 +86,26 @@ CI_HEALTH_REPORT_TOOL: dict[str, Any] = {
     "required_tracker_types": [],
     "schema": _schema(),
 }
+
+
+class CiHealthView(BaseModel):
+    """``GET /flows/{flow_id}/ci-health``: the console CI health card."""
+
+    generated_at: str
+    days: int
+    first_run_at: str | None = None
+    last_run_at: str | None = None
+    ledger: dict[str, Any]
+    repositories: dict[str, Any] = Field(
+        description="Per repository: latest point, the point `days` ago, and "
+        "a series of success rate, queue p95, slowest gate p95, runner "
+        "minutes and rerun rate."
+    )
+    top_flakes: list[dict[str, Any]]
+    week: dict[str, Any] = Field(
+        description="Value summary for the last `days`: runs, tokens, "
+        "estimated cost, pull requests opened and merged, failures fixed, "
+        "claimed runner minutes saved per week, cost per merged pull request."
+    )
+    prior_week: dict[str, Any]
+    pull_requests: list[dict[str, Any]]
