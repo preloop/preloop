@@ -27,9 +27,19 @@ describe('Approval readiness', () => {
       .stub(window, 'fetch')
       .resolves(new Response(JSON.stringify(route)));
     const el = await fixture<ApprovalReadiness>(
-      html`<approval-readiness .agentId=${'agent-1'}></approval-readiness>`
+      html`<approval-readiness
+        compact
+        .agentId=${'agent-1'}
+      ></approval-readiness>`
     );
     await waitUntil(() => !!el.shadowRoot?.querySelector('section'));
+    const disclosure = el.shadowRoot!.querySelector('details')!;
+    expect(disclosure.open).to.equal(false);
+    expect(disclosure.querySelector('summary')!.textContent).to.contain(
+      'needs attention'
+    );
+    disclosure.querySelector('summary')!.click();
+    expect(disclosure.open).to.equal(true);
     expect(el.shadowRoot!.textContent).to.include("Only the agent's owner");
     expect(el.shadowRoot!.textContent!.replace(/\s+/g, ' ')).to.include(
       'Who can decide in the console: Jane Doe'

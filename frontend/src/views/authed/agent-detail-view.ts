@@ -4154,6 +4154,7 @@ export class AgentDetailView extends LitElement {
           this.agent.lifecycle_state === 'active'
             ? html`
                 <approval-readiness
+                  compact
                   .agentId=${this.agentId}
                 ></approval-readiness>
               `

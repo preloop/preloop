@@ -13,6 +13,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException, status
+from fastapi.testclient import TestClient
 
 from preloop.api.endpoints import exports
 from preloop.cra.evidence_pack import canonical_manifest_json
@@ -133,6 +134,22 @@ class TestAssetRegisterEndpoint:
 
 
 class TestIncidentCandidatesEndpoint:
+    @pytest.mark.parametrize("url", [ASSET_URL, INCIDENT_URL])
+    def test_console_csv_uses_compact_headers(
+        self, client: TestClient, url: str
+    ) -> None:
+        """Serve the same CSV and digest within a proxy's response header budget."""
+        full = client.get(url)
+        compact = client.get(url, params={"include_manifest": "false"})
+        assert compact.status_code == 200
+        assert compact.content == full.content
+        assert (
+            compact.headers["x-preloop-export-sha256"]
+            == hashlib.sha256(compact.content).hexdigest()
+        )
+        assert "x-preloop-export-manifest" not in compact.headers
+        assert "x-preloop-export-manifest" in full.headers
+
     def test_period_can_be_given_as_plain_dates(self, client, estate):
         today = datetime.now(UTC).date()
         response = client.get(

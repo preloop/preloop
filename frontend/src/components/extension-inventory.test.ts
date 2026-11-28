@@ -1,5 +1,6 @@
 import { expect, fixture, html, waitUntil } from '@open-wc/testing';
 import './extension-inventory';
+import { fleetExtensionFindings } from '../test-helpers/fleet-extension-findings';
 import {
   EXTENSION_REASONS,
   reportStale,
@@ -79,6 +80,101 @@ async function mount(
 }
 
 describe('extension inventory', () => {
+  it('opens the exact profile and project from a finding beyond the first page', async () => {
+    const row = { ...installed, content_hash: 'sha256:' + 'd'.repeat(64) };
+    const finding = {
+      ...fleetExtensionFindings[0],
+      evidence: {
+        extension_id: row.extension_id,
+        kind: row.extension_kind,
+        agent_kind: row.agent_kind,
+        profile_ref: row.profile_ref,
+        scope: row.scope,
+        project_ref_hash: row.project_ref_hash,
+      },
+    };
+    const loads: ExtensionFilters[] = [];
+    const el = await fixture<ExtensionInventory>(
+      html`<extension-inventory
+        .fingerprint=${row.fingerprint}
+        .finding=${finding}
+        .accessLoader=${async () => ({ view: true, manage: true })}
+        .pinLoader=${async () => []}
+        .loader=${async (filters: ExtensionFilters) => {
+          loads.push({ ...filters });
+          return {
+            ...devicePage(),
+            items: [filters.cursor ? row : { ...row, profile_ref: 'other' }],
+            next_cursor: filters.cursor ? null : 'next',
+          };
+        }}
+      ></extension-inventory>`
+    );
+    await waitUntil(() => !!el.shadowRoot?.querySelector('.extension-details'));
+    const root = el.shadowRoot!;
+    expect(loads.map((filter) => filter.cursor)).to.deep.equal([
+      undefined,
+      'next',
+    ]);
+    expect(loads[0].extension_id).to.equal(row.extension_id);
+    expect(root.querySelectorAll('.identity')).to.have.length(1);
+    expect(
+      root.querySelector('.toggle-details')?.getAttribute('aria-expanded')
+    ).to.equal('true');
+    expect(root.querySelector('.read-content')).to.exist;
+    expect(root.querySelector('.approve-exact')).to.exist;
+    el.style.width = '900px';
+    const table = root.querySelector<HTMLElement>('.table-scroll')!;
+    expect(table.scrollWidth).to.be.at.most(table.clientWidth + 1);
+    const cell = root
+      .querySelector('[data-label="Approval"]')!
+      .getBoundingClientRect();
+    const button = root
+      .querySelector('.approve-exact')!
+      .getBoundingClientRect();
+    expect(button.right).to.be.at.most(cell.right);
+    expect(button.left).to.be.at.least(cell.left);
+  });
+
+  it('confirms the selected names once and keeps cancelled decisions untouched', async () => {
+    const page = aggregatePage();
+    page.items.push({ ...page.items[0], extension_id: 'second' });
+    const element = await mount({ manage: true, page });
+    const root = element.shadowRoot!;
+    const all = root.querySelector<HTMLInputElement>('.bulk input')!;
+    const calls: string[][] = [];
+    element.bulkUpdater = async (rows, state) => {
+      calls.push([state, ...rows.map((row) => row.extension_id)]);
+    };
+    let confirmed = false;
+    element.confirmBulk = async (options) => {
+      expect(options.message).to.contain(
+        confirmed ? '1 extension' : '2 extensions'
+      );
+      expect(options.detail).to.contain('do not set content pins');
+      return confirmed;
+    };
+    all.click();
+    await element.updateComplete;
+    root.querySelector<HTMLElement>('.bulk sl-button')!.click();
+    await element.updateComplete;
+    await waitUntil(
+      () => !root.querySelector<HTMLInputElement>('.selection input')!.disabled
+    );
+    expect(calls).to.be.empty;
+    root
+      .querySelector<HTMLInputElement>('input[aria-label="Select second"]')!
+      .click();
+    await element.updateComplete;
+    expect(all.indeterminate).to.equal(true);
+    confirmed = true;
+    root.querySelectorAll<HTMLElement>('.bulk sl-button')[1].click();
+    await waitUntil(
+      () => calls.length === 1 && !root.querySelector('.bulk sl-button')
+    );
+    expect(calls).to.deep.equal([['unapproved', 'reviewer@community']]);
+  });
+
   it('does not invent reported failures when device reasons are absent', async () => {
     const element = await mount({
       page: {
@@ -276,29 +372,27 @@ describe('extension inventory', () => {
 
   // protects=device facts and hash-only provenance; fails_when=columns or scope
   // are missing; no_claim=synthetic HTTP DTO, no agent execution evidence.
-  it('renders device columns and hash prefixes without an approval editor for viewers', async () => {
+  it('keeps decision controls visible and moves hash provenance into Details without an approval editor for viewers', async () => {
     const element = await mount({ device: true });
     const root = element.shadowRoot!;
     expect(
       [...root.querySelectorAll('th')].map((th) =>
         th.firstChild?.textContent?.trim()
       )
-    ).to.deep.equal([
-      'Agent',
-      'Kind',
-      'Extension',
-      'Version',
-      'Source',
-      'Scope',
-      'Enabled',
-      'First seen',
-      'Approval',
-    ]);
+    ).to.deep.equal(['Agent', 'Kind', 'Extension', 'First seen', 'Approval']);
     expect(root.querySelector('tbody')?.textContent).to.contain(
       'reviewer@community'
     );
-    expect(root.querySelector('tbody')?.textContent).to.contain(
-      'sha256:bbbbbbbbbbbb…'
+    expect(root.querySelector('tbody')?.textContent).to.contain('Claude Code');
+    expect(root.querySelector('tbody')?.textContent).not.to.contain('sha256:');
+    element.pinLoader = async () => [];
+    root.querySelector<HTMLElement>('.toggle-details')!.click();
+    await element.updateComplete;
+    expect(root.querySelector('.extension-details')?.textContent).to.contain(
+      installed.source_ref_hash!
+    );
+    expect(root.querySelector('.extension-details')?.textContent).to.contain(
+      installed.project_ref_hash!
     );
     expect(root.querySelector('tbody')?.textContent).to.contain('Project');
     expect(root.querySelector('tbody sl-select')).to.equal(null);

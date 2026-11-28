@@ -3,6 +3,10 @@ import { fetchWithAuth } from '../api';
 import type { DeliveryReportAttention } from '../delivery-reports-api';
 import {
   fleetAccess,
+  getDeviceFleet,
+  type DeviceFleetDevice,
+  extensionFindingHref,
+  extensionFindingLocation,
   fleetFindingTitle,
   type FleetFinding,
 } from '../device-fleet-api';
@@ -25,6 +29,7 @@ export interface LoadedExtensionAttention {
 }
 
 export interface PreparedExtensionAttentionItem extends ExtensionAttentionItem {
+  fleetFinding?: FleetFinding;
   dismissalId: string;
   fingerprint: string;
 }
@@ -106,12 +111,40 @@ async function nameFleetFindings(
         )
         .map((finding: FleetFinding) => [finding.id, finding])
     );
+    // Earlier evaluations retained the device key but did not snapshot people.
+    // Join the authorized fleet once, even if many findings share a machine.
+    const devices = new Map<string, DeviceFleetDevice>();
+    if (
+      items.some((item) => {
+        const finding = item.source === source && findings.get(item.id);
+        return (
+          finding &&
+          finding.device_key &&
+          !Array.isArray(finding.evidence.device_people)
+        );
+      })
+    ) {
+      const fleet = await getDeviceFleet().catch(() => null);
+      for (const device of fleet?.items || [])
+        devices.set(device.device_key, device);
+    }
     return items.map((item) => {
       const finding =
         item.source === source ? findings.get(item.id) : undefined;
       // Keep the provider's incident fingerprint: a failed evidence read must
       // not revive a dismissed item or make its dismissal stop matching.
-      return finding ? { ...item, title: fleetFindingTitle(finding) } : item;
+      return finding
+        ? {
+            ...item,
+            title: fleetFindingTitle(finding),
+            detail: extensionFindingLocation(
+              finding,
+              devices.get(finding.device_key || '')
+            ),
+            href: extensionFindingHref(finding),
+            fleetFinding: finding,
+          }
+        : item;
     });
   } catch {
     return items;

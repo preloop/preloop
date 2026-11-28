@@ -338,6 +338,45 @@ def test_http_mcp_inventory_approval_and_pin_round_trip(client: TestClient) -> N
     assert exported.json()["entries"][0]["content_hashes"] == [metadata["content_hash"]]
 
 
+def test_bulk_decisions_preserve_pins_constraints_and_notes(client: TestClient) -> None:
+    """One batch changes only name decisions, including when retried."""
+    pin = "sha256:" + "b" * 64
+    existing = {
+        "approval_state": "approved",
+        "version_constraint": "1.*",
+        "note": "Keep this version range",
+        "pin": {"content_hash": pin},
+    }
+    assert client.put(APPROVAL, json=existing).status_code == 200
+    key = {
+        "agent_kind": "claude_code",
+        "extension_kind": "plugin",
+        "extension_id": "reviewer@community",
+    }
+    body = {
+        "approval_state": "unapproved",
+        "extensions": [key, key, {**key, "extension_id": "another"}],
+    }
+    url = "/api/v1/agents/extension-approvals/bulk"
+    for state in ("unapproved", "approved", "approved"):
+        body["approval_state"] = state
+        result = client.post(url, json=body)
+        assert result.status_code == 200 and result.json() == {"count": 2}
+        row = client.get(APPROVAL).json()
+        assert row["approval_state"] == state
+        assert row["note"] == existing["note"]
+        assert row["version_constraint"] == "1.*"
+        assert [item["content_hash"] for item in row["pins"]] == [pin]
+        assert (
+            client.get(APPROVAL.replace("reviewer@community", "another")).json()["pins"]
+            == []
+        )
+    body["approval_state"] = "unapproved"
+    body["extensions"].append({**key, "extension_id": "invalid/path"})
+    assert client.post(url, json=body).status_code == 422
+    assert client.get(APPROVAL).json()["approval_state"] == "approved"
+
+
 def test_http_permissions(
     client: TestClient, test_viewer_user: models.User, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -355,6 +394,22 @@ def test_http_permissions(
     )
     client.app.dependency_overrides[get_current_active_user] = lambda: test_viewer_user
     assert client.get(EXTENSIONS).status_code == 200
+    assert (
+        client.post(
+            "/api/v1/agents/extension-approvals/bulk",
+            json={
+                "approval_state": "approved",
+                "extensions": [
+                    {
+                        "agent_kind": "claude_code",
+                        "extension_kind": "skill",
+                        "extension_id": "example",
+                    }
+                ],
+            },
+        ).status_code
+        == 403
+    )
     assert client.get(EXTENSIONS + "/count").status_code == 200
     monkeypatch.setattr(
         "preloop.utils.permissions.user_holds_permission",

@@ -2616,6 +2616,46 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/agents/extension-approvals/bulk:
+    post:
+      tags:
+      - Agent discovery
+      summary: Bulk Set Approvals
+      description: Apply account-wide name decisions and evaluate findings once after
+        commit.
+      operationId: bulk_set_approvals_api_v1_agents_extension_approvals_bulk_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BulkExtensionApproval'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  type: integer
+                type: object
+                title: Response Bulk Set Approvals Api V1 Agents Extension Approvals
+                  Bulk Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/agents/extension-approvals/{agent_kind}/{extension_kind}/{extension_id}/pins:
     post:
       tags:
@@ -9958,6 +9998,15 @@ paths:
           default: csv
           title: Format
         description: csv or json
+      - name: include_manifest
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: Include the full base64 manifest in CSV response headers
+          default: true
+          title: Include Manifest
+        description: Include the full base64 manifest in CSV response headers
       responses:
         '200':
           description: Successful Response
@@ -10030,6 +10079,15 @@ paths:
           default: csv
           title: Format
         description: csv or json
+      - name: include_manifest
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: Include the full base64 manifest in CSV response headers
+          default: true
+          title: Include Manifest
+        description: Include the full base64 manifest in CSV response headers
       responses:
         '200':
           description: Successful Response
@@ -36886,6 +36944,28 @@ components:
       - results
       title: BulkDeleteUsersResponse
       description: Per-user results of a bulk deletion request.
+    BulkExtensionApproval:
+      properties:
+        extensions:
+          items:
+            $ref: '#/components/schemas/ExtensionIdentity'
+          type: array
+          maxItems: 500
+          minItems: 1
+          title: Extensions
+        approval_state:
+          type: string
+          enum:
+          - approved
+          - unapproved
+          title: Approval State
+      additionalProperties: false
+      type: object
+      required:
+      - extensions
+      - approval_state
+      title: BulkExtensionApproval
+      description: A bounded state-only decision over explicit identities.
     BundleManifest:
       properties:
         schema:
@@ -43036,6 +43116,33 @@ components:
       - commands
       title: ExtensionHookMatcher
       description: One matcher and the commands bound to it.
+    ExtensionIdentity:
+      properties:
+        agent_kind:
+          type: string
+          pattern: ^[a-z0-9][a-z0-9_\-]{0,63}$
+          title: Agent Kind
+        extension_kind:
+          type: string
+          enum:
+          - plugin
+          - skill
+          - hook
+          - command
+          - mcp_server
+          title: Extension Kind
+        extension_id:
+          type: string
+          pattern: ^[^\x00-\x1f\x7f/\\]{1,128}$
+          title: Extension Id
+      additionalProperties: false
+      type: object
+      required:
+      - agent_kind
+      - extension_kind
+      - extension_id
+      title: ExtensionIdentity
+      description: Natural key for one account-wide extension decision.
     ExtensionMetadata:
       properties:
         kind:

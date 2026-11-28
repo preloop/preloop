@@ -115,3 +115,19 @@ export function getAgentKindPresentation(
 ): AgentKindPresentation | undefined {
   return AGENT_KIND_PRESENTATION[normalizeAgentKind(kind)];
 }
+
+/** "cursor_cli" reads as "Cursor CLI"; known kinds use their product name. */
+export function agentKindLabel(kind: string): string {
+  return (
+    getAgentKindPresentation(kind)?.label ??
+    kind
+      .split(/[_\s-]+/)
+      .filter(Boolean)
+      .map((word) =>
+        ['cli', 'ai', 'ide'].includes(word.toLowerCase())
+          ? word.toUpperCase()
+          : word.charAt(0).toUpperCase() + word.slice(1)
+      )
+      .join(' ')
+  );
+}

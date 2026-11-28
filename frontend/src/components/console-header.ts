@@ -1522,6 +1522,8 @@ export class ConsoleHeader extends LitElement {
   }
 
   render() {
+    const attentionCount = this._attentionSummary?.total || 0;
+    const bellCount = attentionCount || this.totalNotificationCount;
     const hasContent =
       this._runningExecutions.length > 0 ||
       this.unexpiredPendingApprovals().length > 0 ||
@@ -1552,19 +1554,17 @@ export class ConsoleHeader extends LitElement {
               <sl-icon-button
                 name="bell"
                 label=${
-                  this.totalNotificationCount > 0
-                    ? `Notifications, ${this.totalNotificationCount} pending`
-                    : 'Notifications'
+                  attentionCount
+                    ? `Notifications, ${attentionCount} ${attentionCount === 1 ? 'item needs' : 'items need'} attention`
+                    : this.totalNotificationCount > 0
+                      ? `Notifications, ${this.totalNotificationCount} pending`
+                      : 'Notifications'
                 }
               ></sl-icon-button>
               ${
-                this.totalNotificationCount > 0
+                bellCount > 0
                   ? html`<span class="notification-badge"
-                      >${
-                        this.totalNotificationCount > 99
-                          ? '99+'
-                          : this.totalNotificationCount
-                      }</span
+                      >${bellCount > 99 ? '99+' : bellCount}</span
                     >`
                   : ''
               }

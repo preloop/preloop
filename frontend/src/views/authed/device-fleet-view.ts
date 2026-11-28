@@ -11,13 +11,17 @@ import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import { Router } from '../../router';
 import { ConsoleStatus } from '../../controllers/console-status';
-import { formatLocalDateTime, formatRelativeTime } from '../../utils/date';
+import { formatRelativeTime } from '../../utils/date';
+import { agentKindLabel } from '../../utils/agent-kinds';
 import { userHref } from '../../utils/user-href';
 import {
   deviceLabel,
   refreshFleetIdentities,
   enrollmentChip,
   fleetFindingTitle,
+  extensionFindingLocation,
+  extensionFindingHref,
+  inventoryLimitation,
   fleetAccess,
   fleetHref,
   getDeviceFleet,
@@ -853,7 +857,7 @@ export class DeviceFleetView extends LitElement {
   }
   private timestamp(value: string | null) {
     return value
-      ? html`<time title=${formatLocalDateTime(value)} datetime=${value}
+      ? html`<time title=${value} datetime=${value}
           >${formatRelativeTime(value)}</time
         >`
       : html`<span class="meta">Never</span>`;
@@ -905,7 +909,9 @@ export class DeviceFleetView extends LitElement {
           device.device_key,
           device.os,
           ...device.users.map((user) => user.label),
-          ...device.agents.map((agent) => agent.name || agent.kind),
+          ...device.agents.map(
+            (agent) => agent.name || agentKindLabel(agent.kind)
+          ),
         ]
           .join(' ')
           .toLowerCase()
@@ -1316,7 +1322,7 @@ export class DeviceFleetView extends LitElement {
   }
 
   private renderAgentRow(agent: FleetAgent) {
-    const name = agent.name || agent.kind;
+    const name = agent.name || agentKindLabel(agent.kind);
     return html`<li>
       <div class="row-main">
         ${
@@ -1325,8 +1331,8 @@ export class DeviceFleetView extends LitElement {
             : html`<span>${name}</span>`
         }
         <span class="meta"
-          >${agent.kind}${agent.version ? ` ${agent.version}` : ''} · last seen
-          ${this.timestamp(agent.last_seen_at)}
+          >${agentKindLabel(agent.kind)}${agent.version ? ` ${agent.version}` : ''}
+          · last seen ${this.timestamp(agent.last_seen_at)}
           ${agent.managed_agent_id ? html` · Last reported: ${agent.status}` : nothing}</span
         >
       </div>
@@ -1479,33 +1485,57 @@ export class DeviceFleetView extends LitElement {
         </div>
         ${
           findings.length
-            ? html`<ul class="rows">
-                ${findings.map(
-                  (finding) =>
-                    html`<li>
-                      <div class="row-main">
-                        <span>${fleetFindingTitle(finding)}</span>
-                        ${finding.detail ? html`<span class="meta">${finding.detail}</span>` : nothing}
-                        <span class="meta"
-                          >Opened ${this.timestamp(finding.opened_at)} · checked
-                          ${this.timestamp(finding.last_evaluated_at)}</span
-                        >
-                        <details>
-                          <summary>Evidence</summary>
-                          ${finding.limitation ? html`<p class="meta">${finding.limitation}</p>` : nothing}
-                          <pre>
+            ? html`${findings.some((f) => f.rule === 'unapproved_extension') ? html`<p class="meta">${inventoryLimitation}</p>` : nothing}
+                <ul class="rows">
+                  ${findings.map(
+                    (finding) =>
+                      html`<li>
+                        <div class="row-main">
+                          <span
+                            >${
+                              finding.rule === 'unapproved_extension' &&
+                              finding.device_key &&
+                              finding.evidence.extension_id
+                                ? html`<a href=${extensionFindingHref(finding)}
+                                    >${fleetFindingTitle(finding)}</a
+                                  >`
+                                : fleetFindingTitle(finding)
+                            }</span
+                          >
+                          ${
+                            finding.rule === 'unapproved_extension'
+                              ? html`<span class="meta">
+                                  ${extensionFindingLocation(finding, device)} ·
+                                  First seen
+                                  ${this.timestamp(String(finding.evidence.first_seen_at || finding.opened_at))}
+                                </span>`
+                              : finding.detail
+                                ? html`<span class="meta"
+                                    >${finding.detail}</span
+                                  >`
+                                : nothing
+                          }
+                          <span class="meta"
+                            >Opened ${this.timestamp(finding.opened_at)} ·
+                            checked
+                            ${this.timestamp(finding.last_evaluated_at)}</span
+                          >
+                          <details>
+                            <summary>Evidence</summary>
+                            ${finding.rule !== 'unapproved_extension' && finding.limitation ? html`<p class="meta">${finding.limitation}</p>` : nothing}
+                            <pre>
 ${JSON.stringify(finding.evidence, null, 2)}</pre>
-                        </details>
-                      </div>
-                      <sl-badge
-                        class="chip"
-                        variant=${isOpen(finding) ? 'warning' : 'neutral'}
-                        pill
-                        >${finding.state}</sl-badge
-                      >
-                    </li>`
-                )}
-              </ul>`
+                          </details>
+                        </div>
+                        <sl-badge
+                          class="chip"
+                          variant=${isOpen(finding) ? 'warning' : 'neutral'}
+                          pill
+                          >${finding.state}</sl-badge
+                        >
+                      </li>`
+                  )}
+                </ul>`
             : html`<p class="card-empty">No findings for this machine.</p>`
         }
       </sl-card>
@@ -1530,6 +1560,16 @@ ${JSON.stringify(finding.evidence, null, 2)}</pre>
           /^fp:[0-9a-f]{64}$/.test(device.device_key)
             ? html`<extension-inventory
                 .fingerprint=${device.device_key.slice(3)}
+                .hostname=${device.hostname || ''}
+                .finding=${findings.find(
+                  (f) =>
+                    f.rule === 'unapproved_extension' &&
+                    f.evidence.extension_id &&
+                    f.evidence.kind &&
+                    f.evidence.agent_kind &&
+                    f.id ===
+                      new URLSearchParams(this.routeSearch).get('finding')
+                )}
               ></extension-inventory>`
             : html`<p class="card-empty">
                 No discovery fingerprint is available for this device.

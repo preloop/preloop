@@ -191,6 +191,52 @@ describe('Device fleet', () => {
       'build-tools (plugin): Version outside constraint',
     ]);
   });
+  it('opens the requested finding from the device route', async () => {
+    const finding = fleetExtensionFindings[1];
+    const query = new URLSearchParams({
+      device: device.device_key,
+      finding: finding.id,
+    });
+    history.replaceState({}, '', '?' + query);
+    setup(true, ['view_device_fleet'], fleetExtensionFindings);
+    const view = await mount();
+    const inventory = view.shadowRoot.querySelector('extension-inventory');
+    expect(inventory.finding.id).to.equal(finding.id);
+
+    const links = Array.from<HTMLAnchorElement>(
+      view.shadowRoot.querySelectorAll(
+        '[data-testid="device-findings"] .row-main > span > a'
+      )
+    );
+    const link = links.find((anchor) =>
+      anchor.textContent?.includes('release-check')
+    );
+    expect(link).to.exist;
+    const destination = new URL(link!.href);
+    expect(destination.searchParams.get('finding')).to.equal(finding.id);
+    expect(destination.searchParams.get('device')).to.equal(device.device_key);
+    const context = link!.closest('li')!.querySelector('.meta')!;
+    expect(context.textContent).to.include('On example-workstation');
+    expect(context.textContent).to.include('Associated with Jane Doe');
+    expect(context.textContent).to.include('First seen');
+    expect(context.querySelector('time')!.title).to.equal(
+      finding.evidence.first_seen_at
+    );
+  });
+
+  it('keeps the device inventory available for an unknown finding', async () => {
+    const query = new URLSearchParams({
+      device: device.device_key,
+      finding: 'unknown-finding',
+    });
+    history.replaceState({}, '', '?' + query);
+    setup(true, ['view_device_fleet'], fleetExtensionFindings);
+    const view = await mount();
+    const inventory = view.shadowRoot.querySelector('extension-inventory');
+    expect(inventory.fingerprint).to.equal(device.device_key.slice(3));
+    expect(inventory.finding).to.be.undefined;
+  });
+
   it('names each extension finding and its effective reason before expanding evidence', async () => {
     history.replaceState(
       {},

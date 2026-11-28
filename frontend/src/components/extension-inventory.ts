@@ -10,7 +10,9 @@ import './extension-enforcement';
 import './extension-content';
 import { tableScrollStyles } from '../styles/table-scroll';
 import { formatRelativeTime, parseUTCDate } from '../utils/date';
-import { fleetHref } from '../device-fleet-api';
+import { confirmDialog, showToast } from './confirm-dialog';
+import { agentKindLabel } from '../utils/agent-kinds';
+import { fleetHref, type FleetFinding } from '../device-fleet-api';
 import { downloadText } from '../utils/records-format';
 import {
   addExtensionPin,
@@ -20,6 +22,7 @@ import {
   getExtensionPins,
   getExtensions,
   getExtensionDevices,
+  setBulkExtensionApproval,
   setExtensionApproval,
   type ExtensionAggregate,
   type ExtensionCoverage,
@@ -184,6 +187,13 @@ const detailKey = (row: ExtensionKey): string =>
 @customElement('extension-inventory')
 export class ExtensionInventory extends LitElement {
   @property() fingerprint = '';
+  @property() hostname = '';
+  @property({ attribute: false }) finding?: FleetFinding;
+  @property({ attribute: false }) bulkUpdater = setBulkExtensionApproval;
+  @property({ attribute: false }) confirmBulk = confirmDialog;
+  @state() private selected = new Set<string>();
+  @state() private showFullInventory = false;
+  private focusedFinding = '';
   /** Limit rows to one agent kind, for example claude_code. */
   @property() agentKind = '';
   /** Replaces the default empty-state sentence when set. */
@@ -265,6 +275,29 @@ export class ExtensionInventory extends LitElement {
         margin-top: 4px;
         white-space: normal;
       }
+      .bulk {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 16px;
+        align-items: center;
+        margin: 0 0 12px;
+      }
+      .bulk label {
+        cursor: pointer;
+      }
+      .selection {
+        width: 1%;
+      }
+      .finding-context,
+      .review-row {
+        scroll-margin-top: 72px;
+      }
+      td[data-label='Approval'] {
+        width: 12rem;
+      }
+      td[data-label='Approval'] sl-select {
+        width: 100%;
+      }
       .search {
         display: grid;
         gap: 5px;
@@ -291,6 +324,9 @@ export class ExtensionInventory extends LitElement {
       }
       .extension-details ul {
         padding-left: 20px;
+      }
+      .filters[hidden] {
+        display: none;
       }
       .filters {
         display: flex;
@@ -513,12 +549,13 @@ export class ExtensionInventory extends LitElement {
     `,
   ];
 
-  protected firstUpdated(): void {
-    void this.refresh();
-  }
   protected updated(changes: PropertyValues): void {
-    for (const key of ['fingerprint', 'agentKind'] as const)
-      if (changes.has(key) && changes.get(key) !== undefined) {
+    for (const key of ['fingerprint', 'agentKind', 'finding'] as const)
+      if (changes.has(key)) {
+        this.showFullInventory = false;
+        this.focusedFinding = '';
+        this.expandedRow = null;
+        this.expanded = '';
         void this.refresh();
         return;
       }
@@ -531,6 +568,7 @@ export class ExtensionInventory extends LitElement {
   async refresh(append = false): Promise<void> {
     const id = ++this.requestId;
     this.loading = true;
+    if (!append) this.selected = new Set();
     this.error = '';
     // Keep the current rows on screen while a refresh loads; the skeleton is
     // only for a panel that has nothing to show yet.
@@ -556,12 +594,26 @@ export class ExtensionInventory extends LitElement {
           ExtensionSource | undefined,
         cursor: append ? (this.page?.next_cursor ?? undefined) : undefined,
       };
-      const page = await this.loader(filters);
+      const finding = this.showFullInventory ? undefined : this.finding;
+      const previouslyExpanded = this.expandedRow;
+      const page = finding
+        ? await this.findInstallation(finding, id)
+        : await this.loader(filters);
       if (id !== this.requestId) return;
       this.page =
         append && this.page
           ? { ...page, items: [...this.page.items, ...page.items] }
           : page;
+      if (finding && this.focusedFinding !== finding.id) {
+        this.focusedFinding = finding.id;
+        const match = page.items[0];
+        if (match) void this.toggle(match);
+        await this.updateComplete;
+        if (id !== this.requestId) return;
+        this.renderRoot
+          .querySelector(match ? '.review-row' : '.finding-context')
+          ?.scrollIntoView({ block: 'start' });
+      }
       this.dispatchEvent(
         new CustomEvent('extensions-loaded', {
           detail: {
@@ -573,7 +625,11 @@ export class ExtensionInventory extends LitElement {
         })
       );
       // An open hash list re-reads its pins so pin and unpin show at once.
-      if (this.expandedRow && !append) {
+      if (
+        this.expandedRow &&
+        this.expandedRow === previouslyExpanded &&
+        !append
+      ) {
         const pins = await this.pinLoader(this.expandedRow);
         if (id === this.requestId) {
           this.pins = pins;
@@ -594,6 +650,32 @@ export class ExtensionInventory extends LitElement {
           error instanceof Error ? error.message : 'Could not load extensions';
     } finally {
       if (id === this.requestId) this.loading = false;
+    }
+  }
+
+  private async findInstallation(
+    finding: FleetFinding,
+    requestId: number
+  ): Promise<ExtensionPage> {
+    const target = finding.evidence;
+    const filters: ExtensionFilters = {
+      fingerprint: this.fingerprint,
+      agent_kind: String(target.agent_kind),
+      extension_kind: target.kind as ExtensionKey['extension_kind'],
+      extension_id: String(target.extension_id),
+    };
+    for (;;) {
+      const page = await this.loader(filters);
+      const match = page.items.find(
+        (row) =>
+          'fingerprint' in row &&
+          (!target.profile_ref || row.profile_ref === target.profile_ref) &&
+          (!target.scope || row.scope === target.scope) &&
+          (target.project_ref_hash ?? null) === row.project_ref_hash
+      );
+      if (match || !page.next_cursor || this.requestId !== requestId)
+        return { ...page, items: match ? [match] : [], next_cursor: null };
+      filters.cursor = page.next_cursor;
     }
   }
 
@@ -619,6 +701,93 @@ export class ExtensionInventory extends LitElement {
     } finally {
       this.busy = '';
     }
+  }
+
+  private get selectable(): boolean {
+    return this.canManage && !this.fingerprint;
+  }
+
+  private toggleSelection(row: ExtensionKey): void {
+    const next = new Set(this.selected);
+    const key = keyOf(row);
+    if (!next.delete(key)) next.add(key);
+    this.selected = next;
+  }
+
+  private async decideSelected(
+    state: 'approved' | 'unapproved'
+  ): Promise<void> {
+    if (!this.selectable || this.loading || this.busy) return;
+    const rows =
+      this.page?.items.filter((row) => this.selected.has(keyOf(row))) ?? [];
+    if (!rows.length || rows.length > 500) return;
+    const action =
+      state === 'approved' ? 'Approve selected' : 'Mark unapproved';
+    const count = `${rows.length} ${rows.length === 1 ? 'extension' : 'extensions'}`;
+    this.busy = 'bulk';
+    try {
+      if (
+        !(await this.confirmBulk({
+          title: action,
+          message: `Mark ${count} ${state} across the account?`,
+          detail:
+            'Bulk decisions do not set content pins. Existing pins and version constraints are kept.',
+          confirmLabel: action,
+        }))
+      )
+        return;
+      await this.bulkUpdater(rows, state);
+      this.approvalRevision++;
+      showToast(`${count} marked ${state}.`, 'success');
+      await this.refresh();
+    } catch (error) {
+      this.error =
+        error instanceof Error ? error.message : 'Could not save approvals';
+    } finally {
+      this.busy = '';
+    }
+  }
+
+  private bulkActions(): TemplateResult | typeof nothing {
+    if (!this.selectable || !this.page?.items.length) return nothing;
+    const rows = this.page.items;
+    const count = this.selected.size;
+    const disabled = !!this.busy || this.loading;
+    return html`<div class="bulk">
+      <label
+        ><input
+          type="checkbox"
+          .checked=${count === rows.length}
+          .indeterminate=${count > 0 && count < rows.length}
+          ?disabled=${disabled}
+          @change=${(event: Event) => {
+            this.selected = new Set(
+              (event.target as HTMLInputElement).checked ? rows.map(keyOf) : []
+            );
+          }}
+        />
+        Select all ${rows.length} shown</label
+      >
+      ${
+        count
+          ? html`<span aria-live="polite">${count} selected</span>
+              <sl-button
+                size="small"
+                variant="primary"
+                ?disabled=${disabled || count > 500}
+                @click=${() => this.decideSelected('approved')}
+                >Approve selected</sl-button
+              >
+              <sl-button
+                size="small"
+                ?disabled=${disabled || count > 500}
+                @click=${() => this.decideSelected('unapproved')}
+                >Mark unapproved</sl-button
+              >
+              ${count > 500 ? html`<span>Select up to 500 extensions per decision.</span>` : nothing}`
+          : nothing
+      }
+    </div>`;
   }
 
   private async downloadPolicy(): Promise<void> {
@@ -720,7 +889,7 @@ export class ExtensionInventory extends LitElement {
     const pinned = new Map(this.pins.map((pin) => [pin.content_hash, pin]));
     const canPin = this.canManage && row.approval_state === 'approved';
     return html`<tr class="hashes">
-      <td colspan="7">
+      <td colspan=${this.selectable ? 8 : 7}>
         <ul aria-label=${`Content hashes for ${row.extension_id}`}>
           ${(row.content_hashes ?? []).map((bucket) => {
             const pin = bucket.content_hash
@@ -1047,8 +1216,8 @@ export class ExtensionInventory extends LitElement {
     return html`<div class="summary">
       <span class="summary-text" aria-live="polite"
         >${page.items.length}${page.next_cursor ? '+' : ''}
-        extensions${kinds ? html` (${kinds})` : nothing} · ${devices.length}
-        ${devices.length === 1 ? 'device' : 'devices'}
+        ${page.items.length === 1 && !page.next_cursor ? 'extension' : 'extensions'}${kinds ? html` (${kinds})` : nothing}
+        · ${devices.length} ${devices.length === 1 ? 'device' : 'devices'}
         reporting${this.agentKind && !this.fingerprint ? ' across all agent kinds' : ''}${
           last
             ? html` · Last report
@@ -1072,12 +1241,6 @@ export class ExtensionInventory extends LitElement {
     >
       ${Array.from({ length: 6 }, () => html`<sl-skeleton effect="pulse"></sl-skeleton>`)}
     </div>`;
-  }
-
-  private hash(value: string | null): TemplateResult | typeof nothing {
-    return value
-      ? html`<code class="meta" title=${value}>${value.slice(0, 19)}…</code>`
-      : nothing;
   }
 
   private extensionIdentity(row: ExtensionKey): TemplateResult {
@@ -1252,7 +1415,8 @@ export class ExtensionInventory extends LitElement {
         ? [row.content_hash ?? null]
         : (row.content_hashes ?? []).map((bucket) => bucket.content_hash);
     return html`<tr class="extension-details">
-      <td colspan=${this.fingerprint ? 9 : 7}>
+      <td colspan=${this.fingerprint ? 5 : this.selectable ? 8 : 7}>
+        ${'fingerprint' in row ? html`<p>Version: ${row.version ?? 'Unknown'} · Source: ${label(row.source_kind)} · Enabled: ${label(row.enabled)}</p>` : nothing}
         ${details?.author ? html`<p>Author: ${details.author}</p>` : nothing}
         ${details?.plugin ? html`<p>Bundled by ${details.plugin}</p>` : nothing}
         ${details?.script_count != null ? html`<p>Bundled scripts: ${details.script_count}</p>` : nothing}
@@ -1282,7 +1446,7 @@ export class ExtensionInventory extends LitElement {
                   (device) =>
                     html`<li>
                       <a href=${fleetHref(`fp:${device.fingerprint}`)}
-                        >Device ${device.fingerprint.slice(0, 12)}</a
+                        >${this.hostname && this.fingerprint === device.fingerprint ? this.hostname : `Device ${device.fingerprint.slice(0, 12)}`}</a
                       >
                       <span>
                         ·
@@ -1334,26 +1498,13 @@ export class ExtensionInventory extends LitElement {
   }
 
   private deviceRow(row: InstalledExtension): TemplateResult {
-    return html`<tr>
-      <td data-label="Agent">
-        ${row.agent_kind}<span class="meta" title=${row.profile_ref}
-          >Profile
-          ${row.profile_ref === 'current' ? 'current' : row.profile_ref.slice(0, 8)}</span
-        >
-      </td>
+    return html`<tr
+      class=${this.expanded === detailKey(row) ? 'review-row' : ''}
+    >
+      <td data-label="Agent">${agentKindLabel(row.agent_kind)}</td>
       <td data-label="Kind">${label(row.extension_kind)}</td>
       <td class="identity" data-label="Extension">
         ${this.extensionIdentity(row)}${row.id_hashed ? html`<span class="meta">Hashed identifier</span>` : nothing}
-      </td>
-      <td data-label="Version">${row.version ?? 'Unknown'}</td>
-      <td data-label="Source">
-        ${label(row.source_kind)}${this.hash(row.source_ref_hash)}
-      </td>
-      <td data-label="Scope">
-        ${label(row.scope)}${this.hash(row.project_ref_hash)}
-      </td>
-      <td data-label="Enabled">
-        ${row.enabled === 'true' ? 'Yes' : row.enabled === 'false' ? 'No' : 'Unknown'}
       </td>
       <td data-label="First seen" title=${row.first_seen_at}>
         ${formatRelativeTime(row.first_seen_at)}
@@ -1382,7 +1533,24 @@ export class ExtensionInventory extends LitElement {
     if (!this.loading && !this.canView && !this.error) return nothing;
     return html`
       ${this.contentBanner()} ${this.summary()}
-      <div class="filters">
+      ${
+        this.finding && !this.showFullInventory
+          ? html`<div class="bulk finding-context">
+              <span
+                >${this.page && !this.page.items.length ? 'This installation is no longer reported.' : 'Showing the extension from this finding.'}</span
+              >
+              <sl-button
+                size="small"
+                @click=${() => {
+                  this.showFullInventory = true;
+                  void this.refresh();
+                }}
+                >Show full inventory</sl-button
+              >
+            </div>`
+          : nothing
+      }
+      <div class="filters" ?hidden=${!!this.finding && !this.showFullInventory}>
         <label class="search"
           >Search name or description
           <input
@@ -1429,6 +1597,7 @@ export class ExtensionInventory extends LitElement {
           Download policy file
         </sl-button>
       </div>
+      ${this.bulkActions()}
       ${this.error ? html`<p role="alert">${this.error} <sl-button size="small" @click=${() => this.refresh()}>Retry</sl-button></p>` : nothing}
       ${this.loading && !this.page ? this.skeleton() : nothing}
       ${
@@ -1437,16 +1606,13 @@ export class ExtensionInventory extends LitElement {
               <table aria-label="Installed extensions">
                 <thead>
                   <tr>
+                    ${this.selectable ? html`<th class="selection"><span class="sr-only">Select</span></th>` : nothing}
                     <th>Agent</th>
                     <th>Kind</th>
                     <th>Extension</th>
                     ${
                       this.fingerprint
-                        ? html`<th>Version</th>
-                            <th>Source</th>
-                            <th>Scope</th>
-                            <th>Enabled</th>
-                            <th>First seen</th>`
+                        ? html`<th>First seen</th>`
                         : html`<th class="number">Devices</th>
                             <th>Versions seen</th>
                             <th>Sources</th>`
@@ -1469,7 +1635,22 @@ export class ExtensionInventory extends LitElement {
                       'fingerprint' in row
                         ? html`${this.deviceRow(row)}${this.expanded === detailKey(row) ? this.detailsRow(row) : nothing}`
                         : html`<tr>
-                              <td data-label="Agent">${row.agent_kind}</td>
+                              ${
+                                this.selectable
+                                  ? html`<td class="selection">
+                                      <input
+                                        type="checkbox"
+                                        aria-label=${`Select ${row.extension_id}`}
+                                        .checked=${this.selected.has(keyOf(row))}
+                                        ?disabled=${this.loading || !!this.busy}
+                                        @change=${() => this.toggleSelection(row)}
+                                      />
+                                    </td>`
+                                  : nothing
+                              }
+                              <td data-label="Agent">
+                                ${agentKindLabel(row.agent_kind)}
+                              </td>
                               <td data-label="Kind">
                                 ${label(row.extension_kind)}
                               </td>
@@ -1495,7 +1676,9 @@ export class ExtensionInventory extends LitElement {
                 </tbody>
               </table>
             </div>`
-          : this.page && !this.loading
+          : this.page &&
+              !this.loading &&
+              (!this.finding || this.showFullInventory)
             ? this.emptyText &&
               !this.stateFilter &&
               !this.sourceFilter &&
