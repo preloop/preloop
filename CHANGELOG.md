@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The flow summary's windowed `runs` count no longer includes executions a
+  pre-check skipped; they are counted in `skipped_count`.
 - The Anthropic gateway router (`/anthropic/v1`) answers a model allowlist
   denial with `400 invalid_request_error` instead of `403 permission_error`.
   Claude Code read the 403 as a login failure and told the user to run
@@ -21,6 +23,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Flows can declare a `precheck`: read-only tracker checks the server runs
+  before an execution is dispatched (#2541). When nothing matches, the tick is
+  recorded as a `SKIPPED` execution with no worker claim, runner lease, owner
+  consent or model call; consecutive skips fold into one row with a count.
+  When something matches, the run starts with the matched pull requests, CI
+  runs or issues at `{{trigger_event.payload.precheck}}`. Built-in checks:
+  `open_pull_requests`, `default_branch_ci`, `failed_ci_runs` and `issues`,
+  for GitHub repositories. A tracker error fails the tick visibly
+  (`failure_category: precheck_failed`) unless `on_error: run`.
+  `POST /api/v1/flows/{id}/precheck/evaluate` is a dry run, `skip_precheck`
+  bypasses the pre-check on a manual trigger, and the flow summary reports
+  `skipped_count` and `last_skipped_at`. `PRELOOP_FLOW_PRECHECK_ENABLED=false`
+  turns the stage off.
 - `preloop agents onboard --no-model-routing` onboards MCP only: no model
   credential is read or imported and no AI model is created. It is the way to
   onboard Claude Code or Codex CLI without moving a subscription login.
@@ -308,8 +323,6 @@ or `curl -fsSL 'https://preloop.ai/install/cli?version=1.1.0-rc.1' | sh`.
   Update checks order release candidates before the corresponding stable
   release. Published installer scripts default to their own release, so a
   version-query download does not silently install latest stable.
-
-### Changed
 
 - **Changed default: onboarding reports installed extensions.** After
   `preloop agents onboard` sets up at least one agent, it sends the same

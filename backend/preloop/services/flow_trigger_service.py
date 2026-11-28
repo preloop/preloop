@@ -4,6 +4,7 @@ import logging
 import threading
 import uuid
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from sqlalchemy.engine import Connection
@@ -3136,6 +3137,136 @@ class FlowTriggerService:
                 f"Error processing event source='{event_source}', type='{event_type}': {type(e).__name__}"
             )
 
+    async def _gate_on_precheck(
+        self,
+        flow: Flow,
+        event_data: Dict[str, Any],
+        *,
+        trigger_kind: str,
+    ) -> Dict[str, Any] | str:
+        """Evaluate the flow's pre-check and record a skip or failure (#2541).
+
+        Args:
+            flow: Flow about to get an execution.
+            event_data: Trigger the execution would be created from.
+            trigger_kind: ``schedule`` or ``manual``.
+
+        Returns:
+            The event data to run with (carrying the decision document at
+            ``payload.precheck`` when a pre-check ran), or ``"skipped_precheck"``
+            / ``"precheck_failed"`` when the outcome was recorded instead.
+        """
+        result = await self._evaluate_and_record_precheck(
+            flow, event_data, trigger_kind=trigger_kind
+        )
+        if result is None:
+            return event_data
+        outcome, execution = result
+        if execution is None:
+            from preloop.services.flow_precheck import with_precheck_document
+
+            return with_precheck_document(event_data, outcome.document)
+        return "skipped_precheck" if outcome.action == "skip" else "precheck_failed"
+
+    async def _evaluate_and_record_precheck(
+        self,
+        flow: Flow,
+        event_data: Dict[str, Any],
+        *,
+        trigger_kind: str,
+    ) -> Optional[Tuple[Any, Optional[FlowExecution]]]:
+        """Evaluate the pre-check; persist the row for a skip or a failure.
+
+        Returns:
+            None when no pre-check applies. Otherwise the outcome and, for a
+            skip or a failure, the recorded terminal execution (None for a
+            run, which the caller starts as usual).
+        """
+        from preloop.services.flow_precheck import (
+            evaluate_precheck,
+            with_precheck_document,
+        )
+
+        outcome = await evaluate_precheck(
+            self.db, flow, event_data, trigger_kind=trigger_kind
+        )
+        if outcome is None or outcome.action == "run":
+            if outcome is not None:
+                logger.info(
+                    "Pre-check for flow %s: run%s (%s)",
+                    flow.id,
+                    " (forced)" if outcome.document.get("forced") else "",
+                    outcome.summary,
+                )
+            return None if outcome is None else (outcome, None)
+
+        from preloop.services.flow_orchestrator import _make_json_serializable
+
+        details = _make_json_serializable(
+            with_precheck_document(event_data, outcome.document)
+        )
+        attach_trigger_subject(details)
+        if outcome.action == "skip":
+            execution = await run_db_off_loop(
+                lambda: crud_flow_execution.record_precheck_skip(
+                    self.db,
+                    flow_id=flow.id,
+                    trigger_event_details=details,
+                    reason=outcome.reason or "nothing_to_do",
+                    summary=outcome.summary,
+                )
+            )
+            logger.info(
+                "Pre-check skipped flow %s (%s): %s",
+                flow.id,
+                outcome.reason,
+                outcome.summary,
+            )
+            return outcome, execution
+
+        execution = await run_db_off_loop(
+            lambda: crud_flow_execution.record_precheck_failure(
+                self.db,
+                flow_id=flow.id,
+                trigger_event_details=details,
+                error_message=outcome.error_message or outcome.summary,
+                failure_category=outcome.failure_category or "precheck_failed",
+            )
+        )
+        logger.warning(
+            "Pre-check failed for flow %s: %s", flow.id, outcome.error_message
+        )
+        await self._notify_precheck_failure(flow, execution)
+        return outcome, execution
+
+    async def _notify_precheck_failure(
+        self, flow: Flow, execution: FlowExecution
+    ) -> None:
+        """Count a pre-check failure towards the consecutive-failure alert."""
+        flow_id = flow.id
+        snapshot = SimpleNamespace(
+            id=execution.id,
+            status=execution.status,
+            model_output_summary=None,
+            result=None,
+        )
+        try:
+            from preloop.services.db_executor import run_db_async
+            from preloop.services.flow_failure_alerts import evaluate_failure_streak
+
+            def _evaluate(db: Session) -> Any:
+                current = crud_flow.get(db, id=flow_id)
+                if current is None:
+                    return None
+                return evaluate_failure_streak(db, flow=current, execution=snapshot)
+
+            await run_db_async(_evaluate)
+        except Exception:  # noqa: BLE001 - an alert must not undo the record
+            logger.warning(
+                "Failure streak notification failed for pre-check execution %s",
+                execution.id,
+            )
+
     async def run_scheduled_tick(self, flow_id: uuid.UUID | str) -> str:
         """
         Handle one tick of a schedule (cron) trigger for a flow.
@@ -3149,8 +3280,9 @@ class FlowTriggerService:
             flow_id: The ID of the schedule-triggered flow.
 
         Returns:
-            One of "triggered", "skipped_overlap", "suppressed_disabled",
-            "suppressed_halted", or "not_scheduled".
+            One of "triggered", "skipped_overlap", "skipped_precheck",
+            "precheck_failed", "suppressed_disabled", "suppressed_halted",
+            or "not_scheduled".
         """
         from preloop.models.crud import crud_event
 
@@ -3253,6 +3385,13 @@ class FlowTriggerService:
             "account_id": str(flow.account_id) if flow.account_id else None,
             "payload": payload,
         }
+        # Pre-check (#2541): after enabled, kill switch and overlap, before the
+        # execution exists, so a skipped tick reaches no model routing, no
+        # worker claim, no runner lease and no owner consent.
+        gated = await self._gate_on_precheck(flow, event_data, trigger_kind="schedule")
+        if isinstance(gated, str):
+            return gated
+        event_data = gated
         nats_client = await get_nats_client()
         await self._start_flow_execution(
             flow=flow,
@@ -3306,6 +3445,7 @@ class FlowTriggerService:
         no_progress_escalation: Optional[Dict[str, Any]] = None,
         authorization_context: AuthorizationContext | None = None,
         expected_revision: Optional[RevisionCondition] = None,
+        evaluate_precheck: bool = False,
     ) -> Dict[str, Any]:
         """
         Manually trigger a flow execution for testing purposes or as a retry.
@@ -3341,9 +3481,16 @@ class FlowTriggerService:
                 created only while the flow is at that configuration
                 revision, checked under a share lock in the inserting
                 transaction.
+            evaluate_precheck: Evaluate the flow's pre-check (#2541) when it
+                lists ``manual`` in ``applies_to``. Only the manual trigger
+                endpoint sets it. Never evaluated for a retry, continuation,
+                conversation turn or delegated child, whatever is passed:
+                something already decided those should run.
 
         Returns:
-            Dict with execution_id and status
+            Dict with execution_id and status. For a run the pre-check
+            skipped or failed, the recorded terminal execution and the
+            decision document under ``precheck``.
 
         Raises:
             FlowRevisionMismatchError: ``expected_revision`` does not hold;
@@ -3393,6 +3540,41 @@ class FlowTriggerService:
             # Set after the copy so a retry is attributed to whoever retried,
             # not to whoever started the original run.
             trigger_details["triggered_by"] = triggered_by
+
+        if evaluate_precheck and not (
+            retry_of_execution_id
+            or source_execution_id
+            or conversation_id
+            or parent_execution_id
+            or root_execution_id
+            or delegation_depth
+            or batch_id
+            or no_progress_escalation
+        ):
+            # Refuse a stale If-Match before reading the tracker. Not under
+            # the share lock: the evaluation may take seconds, and the run
+            # path below checks again under the lock before its insert.
+            if expected_revision is not None and not expected_revision.matches(
+                flow.config_revision
+            ):
+                raise FlowRevisionMismatchError(flow.config_revision)
+            precheck = await self._evaluate_and_record_precheck(
+                flow, trigger_details, trigger_kind="manual"
+            )
+            if precheck is not None:
+                outcome, recorded = precheck
+                if recorded is not None:
+                    return {
+                        "id": str(recorded.id),
+                        "status": recorded.status,
+                        "flow_id": flow_id_str,
+                        "precheck": outcome.document,
+                    }
+                from preloop.services.flow_precheck import with_precheck_document
+
+                trigger_details = with_precheck_document(
+                    trigger_details, outcome.document
+                )
 
         from preloop.services.flow_orchestrator import _make_json_serializable
 

@@ -180,6 +180,32 @@ Private native-host execution also accepts explicit Codex, OpenCode and DeepSeek
 
 Failing GitHub `check_run`, `check_suite`, and `workflow_run` events on a PR this flow opened resume the same way as a review comment, with `{{execution.ci_failure}}` filled in. The skip/resume filter is GitHub-only: existing GitLab `pipeline` / `job` flows keep firing on every event. GitLab payload extractors stay in `flow_ci_feedback` so an opt-in can reuse them later.
 
+## Flow pre-check
+
+A flow's `precheck` (#2541) is evaluated by `FlowTriggerService` before an
+execution row exists: in `run_scheduled_tick` after the enabled, kill switch
+and overlap checks, and in `trigger_flow` only when the manual trigger
+endpoint asks for it (never for a retry, continuation, conversation turn or
+delegated child). The engine (`services/flow_precheck.py`) resolves the
+repositories of the flow's own projects, reads Preloop facts through
+`crud_flow_execution` (`last_non_skipped` for `since: last_run` and
+`max_skip_hours`, `active_pull_request_urls` for ownership), and runs the
+built-in checks (`services/flow_precheck_checks/`) against a read-only
+tracker reader (`services/flow_precheck_reader.py`: GET and GraphQL queries
+only, a shared request and wall-clock budget, a rate-limit floor, a 60 s TTL
+cache and ETag reuse). The credential is resolved like a clone credential
+and never leaves the reader.
+
+The outcome is one of: run (the decision document goes to
+`trigger_event_details.payload.precheck` and `_start_flow_execution` runs
+unchanged), skip (`record_precheck_skip` inserts a terminal `SKIPPED` row or
+folds into the previous one), or fail (`record_precheck_failure` inserts a
+terminal `FAILED` row with `precheck_failed`, or `flow_config` for a stored
+pre-check that no longer validates, and the failure streak is evaluated).
+A skipped or failed row never reaches model routing, dispatch,
+`claim_execution`, the runner lease or owner consent. `SKIPPED` is in every
+terminal set and is neutral for failure streaks.
+
 ## Configuration revisions and conditional writes
 
 `flow.config_revision` (#2375) increases by one in the same flush as any

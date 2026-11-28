@@ -244,6 +244,11 @@ class Flow(Base):
     # (#868). When set and validate_result is on, a captured document that
     # does not conform fails the run with result_schema_invalid.
     result_schema = Column(JSONB, nullable=True, default=None)
+    # Deterministic pre-check (#2541): read-only tracker checks evaluated on
+    # the server before an execution is dispatched. NULL means no pre-check.
+    # Shape: schemas.flow.FlowPrecheck. A configuration column, so a change
+    # bumps config_revision.
+    precheck = Column(JSONB, nullable=True, default=None)
     validate_result = Column(
         Boolean, nullable=False, default=True, server_default=text("true")
     )

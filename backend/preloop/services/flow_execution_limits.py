@@ -127,6 +127,9 @@ TERMINAL_STATUSES = frozenset(
         "ABORTED",
         "CANCELLED",
         "CANCELED",
+        # A pre-check skip (#2541) is inserted already terminal and spends
+        # nothing.
+        "SKIPPED",
     }
 )
 

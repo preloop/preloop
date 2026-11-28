@@ -2,7 +2,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from preloop.schemas.delivery_report import ExecutionPullRequest
 from preloop.schemas.gateway_usage import GatewayTokenUsage
@@ -299,7 +299,9 @@ class FlowExecutionBase(BaseModel):
             "gateway_bypassed (a private-runner host CLI made no "
             "request through the Preloop gateway), timeout, cancelled, "
             "flow_config, agent_reported_failure, agent_tool_loop, orchestrator_error, "
-            "execution_error, model_policy, runner_unavailable, ci_authorization; "
+            "execution_error, model_policy, runner_unavailable, ci_authorization, "
+            "precheck_failed (the flow's pre-check could not read the "
+            "tracker, so the agent was not started); "
             "unknown is a legacy value. "
             "Null for successful or still-running executions, and "
             "for executions that predate this field."
@@ -545,6 +547,21 @@ class FlowExecutionResponse(FlowExecutionBase, ExecutionModelProjection):
             "failed. Null without the opt-in."
         ),
     )
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def precheck(self) -> Optional[Dict[str, Any]]:
+        """The flow pre-check's decision document for this execution (#2541).
+
+        Read from ``trigger_event_details.payload.precheck``: the matched
+        items a run was started with, the summary and fold count of a
+        ``SKIPPED`` execution, or the error of a pre-check that failed. Null
+        when no pre-check was evaluated.
+        """
+        details = self.trigger_event_details
+        payload = details.get("payload") if isinstance(details, dict) else None
+        document = payload.get("precheck") if isinstance(payload, dict) else None
+        return document if isinstance(document, dict) else None
 
     # Example of how to include related data if needed
     # flow: Optional[FlowResponse] = None # Assuming a FlowResponse Pydantic schema exists
