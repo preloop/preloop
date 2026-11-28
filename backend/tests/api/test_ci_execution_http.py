@@ -612,3 +612,16 @@ def test_audit_failure_preserves_ci_http_denial(
     write.assert_called_once()
     assert response.status_code == expected
     assert response.json()["detail"]
+
+
+def test_ci_result_credential_cannot_read_historical_configuration(
+    db_session: Session, ci_resources: tuple[Any, ...], client: TestClient
+) -> None:
+    """The maintainer view is outside the principal's result-read grant."""
+    _, _, token, _, execution = owned_run(db_session, ci_resources)
+    for suffix in ("outcome", "outcome/configurations/1"):
+        response = client.get(
+            f"/api/v1/flows/executions/{execution.id}/{suffix}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 403

@@ -60,6 +60,7 @@ from preloop.models.schemas.flow import (
     flow_schedule_state,
 )
 from preloop.plugins.account_hooks import VISIBLE_FLOW, filter_viewable, get_authorizer
+from preloop.schemas.execution_outcome import ExecutionDefinitionPage, ExecutionOutcome
 from preloop.schemas.execution_refinalize import RefinalizeRequest
 from preloop.schemas.ci_execution import (
     CiExecutionResponse,
@@ -2740,6 +2741,103 @@ def _public_schema_validation(execution: Any) -> Optional[Dict[str, Any]]:
         "errors": list(stored.get("errors") or []),
         "error_count": int(stored.get("error_count") or 0),
     }
+
+
+def _require_outcome_access(
+    db: Session, user: models.User, flow_id: uuid.UUID, recorded: str | None
+) -> None:
+    """Apply current tracker scope even when the caller omitted a project filter."""
+    from preloop.api.common import project_scope_denial
+
+    if get_authorizer() is not None:
+        flow = crud_flow.get(db, id=flow_id, account_id=user.account_id)
+        if flow is None or not filter_viewable(db, user, VISIBLE_FLOW, [flow]):
+            raise HTTPException(404, "Flow execution not found")
+    if recorded is None:
+        return
+    try:
+        project_id = uuid.UUID(recorded)
+    except ValueError:
+        raise HTTPException(404, "Flow execution not found") from None
+    projects = crud.crud_project.get_accessible_for_user(
+        db, account_id=str(user.account_id), project_ids=[str(project_id)]
+    )
+    if projects:
+        project = projects[0]
+        org = project.organization
+        if not project_scope_denial(db, org.tracker, org, project):
+            return
+    raise HTTPException(404, "Flow execution not found")
+
+
+@router.get("/flows/executions/{execution_id}/outcome", response_model=ExecutionOutcome)
+@require_permission("view_flows")
+def get_execution_outcome(
+    execution_id: uuid.UUID,
+    project_id: uuid.UUID | None = None,
+    offset: int = Query(0, ge=0, le=1073741823),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user),
+) -> Dict[str, Any]:
+    """Read runtime, validation and delivery facts for an owned execution.
+
+    Pass project_id to restrict the read to that recorded project. Each
+    configuration entry names a launch or runner selection and its historical
+    definition revision. Follow next_offset for more selections. A confirmed
+    review requires a provider publication record matching the execution and
+    target. An artifact or successful run alone leaves delivery unconfirmed.
+    """
+    from preloop.models.crud import execution_outcome
+
+    outcome = execution_outcome.read(
+        db,
+        execution_id=execution_id,
+        account_id=current_user.account_id,
+        project_id=project_id,
+        offset=offset,
+    )
+    if outcome is None:
+        raise HTTPException(404, "Flow execution not found")
+    _require_outcome_access(
+        db, current_user, outcome["flow_id"], outcome["work"]["project_id"]
+    )
+    return outcome
+
+
+@router.get(
+    "/flows/executions/{execution_id}/outcome/configurations/{revision}",
+    response_model=ExecutionDefinitionPage,
+)
+@require_permission("view_flows")
+def get_execution_definition(
+    execution_id: uuid.UUID,
+    revision: int,
+    project_id: uuid.UUID | None = None,
+    offset: int = Query(0, ge=0, le=1073741823),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user),
+) -> Dict[str, Any]:
+    """Read up to 16 KiB of a selected, redacted definition as ASCII JSON.
+
+    Concatenate definition_json pages using next_offset before parsing. Returns
+    404 when the execution has no recorded selection of the requested revision.
+    """
+    from preloop.models.crud import execution_outcome
+
+    page = execution_outcome.definition_page(
+        db,
+        execution_id=execution_id,
+        account_id=current_user.account_id,
+        project_id=project_id,
+        revision=revision,
+        offset=offset,
+    )
+    if page is None:
+        raise HTTPException(404, "Execution configuration not found")
+    _require_outcome_access(
+        db, current_user, page.pop("flow_id"), page.pop("project_id")
+    )
+    return page
 
 
 @router.get("/flows/executions/{execution_id}/evidence-status")

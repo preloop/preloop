@@ -21386,6 +21386,139 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: execution:result:read
+  /api/v1/flows/executions/{execution_id}/outcome:
+    get:
+      tags:
+      - Flows
+      summary: Get Execution Outcome
+      description: 'Read runtime, validation and delivery facts for an owned execution.
+
+
+        Pass project_id to restrict the read to that recorded project. Each
+
+        configuration entry names a launch or runner selection and its historical
+
+        definition revision. Follow next_offset for more selections. A confirmed
+
+        review requires a provider publication record matching the execution and
+
+        target. An artifact or successful run alone leaves delivery unconfirmed.'
+      operationId: get_execution_outcome_api_v1_flows_executions__execution_id__outcome_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: execution_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Execution Id
+      - name: project_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Project Id
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1073741823
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutionOutcome'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/flows/executions/{execution_id}/outcome/configurations/{revision}:
+    get:
+      tags:
+      - Flows
+      summary: Get Execution Definition
+      description: 'Read up to 16 KiB of a selected, redacted definition as ASCII
+        JSON.
+
+
+        Concatenate definition_json pages using next_offset before parsing. Returns
+
+        404 when the execution has no recorded selection of the requested revision.'
+      operationId: get_execution_definition_api_v1_flows_executions__execution_id__outcome_configurations__revision__get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: execution_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Execution Id
+      - name: revision
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Revision
+      - name: project_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Project Id
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1073741823
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutionDefinitionPage'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/flows/executions/{execution_id}/evidence-status:
     get:
       tags:
@@ -38594,6 +38727,24 @@ components:
         \ functions and capabilities.\n  Examples:\n    - \"args.command.contains('rm\
         \ -rf')\"\n    - \"args.path.startsWith('/etc/')\"\n    - \"args.tags.exists(t,\
         \ t == 'production')\"\n    - \"args.amount > 1000 && args.approved == false\""
+    ConfigurationSelection:
+      properties:
+        stage:
+          type: string
+          enum:
+          - launch
+          - runner_lease
+          - runner_delivery
+          title: Stage
+        revision:
+          type: integer
+          title: Revision
+      type: object
+      required:
+      - stage
+      - revision
+      title: ConfigurationSelection
+      description: A distinct definition used during one stage of this execution.
     ConfirmedEnrollment:
       properties:
         recovery_codes:
@@ -42025,6 +42176,46 @@ components:
       - original_execution_id
       title: ExecutionContinuationNavigation
       description: Navigation shared by a publisher and its review/CI continuations.
+    ExecutionDefinitionPage:
+      properties:
+        revision:
+          type: integer
+          title: Revision
+        definition_json:
+          type: string
+          title: Definition Json
+        next_offset:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Next Offset
+      type: object
+      required:
+      - revision
+      - definition_json
+      - next_offset
+      title: ExecutionDefinitionPage
+      description: A page of the redacted, historical definition selected by an execution.
+    ExecutionDelivery:
+      properties:
+        state:
+          type: string
+          enum:
+          - delivered
+          - unconfirmed
+          title: State
+        destination:
+          anyOf:
+          - $ref: '#/components/schemas/ReviewDestination'
+          - $ref: '#/components/schemas/PullRequestDestination'
+          - type: 'null'
+          title: Destination
+      type: object
+      required:
+      - state
+      - destination
+      title: ExecutionDelivery
+      description: Publication state and the destination evidence supporting it.
     ExecutionEffectiveRequest:
       properties:
         model:
@@ -42110,6 +42301,90 @@ components:
       - model_alias
       title: ExecutionModelUsage
       description: One model alias that served requests during an execution.
+    ExecutionOutcome:
+      properties:
+        execution_id:
+          type: string
+          format: uuid
+          title: Execution Id
+        flow_id:
+          type: string
+          format: uuid
+          title: Flow Id
+        creation_revision:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Creation Revision
+        retry_of_execution_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Retry Of Execution Id
+        configurations:
+          items:
+            $ref: '#/components/schemas/ConfigurationSelection'
+          type: array
+          title: Configurations
+        next_offset:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Next Offset
+        work:
+          $ref: '#/components/schemas/ExecutionWork'
+        runtime:
+          $ref: '#/components/schemas/ExecutionRuntimeOutcome'
+        output:
+          $ref: '#/components/schemas/ExecutionOutputOutcome'
+        delivery:
+          $ref: '#/components/schemas/ExecutionDelivery'
+      type: object
+      required:
+      - execution_id
+      - flow_id
+      - creation_revision
+      - retry_of_execution_id
+      - configurations
+      - next_offset
+      - work
+      - runtime
+      - output
+      - delivery
+      title: ExecutionOutcome
+      description: Bounded maintainer read for one execution, including historical
+        unknowns.
+    ExecutionOutputOutcome:
+      properties:
+        capture:
+          type: string
+          enum:
+          - unknown
+          - absent
+          - pending
+          - captured
+          title: Capture
+        validation:
+          type: string
+          enum:
+          - unknown
+          - valid
+          - failed
+          title: Validation
+        evidence_artifact_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Evidence Artifact Id
+      type: object
+      required:
+      - capture
+      - validation
+      - evidence_artifact_id
+      title: ExecutionOutputOutcome
+      description: Result capture, schema validation and a retained evidence record.
     ExecutionPark:
       properties:
         request_id:
@@ -42271,6 +42546,34 @@ components:
       - name
       title: ExecutionRunnerSummary
       description: 'List-row runner: kind and name only.'
+    ExecutionRuntimeOutcome:
+      properties:
+        execution_status:
+          type: string
+          title: Execution Status
+        agent_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Status
+        agent_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Type
+        ai_model_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ai Model Id
+      type: object
+      required:
+      - execution_status
+      - agent_status
+      - agent_type
+      - ai_model_id
+      title: ExecutionRuntimeOutcome
+      description: Controller status and the independently observed agent facts.
     ExecutionTreeNode:
       properties:
         agent_type:
@@ -42636,6 +42939,48 @@ components:
       type: object
       title: ExecutionUpstreamRoute
       description: Which upstream providers served an OpenRouter-routed execution.
+    ExecutionWork:
+      properties:
+        project_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Project Id
+        event_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Event Id
+        repository:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Repository
+        reference:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reference
+        pull_request:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Pull Request
+        head_sha:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Head Sha
+      type: object
+      required:
+      - project_id
+      - event_id
+      - repository
+      - reference
+      - pull_request
+      - head_sha
+      title: ExecutionWork
+      description: Identifiers from the execution's recorded project and event.
     ExecutorEligibility:
       properties:
         eligible:
@@ -55377,6 +55722,40 @@ components:
       - deleted_count
       title: PruneResponse
       description: Response from a prune operation.
+    PullRequestDestination:
+      properties:
+        kind:
+          type: string
+          const: pull_request
+          title: Kind
+        source:
+          type: string
+          enum:
+          - controller_publication
+          - private_publication_receipt
+          title: Source
+        provider:
+          type: string
+          title: Provider
+        repository:
+          type: string
+          title: Repository
+        pull_request:
+          type: string
+          title: Pull Request
+        destination_count:
+          type: integer
+          title: Destination Count
+      type: object
+      required:
+      - kind
+      - source
+      - provider
+      - repository
+      - pull_request
+      - destination_count
+      title: PullRequestDestination
+      description: One confirmed pull request and the number of published targets.
     PullRequestItem:
       properties:
         number:
@@ -56712,6 +57091,53 @@ components:
       - post_result_failures
       title: ReviewCompletion
       description: Independent completion facts, with later failures named separately.
+    ReviewDestination:
+      properties:
+        kind:
+          type: string
+          const: pull_request_review
+          title: Kind
+        source:
+          type: string
+          enum:
+          - platform_review_publication
+          - review_publication_receipt
+          title: Source
+        provider:
+          type: string
+          title: Provider
+        repository:
+          type: string
+          title: Repository
+        pull_request:
+          type: string
+          title: Pull Request
+        head_sha:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Head Sha
+        provider_review_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider Review Id
+        record_id:
+          type: string
+          format: uuid
+          title: Record Id
+      type: object
+      required:
+      - kind
+      - source
+      - provider
+      - repository
+      - pull_request
+      - head_sha
+      - provider_review_id
+      - record_id
+      title: ReviewDestination
+      description: An accepted review on the execution's intended pull request.
     ReviewEffectiveRequest:
       properties:
         model:

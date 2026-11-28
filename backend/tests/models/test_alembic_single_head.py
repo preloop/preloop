@@ -709,4 +709,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert runner_flow_grant.down_revision == mcp_extensions.revision
     flow_proposal = script.get_revision("20270104_flow_change_proposal")
     assert flow_proposal.down_revision == runner_flow_grant.revision
-    assert script.get_heads() == [flow_proposal.revision]
+    definition = script.get_revision("20270104_execution_definition")
+    assert definition.down_revision == flow_proposal.revision
+    assert script.get_heads() == [definition.revision]

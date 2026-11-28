@@ -5488,6 +5488,30 @@ class TestReviewPublicationGate:
         assert log.status == "SUCCEEDED"
         assert log.result["review_publication"]["status"] == "published"
         assert log.result["review_publication"]["review_action"] == action
+        from preloop.models.crud import execution_outcome
+
+        revision = review_flow.config_revision
+        original_prompt = review_flow.prompt_template
+        review_flow.prompt_template = "Review the updated definition"
+        db_session.commit()
+        outcome = execution_outcome.read(
+            db_session,
+            execution_id=log.id,
+            account_id=review_flow.account_id,
+            project_id=None,
+            offset=0,
+        )
+        assert outcome["configurations"] == [{"revision": revision, "stage": "launch"}]
+        assert outcome["delivery"]["state"] == "delivered"
+        page = execution_outcome.definition_page(
+            db_session,
+            execution_id=log.id,
+            account_id=review_flow.account_id,
+            project_id=None,
+            revision=revision,
+            offset=0,
+        )
+        assert json.loads(page["definition_json"])["prompt_template"] == original_prompt
 
     @staticmethod
     def _review_activity(status="succeeded", repo="example-org/example-repo", ref="#7"):

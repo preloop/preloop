@@ -11,6 +11,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from preloop.models import models
 from preloop.models.crud import crud_account
 from preloop.models.crud.flow_runner import ONLINE_HEARTBEAT_TTL, crud_flow_runner
 from preloop.models.crud.user import crud_user
@@ -1028,6 +1029,7 @@ def lease_job(
     pool: str,
     execution_id: UUID,
     payload: Dict[str, Any],
+    selected_flow: Optional[models.Flow] = None,
     required_runner_id: Optional[UUID] = None,
     outcome: Optional[Dict[str, Any]] = None,
     reroute_from: Optional[UUID] = None,
@@ -1278,6 +1280,10 @@ def lease_job(
             )
         if outcome is not None:
             outcome["consent_status"] = "approved"
+        if selected_flow is not None:
+            crud_flow_execution.record_configuration(
+                db, execution_id, selected_flow, "runner_lease"
+            )
         assignment = crud_flow_runner.create_assignment(
             db,
             runner_id=runner.id,

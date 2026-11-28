@@ -326,7 +326,7 @@ async def hydrate_host_exec_job(db: Session, job: Dict[str, Any]) -> Dict[str, A
     execution = crud_flow_execution.get(db, id=execution_id)
     if execution is None or getattr(execution, "flow_id", None) is None:
         raise HostExecDeliveryError("Host execution no longer exists")
-    flow = crud_flow.get(db, id=execution.flow_id)
+    flow = crud_flow.get(db, id=execution.flow_id, for_execution=True)
     if flow is None:
         raise HostExecDeliveryError("Host execution flow no longer exists")
     from preloop.services.host_exec_publication import (
@@ -412,7 +412,7 @@ async def hydrate_host_exec_job(db: Session, job: Dict[str, Any]) -> Dict[str, A
             db, execution.flow_id, execution.trigger_event_details or {}, None
         )
         orchestrator.execution_log = execution
-        orchestrator._get_flow_details(refresh=True)
+        orchestrator._get_flow_details(selected_flow=flow)
         try:
             context = await orchestrator.prepare_host_exec_checkout_context()
         except RepositoryBindingError as exc:
@@ -448,7 +448,9 @@ async def hydrate_host_exec_job(db: Session, job: Dict[str, Any]) -> Dict[str, A
     from preloop.models.crud.execution_credentials import register
     from preloop.utils.execution_credentials import credential_values
 
+    crud_flow_execution.record_configuration(db, execution.id, flow, "runner_delivery")
     register(db, execution.id, credential_values(hydrated))
+    db.commit()
     return hydrated
 
 
