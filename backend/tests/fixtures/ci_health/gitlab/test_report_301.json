@@ -1,0 +1,6 @@
+{"total_time": 4.1, "total_count": 120, "success_count": 118, "failed_count": 2, "skipped_count": 0, "error_count": 0,
+ "test_suites": [{"name": "unit", "total_count": 120, "failed_count": 2, "test_cases": [
+   {"status": "failed", "name": "TestQueueDrain", "classname": "example.com/svc/internal/queue", "execution_time": 2.01, "system_output": "queue_test.go:41: drained 9 of 10 items within 2s"},
+   {"status": "success", "name": "TestHealth", "classname": "example.com/svc/internal/api", "execution_time": 0.01},
+   {"status": "failed", "name": "TestRetryBackoff/jitter", "classname": "example.com/svc/internal/queue", "execution_time": 0.3}
+ ]}]}

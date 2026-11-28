@@ -44,6 +44,7 @@ from .tracker import Tracker, TrackerType
 from .client_version_log import ClientVersionLog
 from .ai_model import AIModel
 from .flow_change_proposal import FlowChangeProposal
+from .flow_state import FlowState
 from .flow_artifact import FlowArtifact
 from .flow import Flow
 from .flow_definition_snapshot import (
@@ -336,6 +337,7 @@ __all__ = [
     "AIModel",
     "Flow",
     "FlowChangeProposal",
+    "FlowState",
     "FlowDefinitionSnapshot",
     "ExecutionConfigurationSelection",
     "FlowArtifact",

@@ -1,4 +1,5 @@
 import '../../components/flow-conversation-list';
+import '../../components/flow-ci-health-card';
 import {
   conversationLabel,
   conversationRequest,
@@ -1342,6 +1343,11 @@ export class FlowView extends LitElement {
               : nothing
           }
           ${this.renderFailingSince()}
+          <!-- Only flows that run the ci_health_report collector have a CI
+               health ledger; for every other flow the card stays hidden. -->
+          <flow-ci-health-card
+            .flowId=${this.flowId || ''}
+          ></flow-ci-health-card>
           <!-- Recent executions come before the prompt (#1692): the runs are
                why the page is opened, the prompt is reference. -->
           <sl-card data-recent-executions>

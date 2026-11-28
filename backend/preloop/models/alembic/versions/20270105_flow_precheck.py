@@ -5,7 +5,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision = "20270105_flow_precheck"
-down_revision = "20270104_execution_definition"
+down_revision = "20270105_flow_state"
 branch_labels = None
 depends_on = None
 

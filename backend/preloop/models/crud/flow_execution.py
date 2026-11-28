@@ -1912,6 +1912,49 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             query = query.join(Flow).filter(Flow.account_id == account_id)
         return query.order_by(FlowExecution.start_time.desc()).first()
 
+    def list_outcomes(
+        self,
+        db: Session,
+        *,
+        flow_id: Any,
+        account_id: Any,
+        since: Optional[datetime] = None,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        """Lean outcome rows of one flow's executions, newest first.
+
+        Reads only the columns value reporting needs (status, times, result,
+        tokens, cost), never the evidence archive or workspace snapshot.
+
+        Args:
+            db: Database session.
+            flow_id: Flow whose executions to read.
+            account_id: Owning account of the flow.
+            since: Only executions started at or after this time.
+            limit: Maximum rows.
+
+        Returns:
+            Dicts with ``id``, ``status``, ``start_time``, ``end_time``,
+            ``result``, ``total_tokens`` and ``estimated_cost``.
+        """
+        query = (
+            db.query(
+                FlowExecution.id,
+                FlowExecution.status,
+                FlowExecution.start_time,
+                FlowExecution.end_time,
+                FlowExecution.result,
+                FlowExecution.total_tokens,
+                FlowExecution.estimated_cost,
+            )
+            .join(Flow, Flow.id == FlowExecution.flow_id)
+            .filter(FlowExecution.flow_id == flow_id, Flow.account_id == account_id)
+        )
+        if since is not None:
+            query = query.filter(FlowExecution.start_time >= since)
+        rows = query.order_by(FlowExecution.start_time.desc()).limit(limit).all()
+        return [dict(row._mapping) for row in rows]
+
     def completed_merge_audits(
         self,
         db: Session,

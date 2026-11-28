@@ -626,9 +626,15 @@ func TestDiscoveryReportSendsContentAfterTheReport(t *testing.T) {
 	inventoryTestDependencies(t, home)
 	oldProbes := inventoryProbes
 	inventoryProbes = inventoryTestDependencies(t, home)
-	oldReader := readMachineID
+	oldReader, oldInventoryReader := readMachineID, readInventoryMachineID
 	readMachineID = func() (string, error) { return "synthetic-device", nil }
-	t.Cleanup(func() { inventoryProbes, readMachineID = oldProbes, oldReader })
+	// The report path reads the inventory identity; hosts without a machine id
+	// (minimal CI containers) must not reach the OS probe.
+	readInventoryMachineID = readMachineID
+	t.Cleanup(func() {
+		inventoryProbes, readMachineID = oldProbes, oldReader
+		readInventoryMachineID = oldInventoryReader
+	})
 	content := newContentServer(t)
 	var order []string
 	var sent [][]byte

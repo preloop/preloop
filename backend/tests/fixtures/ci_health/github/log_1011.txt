@@ -1,0 +1,9 @@
+2026-01-01T08:01:15.1000000Z ##[group]Run pytest -n 4
+2026-01-01T08:01:15.1000000Z ============================= test session starts ==============================
+2026-01-01T08:10:58.2000000Z tests/api/test_orders.py::TestCheckout::test_retry_after_timeout FAILED [ 41%]
+2026-01-01T08:11:00.0000000Z E       AssertionError: expected status 200, got 503 after 3.21s
+2026-01-01T08:11:01.0000000Z =========================== short test summary info ============================
+2026-01-01T08:11:01.0000000Z [31mFAILED[0m tests/api/test_orders.py::TestCheckout::test_retry_after_timeout - AssertionError: expected status 200, got 503 after 3.21s
+2026-01-01T08:11:01.0000000Z ERROR tests/db/test_migrations.py::test_upgrade_head - sqlalchemy.exc.OperationalError: connection to server at "10.0.0.7" failed
+2026-01-01T08:11:02.0000000Z ========= 1 failed, 1 error, 812 passed in 590.12s (0:09:50) =========
+2026-01-01T08:11:02.0000000Z ##[error]Process completed with exit code 1.

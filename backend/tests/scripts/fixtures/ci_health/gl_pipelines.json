@@ -1,0 +1,18 @@
+[
+ {
+  "id": 9001,
+  "status": "failed",
+  "sha": "dddddddddddddddddddddddddddddddddddddddd",
+  "ref": "main",
+  "source": "push",
+  "web_url": "https://gitlab.example.com/group/project/-/pipelines/9001"
+ },
+ {
+  "id": 9002,
+  "status": "running",
+  "sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "ref": "main",
+  "source": "push",
+  "web_url": "x"
+ }
+]

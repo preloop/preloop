@@ -63,6 +63,7 @@ class Forge:
         self.pr_reads = 0
         self.race = False
         self.existing = False
+        self.parents = [BASE, HEAD]
 
     def request(
         self, path: str, data: dict | None = None, *, method: str = "GET"
@@ -80,7 +81,7 @@ class Forge:
                 pr["head"]["sha"] = "d" * 40
             return pr
         if path == f"git/commits/{MERGE}":
-            return {"parents": [{"sha": BASE}, {"sha": HEAD}]}
+            return {"parents": [{"sha": sha} for sha in self.parents]}
         raise AssertionError(path)
 
     def pages(self, path: str, key: str = "") -> list[dict]:
@@ -132,6 +133,29 @@ def test_new_push_racing_dispatch_is_rejected() -> None:
     forge = Forge()
     forge.race = True
     approve_full(forge, 1)
+    assert not forge.dispatches
+
+
+@pytest.mark.parametrize("field", ["head_sha", "base_sha"])
+def test_stale_selection_receipt_never_dispatches(
+    field: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An otherwise green run cannot reuse evidence from another head or base."""
+    forge = Forge()
+    receipt = {"head_sha": HEAD, "base_sha": BASE, "tested_sha": MERGE, field: "d" * 40}
+    monkeypatch.setattr("ci_control.read_selection", lambda api, run_id: receipt)
+
+    assert "no receipt for the current head/base" in approve_full(forge, 1)
+    assert not forge.dispatches
+
+
+@pytest.mark.parametrize("parents", [[HEAD], [HEAD, BASE], [BASE, "d" * 40]])
+def test_wrong_merge_parents_never_dispatch(parents: list[str]) -> None:
+    """Even a current receipt must identify the exact base-then-head merge."""
+    forge = Forge()
+    forge.parents = parents
+
+    assert "tested candidate does not contain" in approve_full(forge, 1)
     assert not forge.dispatches
 
 

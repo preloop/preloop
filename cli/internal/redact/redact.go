@@ -2,9 +2,10 @@
 // device.
 //
 // Detection runs the gitleaks default rule set (gitleaks.toml, vendored
-// unmodified from the version the repository's secret scan pins) through a
-// matcher that follows gitleaks' rule semantics: keyword prefilter, secret
-// capture group, entropy floor and allowlists. On top of that sit a few local
+// from the version the repository's secret scan pins, with the gcp-api-key
+// allowlist examples hex-escaped) through a matcher that follows gitleaks'
+// rule semantics: keyword prefilter, secret capture group, entropy floor and
+// allowlists. On top of that sit a few local
 // rules for shapes gitleaks leaves alone because they are too noisy for a
 // repository scan: any Authorization-style header value, any URL userinfo,
 // assignments to secret-looking names whatever the value's entropy, bare

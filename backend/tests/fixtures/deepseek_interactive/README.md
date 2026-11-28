@@ -43,7 +43,9 @@ PRELOOP_DISABLE_TELEMETRY=true PGOPTIONS='-c timezone=UTC' \
 ```
 
 To repeat in fresh UID 10000 containers, build the fixture image from the repo
-root and add `DEEPSEEK_CONVERSATION_IMAGE=preloop-deepseek-interactive-test:local`:
+root and add `DEEPSEEK_CONVERSATION_IMAGE=preloop-deepseek-interactive-test:local`.
+The image installs `@deepseek-ai/dsh@0.1.5-rc.2` with `npm ci` from
+`dsh/package-lock.json`.
 
 ```sh
 PRELOOP_DISABLE_TELEMETRY=true docker build \
