@@ -988,6 +988,7 @@ async def _agent_permission_check(
     tool_input.pop("_preloop_repository", None)
     tool_input.pop("_preloop_source", None)
     tool_input.pop("_preloop_origin", None)
+    tool_input.pop("_preloop_tool_origin", None)
     if payload.session_id or payload.model:
         tool_input["_preloop_origin"] = {
             "session_id": (payload.session_id or "").strip() or None,

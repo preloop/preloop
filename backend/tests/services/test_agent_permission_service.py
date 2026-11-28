@@ -2345,3 +2345,68 @@ async def test_cursor_mcp_read_fallback_still_requires_approval() -> None:
                 )
             )
         workflow.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool_origin", "expected"),
+    [(None, "native"), ("native", "native"), ("mcp", "mcp")],
+)
+async def test_request_agent_permission_stamps_server_tool_origin(
+    tool_origin: str | None, expected: str
+) -> None:
+    """The approval records a server-set tool origin (#2595).
+
+    ``get_approval_status`` reads it to tell a native harness tool, which it
+    cannot run, from an MCP tool it replays. A caller-supplied value in the
+    tool input is overwritten.
+    """
+    account_id = str(uuid.uuid4())
+    default_workflow = models.ApprovalWorkflow(
+        id=uuid.uuid4(),
+        account_id=account_id,
+        name="Default Approval Workflow",
+        approval_type=DEFAULT_APPROVAL_TYPE,
+        is_default=True,
+        timeout_seconds=300,
+    )
+    db = _enforced_db(default_workflow)
+    tool_config = MagicMock()
+    tool_config.id = uuid.uuid4()
+    tool_config.is_enabled = True
+    approval = MagicMock()
+    approval.id = uuid.uuid4()
+    approval.status = "approved"
+    approval.approver_comment = None
+    forged = "native" if expected == "mcp" else "mcp"
+
+    with (
+        patch(
+            "preloop.services.agent_permission_service.get_async_db_session"
+        ) as mock_get_session,
+        patch("preloop.services.approval_service.ApprovalService") as mock_service_cls,
+        patch(
+            "preloop.models.crud.tool_configuration."
+            "get_tool_config_by_name_and_source_async",
+            new=AsyncMock(return_value=tool_config),
+        ),
+        patch(
+            "preloop.services.agent_permission_service.apply_native_access_rules",
+            new=AsyncMock(return_value=None),
+        ),
+    ):
+        mock_get_session.return_value.__aenter__.return_value = db
+        mock_service = AsyncMock()
+        mock_service.create_and_notify = AsyncMock(return_value=approval)
+        mock_service_cls.return_value = mock_service
+
+        await request_agent_permission(
+            **_permission_kwargs(
+                account_id=account_id,
+                tool_input={"command": "ls", "_preloop_tool_origin": forged},
+                tool_origin=tool_origin,
+            )
+        )
+
+    kwargs = mock_service.create_and_notify.await_args.kwargs
+    assert kwargs["tool_args"]["_preloop_tool_origin"] == expected

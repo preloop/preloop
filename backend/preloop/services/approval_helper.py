@@ -383,9 +383,11 @@ async def require_approval(
         - If approved: (True, "")
         - If declined/error: (False, "error message")
     """
-    arguments = {
-        key: value for key, value in arguments.items() if key != "_preloop_origin"
-    }
+    # Hook-only markers: an MCP approval never stores them, so a caller
+    # cannot make an MCP call look like a native one (#2595).
+    from preloop.utils.approval_origin import strip_hook_markers
+
+    arguments = strip_hook_markers(arguments)
     # Scope the approval audit metadata to THIS call: every `require_approval`
     # sets the ContextVar but only `ask_user` consumes it, and many paths
     # below return without producing fresh metadata (allow/deny rules,

@@ -3,12 +3,38 @@
 from typing import Any, Optional
 
 
+#: Server-set marker naming whether a hook-recorded approval is for a native
+#: harness tool (``"native"``) or an MCP tool the harness observed (``"mcp"``).
+#: Callers cannot set it: the permission-check endpoint and the MCP approval
+#: path strip it from caller input before anything is stored.
+TOOL_ORIGIN_MARKER = "_preloop_tool_origin"
+
+
+HOOK_ONLY_MARKERS = ("_preloop_origin", "_preloop_source", TOOL_ORIGIN_MARKER)
+
+
+def strip_hook_markers(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Drop the keys only the permission hook may store on an approval.
+
+    An MCP tool call goes through ``require_approval``; its arguments come
+    from the caller, so these markers are removed before anything is stored.
+    Otherwise a caller could make an MCP approval look like a native one.
+
+    Args:
+        arguments: Caller-supplied tool arguments.
+
+    Returns:
+        A copy without the hook-only markers.
+    """
+    return {k: v for k, v in arguments.items() if k not in HOOK_ONLY_MARKERS}
+
+
 def is_native_tool_approval(tool_args: Any) -> bool:
     """Whether an approval was raised by a harness hook for a native tool.
 
-    The permission-check endpoint stamps ``_preloop_source`` and/or
-    ``_preloop_origin`` on the tool input of every native call it records;
-    MCP tool approvals never carry either key.
+    Only the server-set :data:`TOOL_ORIGIN_MARKER` decides. ``_preloop_source``
+    and ``_preloop_origin`` are not used: a hook stamps them on MCP-origin
+    checks too, and an approval of an MCP tool must still be replayed.
 
     Args:
         tool_args: The approval request's stored ``tool_args``.
@@ -18,9 +44,7 @@ def is_native_tool_approval(tool_args: Any) -> bool:
     """
     if not isinstance(tool_args, dict):
         return False
-    return bool(tool_args.get("_preloop_source")) or isinstance(
-        tool_args.get("_preloop_origin"), dict
-    )
+    return tool_args.get(TOOL_ORIGIN_MARKER) == "native"
 
 
 def native_tool_approval_note(tool_name: str) -> str:

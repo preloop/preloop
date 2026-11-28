@@ -23,6 +23,7 @@ from typing import Any, Optional, Tuple
 from sqlalchemy import String, and_, cast, func, select
 from sqlalchemy.exc import IntegrityError
 
+from preloop.utils.approval_origin import TOOL_ORIGIN_MARKER
 from preloop.models import models
 from preloop.models.db.session import get_async_db_session
 from preloop.schemas.subject_governance import (
@@ -860,6 +861,11 @@ async def request_agent_permission(
             approval_tool_args = dict(tool_input or {})
             approval_tool_args.pop(native_flow_park.NATIVE_PARK_MARKER, None)
             approval_tool_args.pop(NATIVE_DELIVERY_WARNING, None)
+            # Server-set, never caller-set: get_approval_status replays an MCP
+            # tool but only reports the decision for a native one (#2595).
+            approval_tool_args[TOOL_ORIGIN_MARKER] = (
+                "mcp" if tool_origin == "mcp" else "native"
+            )
             delivery_warning = None
             if flow_execution_id is None and (
                 matched_require is not None or not (approvals_off or flow_policy_label)

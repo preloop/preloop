@@ -364,11 +364,11 @@ class TestRegisteredToolBehaviour:
         "markers",
         [
             {
+                "_preloop_tool_origin": "native",
                 "_preloop_source": "claude_code",
                 "_preloop_origin": {"session_id": "native-session", "model": None},
             },
-            {"_preloop_origin": {"session_id": "native-session", "model": None}},
-            {"_preloop_source": "codex_cli"},
+            {"_preloop_tool_origin": "native"},
         ],
     )
     async def test_approved_native_tool_is_not_replayed(
@@ -427,6 +427,67 @@ class TestRegisteredToolBehaviour:
         assert "again" in result["native_tool_note"]
         # A native grant is claimed later through ``tool_result IS NULL``.
         assert approval.tool_result is None
+
+    @pytest.mark.parametrize(
+        "markers",
+        [
+            {
+                "_preloop_tool_origin": "mcp",
+                "_preloop_source": "claude_code",
+                "_preloop_origin": {"session_id": "native-session", "model": None},
+            },
+            # Hook markers alone do not make an approval native.
+            {
+                "_preloop_source": "claude_code",
+                "_preloop_origin": {"session_id": "native-session", "model": None},
+            },
+        ],
+    )
+    async def test_hook_recorded_mcp_approval_still_replays(
+        self, mcp_server: DynamicFastMCP, markers: dict
+    ) -> None:
+        """Only the server-set ``"native"`` origin skips the replay (#2595)."""
+        tool = await mcp_server.get_tool("get_approval_status")
+        request_id = uuid4()
+        account_id = uuid4()
+        approval = models.ApprovalRequest(
+            id=request_id,
+            account_id=account_id,
+            status="approved",
+            tool_name="get_issue",
+            tool_args={"issue": "ABC-1", **markers},
+            responses=[],
+        )
+        approval_result = MagicMock()
+        approval_result.scalar_one_or_none.return_value = approval
+        events_result = MagicMock()
+        events_result.scalars.return_value = []
+        db = AsyncMock()
+        db.execute.side_effect = [approval_result, events_result, approval_result]
+
+        @asynccontextmanager
+        async def session() -> AsyncIterator[AsyncMock]:
+            yield db
+
+        with (
+            patch(
+                "preloop.services.dynamic_fastmcp_http.get_current_user_context",
+                return_value=SimpleNamespace(account_id=str(account_id)),
+            ),
+            patch("preloop.models.db.session.get_async_db_session", new=session),
+            patch.object(
+                mcp_server,
+                "call_registered_tool_without_policy",
+                new=AsyncMock(return_value="Replay completed"),
+            ) as replay,
+            patch(
+                "preloop.services.approval_service._log_approval_tool_executed_async"
+            ),
+        ):
+            result = json.loads(await tool.fn(request_id=str(request_id)))
+
+        replay.assert_awaited_once()
+        assert "native_tool_note" not in result
 
     async def _fn(self, mcp_server, name):
         tool = await mcp_server.get_tool(name)
