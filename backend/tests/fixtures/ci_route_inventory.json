@@ -265,6 +265,7 @@
   "GET /api/v1/policies/versions": "deny",
   "GET /api/v1/policies/versions/{version_id}": "deny",
   "GET /api/v1/projects": "deny",
+  "GET /api/v1/projects/discovery": "deny",
   "GET /api/v1/projects/{project_id}": "deny",
   "GET /api/v1/projects/{project_id}/pull-requests": "deny",
   "GET /api/v1/projects/{project_id}/readiness-policy": "deny",

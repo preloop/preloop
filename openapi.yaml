@@ -13586,6 +13586,79 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/projects/discovery:
+    get:
+      tags:
+      - Projects
+      summary: Get Project Discovery
+      description: 'Discover project candidates from stored activity in an inclusive
+        UTC window.
+
+
+        The latest active day ranks first, then the number of distinct work items,
+
+        pushes and sessions, then the latest instant and stable candidate ID. Repeated
+
+        observations of one work item contribute once. Up to 500 recent rows per
+
+        input and eight evidence items per candidate are used. A missing source
+
+        has unknown coverage. Directory and hostless repository hints can carry
+
+        possible project IDs for confirmation.'
+      operationId: get_project_discovery_api_v1_projects_discovery_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: days
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 90
+          minimum: 1
+          default: 14
+          title: Days
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 50
+          minimum: 1
+          default: 20
+          title: Limit
+      - name: as_of
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          description: Inclusive window end, defaulting to now.
+          title: As Of
+        description: Inclusive window end, defaulting to now.
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectDiscovery'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/projects/{project_id}:
     get:
       tags:
@@ -54921,6 +54994,151 @@ components:
       - organization_id
       title: ProjectCreate
       description: Model for creating a new project.
+    ProjectDiscovery:
+      properties:
+        start:
+          type: string
+          format: date-time
+          title: Start
+        end:
+          type: string
+          format: date-time
+          title: End
+        coverage:
+          $ref: '#/components/schemas/ProjectDiscoveryCoverage'
+        candidates:
+          items:
+            $ref: '#/components/schemas/ProjectDiscoveryCandidate'
+          type: array
+          title: Candidates
+        truncated:
+          type: boolean
+          title: Truncated
+          description: An input row cap or the candidate limit was reached.
+      type: object
+      required:
+      - start
+      - end
+      - coverage
+      - candidates
+      - truncated
+      title: ProjectDiscovery
+      description: Ranked candidates for an inclusive UTC window.
+    ProjectDiscoveryCandidate:
+      properties:
+        id:
+          type: string
+          title: Id
+        label:
+          type: string
+          title: Label
+        project_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Project Id
+        repository_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Repository Id
+          description: Provider, host and immutable provider repository identifier,
+            when known.
+        repository:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Repository
+          description: Host-qualified repository when known.
+        possible_project_ids:
+          items:
+            type: string
+            format: uuid
+          type: array
+          title: Possible Project Ids
+          description: Up to 20 visible matches for confirmation.
+        possible_project_count:
+          type: integer
+          title: Possible Project Count
+          default: 0
+        evidence_count:
+          type: integer
+          title: Evidence Count
+          default: 0
+        evidence:
+          items:
+            $ref: '#/components/schemas/ProjectDiscoveryEvidence'
+          type: array
+          title: Evidence
+          description: Up to eight latest distinct items.
+        coverage:
+          $ref: '#/components/schemas/ProjectDiscoveryCoverage'
+      type: object
+      required:
+      - id
+      - label
+      title: ProjectDiscoveryCandidate
+      description: A tracker project, observed repository or unresolved session workspace.
+    ProjectDiscoveryCoverage:
+      properties:
+        sessions:
+          type: string
+          enum:
+          - observed
+          - unknown
+          title: Sessions
+          default: unknown
+        tracker:
+          type: string
+          enum:
+          - observed
+          - unknown
+          title: Tracker
+          default: unknown
+      type: object
+      title: ProjectDiscoveryCoverage
+      description: Observed means eligible evidence was seen in the requested window.
+    ProjectDiscoveryEvidence:
+      properties:
+        reason:
+          type: string
+          enum:
+          - session_activity
+          - repository_push
+          - issue_activity
+          - pull_request_activity
+          - pull_request_merged
+          title: Reason
+        at:
+          type: string
+          format: date-time
+          title: At
+        ref:
+          type: string
+          title: Ref
+        session_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Session Id
+        sources:
+          items:
+            type: string
+            enum:
+            - sessions
+            - tracker
+          type: array
+          title: Sources
+      type: object
+      required:
+      - reason
+      - at
+      - ref
+      - sources
+      title: ProjectDiscoveryEvidence
+      description: Latest dated observation of a distinct work item, push or session.
     ProjectIdentifier:
       properties:
         key:
