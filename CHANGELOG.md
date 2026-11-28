@@ -74,6 +74,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Account-wide approval statistics no longer fail on PostgreSQL with
+  `function jsonb_path_exists(jsonb, character varying) does not exist`; the
+  response filter is passed as a `jsonpath`.
 - `preloop policy apply` now records a policy version for every successful
   apply, prints its number, and `preloop policy list` and rollback can use it.
   Previously only an explicit `POST /api/v1/policies/versions` created one

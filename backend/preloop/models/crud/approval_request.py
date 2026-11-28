@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional, Union
 from uuid import UUID
 from sqlalchemy import Text, and_, cast, func, or_
+from sqlalchemy.dialects.postgresql import JSONPATH
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Query, Session, selectinload
 from sqlalchemy.future import select
@@ -470,10 +471,15 @@ class CRUDApprovalRequest(CRUDBase[ApprovalRequest]):
         counting whatever page it happened to load.
         """
         model = self.model
+        # A bare string binds as varchar; PostgreSQL has no
+        # jsonb_path_exists(jsonb, varchar), so type it as jsonpath.
         recorded_response = func.jsonb_path_exists(
             model.responses,
-            '$[*] ? (@.user_id.type() == "string" && @.user_id != "" && '
-            '(@.decision == "approved" || @.decision == "declined"))',
+            cast(
+                '$[*] ? (@.user_id.type() == "string" && @.user_id != "" && '
+                '(@.decision == "approved" || @.decision == "declined"))',
+                JSONPATH,
+            ),
         )
         recorded_event = (
             select(models.ApprovalEvent.id)
