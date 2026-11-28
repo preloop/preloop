@@ -5,7 +5,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any
 from unittest.mock import AsyncMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
@@ -346,3 +346,59 @@ async def test_revoked_credential_and_wrong_grant_source(
     db_session.flush()
     with pytest.raises(ToolError, match="credential unavailable"):
         await scope.call("inspect_flows", scope.target)
+
+
+async def test_two_pages_after_project_and_visibility_filter(
+    scope: Scenario, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ids = [UUID(int=n) for n in range(1, 59)]
+    hidden = {ids[3], ids[25], ids[51]}
+    db_session.add_all(
+        models.Flow(
+            id=flow_id,
+            name=f"Page case {i}",
+            account_id=scope.flow.account_id,
+            trigger_project_ids=[scope.project],
+            prompt_template="Report",
+            agent_config={},
+        )
+        for i, flow_id in enumerate(ids)
+    )
+    db_session.flush()
+    monkeypatch.setattr(
+        definitions,
+        "filter_viewable",
+        lambda db, user, kind, flows: [f for f in flows if f.id not in hidden],
+    )
+    one = await scope.call("inspect_flows", {"project_id": scope.project})
+    assert len(one["flows"]) == definitions.PAGE_SIZE
+    assert one["next_after"] == one["flows"][-1]["flow_id"]
+    two = await scope.call(
+        "inspect_flows", {"project_id": scope.project, "after": one["next_after"]}
+    )
+    visible = [UUID(f["flow_id"]) for f in one["flows"] + two["flows"]]
+    expected = set(ids).difference(hidden) | {scope.flow.id, UUID(scope.actor.flow_id)}
+    assert visible == sorted(expected)
+    assert two["next_after"] is None
+
+
+async def test_timeout_and_iteration_diffs(scope: Scenario) -> None:
+    request = {
+        **scope.proposal,
+        "changes": {"timeout_seconds": 720, "max_iterations": 28},
+    }
+    receipt = await scope.call("propose_flow_change", request)
+    review = await scope.call(
+        "get_flow_change_proposal", {**scope.target, "digest": receipt["digest"]}
+    )
+    assert review["document"]["diff"] == [
+        {"field": "max_iterations", "before": None, "after": 28},
+        {"field": "timeout_seconds", "before": None, "after": 720},
+    ]
+    assert review["current_revision"] == request["base_revision"]
+    assert (await scope.call("inspect_flows", scope.target))["run_settings"] == {
+        "timeout_seconds": None,
+        "max_budget": 10,
+        "max_iterations": None,
+        "interval_every": 1,
+    }
