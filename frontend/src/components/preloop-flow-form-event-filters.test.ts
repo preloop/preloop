@@ -333,6 +333,20 @@ describe('PreloopFlowForm event filters behaviour', () => {
     expect(payload.trigger_config).to.deep.equal({ labels: ['agent-ready'] });
   });
 
+  it('shows a nested filter_conditions.labels filter and saves it flat (#2601)', async () => {
+    const element = await mount(
+      trackerFlow({ filter_conditions: { labels: ['agent-ready'] } })
+    );
+    (element as any).filtersExpanded = true;
+    await element.updateComplete;
+
+    expect(filterInput(element, 'Labels (comma-separated)').value).to.equal(
+      'agent-ready'
+    );
+    const payload = await submit(element);
+    expect(payload.trigger_config).to.deep.equal({ labels: ['agent-ready'] });
+  });
+
   it('does not create trigger_config while rendering a flow without filters', async () => {
     const element = await mount(trackerFlow());
 

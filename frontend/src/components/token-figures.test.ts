@@ -210,6 +210,20 @@ describe('token-figures', () => {
     expect(tokenFiguresTitle(null)).to.equal('No token usage recorded');
   });
 
+  it('names the denominator of the hit rate (#2591)', () => {
+    expect(
+      tokenFiguresTitle({
+        prompt_tokens: 48466,
+        completion_tokens: 10,
+        total_tokens: 48476,
+        cache_read_tokens: 16413,
+        cache_write_tokens: 30881,
+        uncached_input_tokens: 1172,
+        cache_hit_ratio: null,
+      })
+    ).to.contain('93% hit, of read plus not cached; cache writes excluded');
+  });
+
   it('drops the cache segment where a column is too narrow for it', async () => {
     const el = await fixture<TokenFigures>(
       html`<token-figures .usage=${USAGE} hide-cache></token-figures>`

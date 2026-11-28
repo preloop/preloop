@@ -116,6 +116,9 @@ func newReviewPostingShowCmd() *cobra.Command {
 			}
 			block := platformReviewBlock(flow)
 			checks := reviewPostingChecks(flow)
+			if check, known := reviewPostingProviderCheck(client, flow); known {
+				checks = append(checks, check)
+			}
 			fields := findingFieldAppearances(flow["result_schema"])
 			if asJSON {
 				missing := []string{}
@@ -610,6 +613,43 @@ func reviewPostingChecks(flow map[string]any) []reviewPostingCheck {
 	}
 }
 
+// reviewPostingProviderLabel names the check that the flow's repositories
+// are on GitHub, the only provider review posting writes to.
+const reviewPostingProviderLabel = "GitHub repositories"
+
+// reviewPostingProviderCheck reads each repository's tracker and fails when
+// one is not GitHub, the same refusal enable makes. It reports known=false
+// when no tracker could be read, so show does not guess.
+func reviewPostingProviderCheck(client *api.Client, flow map[string]any) (reviewPostingCheck, bool) {
+	config, _ := flow["git_clone_config"].(map[string]any)
+	repos, _ := config["repositories"].([]any)
+	known := false
+	for _, raw := range repos {
+		repo, _ := raw.(map[string]any)
+		trackerID, _ := repo["tracker_id"].(string)
+		if trackerID == "" {
+			continue
+		}
+		var tracker struct {
+			TrackerType string `json:"tracker_type"`
+		}
+		if err := client.Get(api.RESTPrefix+"/trackers/"+url.PathEscape(trackerID), &tracker); err != nil ||
+			tracker.TrackerType == "" {
+			continue
+		}
+		known = true
+		if tracker.TrackerType != "github" {
+			name, _ := repo["identifier"].(string)
+			return reviewPostingCheck{
+				reviewPostingProviderLabel, false,
+				fmt.Sprintf("review posting supports GitHub repositories only; %s is on a %s tracker, so enable will refuse this flow",
+					name, tracker.TrackerType),
+			}, true
+		}
+	}
+	return reviewPostingCheck{reviewPostingProviderLabel, true, ""}, known
+}
+
 // findingFieldRole is how a declared finding field appears in the posted review.
 func findingFieldRole(name string) string {
 	switch name {
@@ -763,6 +803,11 @@ func printReviewPostingConfig(out io.Writer, flowID string, flow map[string]any,
 			detail = ": " + check.reason
 		}
 		fmt.Fprintf(out, "  [%s] %s%s\n", mark, check.label, detail)
+		if !check.ok && check.label == reviewPostingProviderLabel {
+			// Pointing at GitHub permissions would send the operator to a
+			// provider this flow's repositories are not on.
+			return
+		}
 	}
 	fmt.Fprintln(out, "  [check in GitHub] App permissions: Pull requests: Read and write; Commit statuses: Read and write (for a status)")
 }

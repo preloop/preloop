@@ -407,6 +407,58 @@ def _reject_invalid_platform_review(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+def _reject_unrunnable_read_only_review(
+    *,
+    git_clone_config: Any,
+    agent_type: Any,
+    agent_config: Any,
+    runner_pool: Any,
+    allowed_mcp_servers: Any = None,
+    allowed_mcp_tools: Any = None,
+) -> None:
+    """Refuse a read-only review whose executor could never run it.
+
+    Admission checks the executor on every execution; saving a flow that
+    would always fail there only moves the error to the first run. The
+    repository shape is checked by the flow schema itself.
+
+    Raises:
+        HTTPException: 422 with the executor restriction.
+    """
+    from types import SimpleNamespace
+
+    from preloop.services.read_only_review import (
+        read_only_review,
+        validate_read_only_executor,
+    )
+
+    config = (
+        git_clone_config.model_dump()
+        if hasattr(git_clone_config, "model_dump")
+        else git_clone_config
+    )
+    if not isinstance(config, dict) or not read_only_review(config):
+        return
+    raw_agent_config = (
+        agent_config.model_dump()
+        if hasattr(agent_config, "model_dump")
+        else agent_config
+    )
+    try:
+        validate_read_only_executor(
+            SimpleNamespace(
+                git_clone_config=config,
+                agent_type=getattr(agent_type, "value", agent_type),
+                agent_config=raw_agent_config,
+                runner_pool=runner_pool,
+            )
+        )
+        if allowed_mcp_servers or allowed_mcp_tools:
+            raise ValueError("Read-only review requires no MCP tools or servers")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 def _reject_unusable_runner_pin(
     agent_config: Any, *, db: Optional[Session], current_user: Any
 ) -> None:
@@ -546,6 +598,14 @@ def create_flow(
         trigger_event_types=flow_in.trigger_event_types,
         trigger_project_ids=flow_in.trigger_project_ids,
         webhook_config=flow_in.webhook_config,
+    )
+    _reject_unrunnable_read_only_review(
+        git_clone_config=flow_in.git_clone_config,
+        agent_type=flow_in.agent_type,
+        agent_config=flow_in.agent_config,
+        runner_pool=flow_in.runner_pool,
+        allowed_mcp_servers=flow_in.allowed_mcp_servers,
+        allowed_mcp_tools=flow_in.allowed_mcp_tools,
     )
     _stamp_platform_review(flow_in.git_clone_config, None)
     _reject_host_exec_flow(
@@ -4563,6 +4623,20 @@ def prepare_flow_update(
             if "webhook_config" in flow_in.model_fields_set
             else flow.webhook_config
         ),
+    )
+
+    def _after_save(field: str) -> Any:
+        if field in flow_in.model_fields_set:
+            return getattr(flow_in, field)
+        return getattr(flow, field)
+
+    _reject_unrunnable_read_only_review(
+        git_clone_config=_after_save("git_clone_config"),
+        agent_type=_after_save("agent_type"),
+        agent_config=_after_save("agent_config"),
+        runner_pool=_after_save("runner_pool"),
+        allowed_mcp_servers=_after_save("allowed_mcp_servers"),
+        allowed_mcp_tools=_after_save("allowed_mcp_tools"),
     )
 
     _stamp_platform_review(flow_in.git_clone_config, flow.git_clone_config)
