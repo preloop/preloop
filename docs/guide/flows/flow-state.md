@@ -46,7 +46,7 @@ reports belong in the run's evidence or artifacts.
 
 Keys that start with `preloop.` are written by platform features. One
 example is `preloop.ci_health`, the failure ledger the
-CI health collector maintains. A run can read them, but
+[CI health collector](ci-health.md) maintains. A run can read them, but
 `put_flow_state` refuses them.
 
 ## From the API and the console

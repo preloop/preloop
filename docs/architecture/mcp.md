@@ -314,6 +314,24 @@ keys per flow. Keys under `preloop.` are written only by platform features
 (the CI health ledger); runs can read them. Owners use
 `/api/v1/flows/{flow_id}/state`. See [Flow state](../guide/flows/flow-state.md).
 
+## CI health collector
+
+`ci_health_report` (default off, flow executions only) reads GitHub Actions or
+GitLab CI on the server with the tracker's stored credential, after the same
+repository and tracker-scope checks as `get_pull_request`. Code lives in
+`services/ci_health/`:
+
+- `providers.py`: the adapters behind the `CiProvider` protocol.
+- `transport.py`: GET only, a shared request budget and rate-limit floor,
+  and tail-capped log streaming.
+- `signatures.py`: pytest, go test, vitest, jest and JUnit.
+- `aggregate.py`: the per-workflow and per-job numbers.
+- `ledger.py`: the failure ledger, stored as reserved flow state
+  `preloop.ci_health` with compare-and-set.
+
+Completed runs' jobs and log findings are cached in process. See
+[CI health collector](../guide/flows/ci-health.md).
+
 ## Current flow definitions and change proposals
 
 Grant `inspect_flows` to a flow to let its executions list and inspect current

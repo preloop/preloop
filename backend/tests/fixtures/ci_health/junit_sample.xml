@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="jest tests" tests="3" failures="1" errors="1">
+  <testsuite name="checkout" tests="3" failures="1" errors="1">
+    <testcase classname="checkout.cart" name="adds an item" time="0.012"/>
+    <testcase classname="checkout.cart" name="applies a coupon" time="0.020">
+      <failure type="AssertionError" message="expected 90 to equal 81">at Object.&lt;anonymous&gt; (cart.test.js:41:5)</failure>
+    </testcase>
+    <testcase classname="checkout.payment" name="declines an expired card" time="0.003">
+      <error type="TypeError" message="Cannot read properties of undefined (reading 'exp')"/>
+    </testcase>
+  </testsuite>
+</testsuites>

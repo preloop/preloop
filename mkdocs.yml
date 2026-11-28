@@ -243,6 +243,7 @@ nav:
       - Flow execution: guide/flows/flow-execution.md
       - Persistent execution: guide/flows/persistent-execution.md
       - Flow state: guide/flows/flow-state.md
+      - CI health collector: guide/flows/ci-health.md
       - Interactive conversations: guide/flows/interactive-conversations.md
       - Event-driven employees: guide/virtual-employees.md
       - Delegation:

@@ -1,0 +1,12 @@
+section_start:1767247540:step_script[0K[36;1mExecuting "step_script" stage of the job script[0;m
+$ go test ./...
+=== RUN   TestQueueDrain
+    queue_test.go:41: drained 9 of 10 items within 2s
+--- FAIL: TestQueueDrain (2.01s)
+=== RUN   TestRetryBackoff/jitter
+--- FAIL: TestRetryBackoff/jitter (0.30s)
+FAIL
+FAIL	example.com/svc/internal/queue	2.512s
+ok  	example.com/svc/internal/api	0.811s
+section_end:1767247840:step_script
+ERROR: Job failed: exit code 1

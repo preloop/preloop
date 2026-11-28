@@ -111,6 +111,7 @@ class TestListAllTools:
             "get_artifact",
             "get_flow_state",
             "put_flow_state",
+            "ci_health_report",
             "search",
         }
         # Issue triage folded back into get_issue/update_issue (#661): no

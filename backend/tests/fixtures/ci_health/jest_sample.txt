@@ -1,0 +1,12 @@
+ FAIL  src/cart/cart.test.js
+  ● cart › applies a coupon
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Error: expect(received).toBe(expected)
+
+  ● cart › removes the last item
+
+    TypeError: Cannot read properties of undefined (reading 'id')
+
+Tests:       2 failed, 40 passed, 42 total

@@ -1,0 +1,3 @@
+2026-01-01T10:01:10.0000000Z Uploading preview bundle
+2026-01-01T10:01:19.0000000Z Error: upload failed: 502 Bad Gateway
+2026-01-01T10:01:19.0000000Z ##[error]Process completed with exit code 1.

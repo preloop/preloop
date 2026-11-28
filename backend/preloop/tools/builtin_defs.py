@@ -1245,6 +1245,11 @@ BUILTIN_TOOL_ANNOTATIONS: Dict[str, Dict[str, Any]] = {
         "Search artifacts", read_only=True, open_world=False
     ),
     "get_artifact": _annotations("Get artifact", read_only=True, open_world=False),
+    # Reads CI from the code host and updates the flow's ledger (an
+    # overwrite of a platform-owned flow state key).
+    "ci_health_report": _annotations(
+        "CI health report", read_only=False, open_world=True, destructive=True
+    ),
     # Per-flow state stored by Preloop.
     "get_flow_state": _annotations("Get flow state", read_only=True, open_world=False),
     "put_flow_state": _annotations(
