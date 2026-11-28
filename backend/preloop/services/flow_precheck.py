@@ -657,7 +657,10 @@ async def evaluate_precheck(
             check=pending[0] if pending else current,
         )
     except Exception as exc:  # noqa: BLE001 - an engine bug fails visibly
-        logger.exception("Pre-check engine error for flow %s", flow.id)
+        # Metadata only: a traceback could carry tracker payloads.
+        logger.error(
+            "Pre-check engine error for flow %s: %s", flow.id, type(exc).__name__
+        )
         pending = [c.id for c, _ in plans if c.id not in results]
         error = PrecheckError(
             CAUSE_ENGINE_ERROR,
