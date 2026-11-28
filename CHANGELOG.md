@@ -92,10 +92,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A session-scoped runtime token that names a builtin tool enabled by default
   (for example `get_approval_status`) now gets that tool without an explicit
   tool configuration, matching what the account owner sees (#2594).
-- Polling an approved native harness tool request (for example Claude Code's
-  `ToolSearch`) with `get_approval_status` no longer fails with an unknown-tool
-  error. It returns the decision and says that Preloop cannot run a native
-  call and the harness does not resume it; the agent has to issue the call
+- Polling an approved request that an agent's permission hook recorded (for
+  example Claude Code's native `ToolSearch`) with `get_approval_status` no
+  longer fails with an unknown-tool error. It returns the decision with
+  `execution: not_run_hook_recorded` and the call's `tool_origin`, and says
+  that the harness does not resume the call, so the agent has to issue it
   again (#2595).
 
 - `preloop policy apply` now records a policy version for every successful

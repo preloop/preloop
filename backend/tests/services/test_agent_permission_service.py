@@ -2349,11 +2349,15 @@ async def test_cursor_mcp_read_fallback_still_requires_approval() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("tool_origin", "expected"),
-    [(None, "native"), ("native", "native"), ("mcp", "mcp")],
+    ("tool_name", "tool_origin", "expected"),
+    [
+        ("Bash", None, "native"),
+        ("Bash", "native", "native"),
+        ("Bash", "mcp", "mcp"),
+    ],
 )
 async def test_request_agent_permission_stamps_server_tool_origin(
-    tool_origin: str | None, expected: str
+    tool_name: str, tool_origin: str | None, expected: str
 ) -> None:
     """The approval records a server-set tool origin (#2595).
 
@@ -2403,6 +2407,7 @@ async def test_request_agent_permission_stamps_server_tool_origin(
         await request_agent_permission(
             **_permission_kwargs(
                 account_id=account_id,
+                tool_name=tool_name,
                 tool_input={"command": "ls", "_preloop_tool_origin": forged},
                 tool_origin=tool_origin,
             )
@@ -2410,3 +2415,21 @@ async def test_request_agent_permission_stamps_server_tool_origin(
 
     kwargs = mock_service.create_and_notify.await_args.kwargs
     assert kwargs["tool_args"]["_preloop_tool_origin"] == expected
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "tool_origin", "expected"),
+    [
+        ("ToolSearch", None, "native"),
+        ("Bash", "native", "native"),
+        ("call_tool", "mcp", "mcp"),
+        # Claude Code and Codex report MCP tools by name, without tool_origin.
+        ("mcp__preloop__get_issue", None, "mcp"),
+    ],
+)
+def test_hook_tool_origin(
+    tool_name: str, tool_origin: str | None, expected: str
+) -> None:
+    from preloop.services.agent_permission_service import hook_tool_origin
+
+    assert hook_tool_origin(tool_name, tool_origin) == expected

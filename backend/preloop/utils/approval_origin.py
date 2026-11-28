@@ -29,37 +29,55 @@ def strip_hook_markers(arguments: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in arguments.items() if k not in HOOK_ONLY_MARKERS}
 
 
-def is_native_tool_approval(tool_args: Any) -> bool:
-    """Whether an approval was raised by a harness hook for a native tool.
+def hook_recorded_tool_origin(tool_args: Any) -> Optional[str]:
+    """Origin of an approval the harness permission hook recorded, if any.
 
-    Only the server-set :data:`TOOL_ORIGIN_MARKER` decides. ``_preloop_source``
-    and ``_preloop_origin`` are not used: a hook stamps them on MCP-origin
-    checks too, and an approval of an MCP tool must still be replayed.
+    A hook-recorded approval is a decision for the harness, not a call
+    Preloop can run (#2595): the hook has returned by the time a late
+    decision lands, and its stored arguments carry hook bookkeeping. The
+    server-set :data:`TOOL_ORIGIN_MARKER` names the origin. Rows recorded
+    before the marker existed are recognised by the hook's own
+    ``_preloop_source`` / ``_preloop_origin`` stamps and reported as
+    ``"native"``; the MCP approval path strips all three keys from caller
+    input, so its rows never match.
 
     Args:
         tool_args: The approval request's stored ``tool_args``.
 
     Returns:
-        True when the approval belongs to a native harness tool call.
+        ``"native"`` or ``"mcp"`` for a hook-recorded approval, else ``None``.
     """
     if not isinstance(tool_args, dict):
-        return False
-    return tool_args.get(TOOL_ORIGIN_MARKER) == "native"
+        return None
+    marker = tool_args.get(TOOL_ORIGIN_MARKER)
+    if marker in ("native", "mcp"):
+        return str(marker)
+    if tool_args.get("_preloop_source") or isinstance(
+        tool_args.get("_preloop_origin"), dict
+    ):
+        return "native"
+    return None
 
 
-def native_tool_approval_note(tool_name: str) -> str:
-    """Explain what an approved native tool request means for the agent.
+def hook_recorded_approval_note(tool_name: str, origin: str) -> str:
+    """Explain what an approved hook-recorded request means for the agent.
 
     Args:
-        tool_name: The native tool the approval names.
+        tool_name: The tool the approval names.
+        origin: ``"native"`` or ``"mcp"`` (see :func:`hook_recorded_tool_origin`).
 
     Returns:
         One paragraph for the ``get_approval_status`` response.
     """
+    kind = (
+        "a native tool of the agent harness"
+        if origin == "native"
+        else "an MCP tool call the agent harness reported"
+    )
     return (
-        f"'{tool_name}' is a native tool of the agent harness, not a Preloop "
-        "MCP tool, so Preloop recorded the decision but cannot run the call. "
-        "The harness does not resume a native call after its permission hook "
+        f"'{tool_name}' is {kind}. Its permission hook recorded this "
+        "request, so Preloop recorded the decision but does not run the "
+        "call. The harness does not resume a call after its permission hook "
         "has returned: issue the call again in the session. It is checked "
         "against the rules again when it is issued."
     )

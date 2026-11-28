@@ -383,6 +383,24 @@ async def resolve_workflow(
     return workflow
 
 
+def hook_tool_origin(tool_name: str, tool_origin: Optional[str]) -> str:
+    """Server-side origin of a hook-checked call: ``"mcp"`` or ``"native"``.
+
+    Cursor's MCP hook sets ``tool_origin="mcp"``; Claude Code and Codex
+    report an MCP tool only by its ``mcp__server__tool`` name.
+
+    Args:
+        tool_name: Tool name the hook reported.
+        tool_origin: Hook-reported origin, when the adapter sends one.
+
+    Returns:
+        ``"mcp"`` for an MCP tool call, otherwise ``"native"``.
+    """
+    if tool_origin == "mcp" or parse_mcp_tool_name(tool_name):
+        return "mcp"
+    return "native"
+
+
 def parse_mcp_tool_name(tool_name: str) -> Optional[Tuple[str, str]]:
     """Classify Claude Code MCP hooks, retaining the server's route label."""
     parts = tool_name.split("__", 2)
@@ -861,10 +879,12 @@ async def request_agent_permission(
             approval_tool_args = dict(tool_input or {})
             approval_tool_args.pop(native_flow_park.NATIVE_PARK_MARKER, None)
             approval_tool_args.pop(NATIVE_DELIVERY_WARNING, None)
-            # Server-set, never caller-set: get_approval_status replays an MCP
-            # tool but only reports the decision for a native one (#2595).
-            approval_tool_args[TOOL_ORIGIN_MARKER] = (
-                "mcp" if tool_origin == "mcp" else "native"
+            # Server-set, never caller-set: get_approval_status reports the
+            # decision of a hook-recorded request without running it and
+            # names its origin (#2595). Claude Code reports MCP tools as
+            # ``mcp__server__tool`` without a tool_origin.
+            approval_tool_args[TOOL_ORIGIN_MARKER] = hook_tool_origin(
+                tool_name, tool_origin
             )
             delivery_warning = None
             if flow_execution_id is None and (
