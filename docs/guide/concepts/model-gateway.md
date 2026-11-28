@@ -256,7 +256,8 @@ Every gateway router (`/openai/v1`, `/anthropic/v1`, `/gemini/v1beta`) uses one 
 |---|---|---|---|---|---|
 | Budget hard limit (account, flow, user, team, API key, gateway subject, per-model, per-execution ceiling, trial or free hosted-model allowance, pricing required for enforcement) | `429` | `billing_error` | `insufficient_quota` / `insufficient_quota` | `RESOURCE_EXHAUSTED` | `retry-after: <seconds>`, `x-should-retry: false` |
 | Rate limit (Preloop or upstream) | `429` | `rate_limit_error` | `rate_limit_error` / upstream value | `RESOURCE_EXHAUSTED` | `retry-after` when known; never `x-should-retry: false` |
-| Policy denial (kill switch, model allowlist, model authorization, content policy) | `403` | `permission_error` | `permission_error` | `PERMISSION_DENIED` | none |
+| Policy denial (kill switch, model authorization, content policy) | `403` | `permission_error` | `permission_error` | `PERMISSION_DENIED` | none |
+| Model allowlist denial (`allowed_models`) | `403` (`400` on `/anthropic/v1`) | `invalid_request_error` | `permission_error` / `model_not_allowed` | `PERMISSION_DENIED` | none |
 | Hosted credit exhausted (Cloud and Enterprise hosted billing) | `402` | unchanged | unchanged | unchanged | unchanged |
 
 Details for a budget denial:
@@ -269,6 +270,8 @@ Details for a budget denial:
 - Usage and audit rows record status `429`, audit `error_type` `budget_limit_exceeded` and `error_class` `budget_exceeded`. Budget denials do not count toward the rate limit report.
 
 Requests from a trusted upstream (the Claude apps gateway) that carry a developer identity also get `429` for policy denials, because the apps gateway fails over to its next upstream on `403`.
+
+**Why an allowlist denial is `400` on `/anthropic/v1`.** Claude Code treats a `403` from a custom `ANTHROPIC_BASE_URL` as an authentication failure: it prints `Failed to authenticate` (API key) or `Please run /login` (subscription login) in front of the message, although the login is valid. A `404` is replaced by Claude Code's own "There's an issue with the selected model" text and the allowlist is not shown. A `400` is printed as `API Error: 400 Model '...' is not in this agent's allowed models (...)`, so the Anthropic router answers an allowlist denial with `400` `invalid_request_error`. Claude Code does not retry a `400`. Usage and audit rows still record the denial as `403` with audit `error_type` `model_not_allowed`, and the OpenAI and Gemini routers keep `403`.
 
 !!! warning "Migrating from `403` budget denials"
     Before this change a budget hard limit returned `403` (`permission_error`), the same status as a policy denial. Integrations that match `403` to detect an exhausted budget must match `429` with `billing_error` (Anthropic), `insufficient_quota` (OpenAI) or `RESOURCE_EXHAUSTED` (Gemini) instead. To tell a Preloop budget denial from an upstream rate limit, check `x-should-retry: false`, `error.preloop_code` on the OpenAI router, or the `Model gateway budget exceeded` message prefix.

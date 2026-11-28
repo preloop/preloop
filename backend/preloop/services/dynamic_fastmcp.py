@@ -3461,7 +3461,7 @@ async def {internal_name}({params_str}):
 
                 emit_tool_call(
                     tool_name=client_tool_name,
-                    runtime_session_id=user_context.runtime_session_id,
+                    runtime_session_id=await otlp_tool_session_id(user_context),
                     account_id=user_context.account_id,
                     status=exec_status,
                     duration_ms=elapsed_ms,
@@ -4689,6 +4689,44 @@ async def {internal_name}({params_str}):
         finally:
             if translation_token is not None:
                 _is_proxy_translation_var.reset(translation_token)
+
+
+async def otlp_tool_session_id(user_context: Any) -> Optional[str]:
+    """Runtime session an exported ``execute_tool`` span belongs to (#2593).
+
+    A runtime session token names its session. A durable onboarded credential
+    names only the managed agent, so the call is attributed to the agent's
+    current open session, the one the permission hook attributes the same
+    call to. That keeps the tool span on the session's
+    ``gen_ai.conversation.id`` next to its chat spans. The lookup runs only
+    when OTLP export is enabled.
+
+    Args:
+        user_context: The caller's MCP user context.
+
+    Returns:
+        The session id as a string, or ``None`` when no session is known.
+    """
+    explicit = getattr(user_context, "runtime_session_id", None)
+    if explicit:
+        return str(explicit)
+    from preloop.services.otel_export import is_enabled
+
+    if not is_enabled():
+        return None
+    agent_id = getattr(user_context, "managed_agent_id", None)
+    if not agent_id and (
+        getattr(user_context, "runtime_principal_type", None) == "managed_agent"
+    ):
+        agent_id = getattr(user_context, "runtime_principal_id", None)
+    if not agent_id:
+        return None
+    from preloop.services.agent_current_session import current_agent_session_id
+
+    session_id = await asyncio.to_thread(
+        current_agent_session_id, user_context.account_id, agent_id
+    )
+    return str(session_id) if session_id is not None else None
 
 
 def flow_allowed_tool_names(allowed_flow_tools: Any) -> set[str]:

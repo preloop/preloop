@@ -551,3 +551,34 @@ async def test_scope_refusal_evidence_from_stub_upstream(
             if scope:
                 assert scope in text
         assert len(fields["error_reason"]) <= 200
+
+
+async def test_dispatcher_exports_onboarded_tool_span_with_agent_session(
+    monkeypatch, user_context
+):
+    """#2593: the dispatcher's span uses the onboarded agent's session.
+
+    A durable onboarded credential gives the context a managed agent and no
+    runtime session; ``emit_tool_call`` must still receive the agent's
+    current session so the span shares the chat spans' conversation id.
+    """
+    session_id = uuid4()
+    user_context.managed_agent_id = str(uuid4())
+    user_context.runtime_session_id = None
+    upstream = [types.TextContent(type="text", text="ok")]
+    mcp, _, _, _ = _setup(monkeypatch, user_context, upstream=upstream)
+    lookup = MagicMock(return_value=session_id)
+    emit = MagicMock()
+    monkeypatch.setattr("preloop.services.otel_export.is_enabled", lambda: True)
+    monkeypatch.setattr(
+        "preloop.services.agent_current_session.current_agent_session_id", lookup
+    )
+    monkeypatch.setattr("preloop.services.otel_export.emit_tool_call", emit)
+
+    await mcp.call_tool("safe_tool", {"ok": "yes"})
+
+    lookup.assert_called_once_with(
+        user_context.account_id, user_context.managed_agent_id
+    )
+    emit.assert_called_once()
+    assert emit.call_args.kwargs["runtime_session_id"] == str(session_id)

@@ -52,6 +52,7 @@ separate tool precisely so we do not break that contract.
 
 from __future__ import annotations
 
+from preloop.utils.approval_origin import TOOL_ORIGIN_MARKER
 from preloop.services.external_approval import agent_visible_comment
 
 import asyncio
@@ -355,6 +356,11 @@ async def evaluate_permission_prompt(
         tool_args.pop("_preloop_repository", None)
         tool_args.pop("_preloop_source", None)
         tool_args.pop("_preloop_origin", None)
+        # Server-set origin (#2595): Claude Code names MCP tools ``mcp__...``;
+        # every other name is one of its native tools.
+        tool_args[TOOL_ORIGIN_MARKER] = (
+            "mcp" if str(tool_name).startswith("mcp__") else "native"
+        )
         tool_args[FINGERPRINT_KEY] = fingerprint
         if tool_use_id:
             tool_args[TOOL_USE_ID_KEY] = str(tool_use_id)
