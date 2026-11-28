@@ -398,12 +398,19 @@ func printAuditVerify(cmd *cobra.Command, status chainStatus, report auditVerify
 	}
 	for _, checked := range report.Checkpoints {
 		state := "verified"
-		if checkpointFails(checked) {
+		detail := checked.Detail
+		switch {
+		case checkpointFails(checked):
 			state = "FAILED"
+		case report.Status == "broken" && !checked.MatchesLocalRow:
+			// A good signature over a sequence the failed walk never reached
+			// says nothing about the rows: do not print it as "verified".
+			state = "signature valid, rows not checked"
+			detail = "the walk stopped at the break, so this anchor was not held against any row"
 		}
 		fmt.Fprintf(out, "Checkpoint at sequence %d: %s (key %s)\n", checked.Seq, state, checked.KeyID)
-		if checked.Detail != "" {
-			fmt.Fprintf(out, "  %s\n", checked.Detail)
+		if detail != "" {
+			fmt.Fprintf(out, "  %s\n", detail)
 		}
 	}
 	if report.ServerStatus != "" && !report.ServerAgrees {
@@ -422,8 +429,14 @@ func printAuditVerify(cmd *cobra.Command, status chainStatus, report auditVerify
 	if status.PrunedBelowSeq > 0 {
 		fmt.Fprintf(out, "Rows below sequence %d were removed by the retention purge under policy, not verified here.\n", status.PrunedBelowSeq)
 	}
-	fmt.Fprintln(out, "\nThis shows the rows were not reordered, removed or edited after sealing.")
-	fmt.Fprintln(out, "It does not show they were true when they were written.")
+	switch report.Status {
+	case "ok":
+		fmt.Fprintln(out, "\nThis shows the rows were not reordered, removed or edited after sealing.")
+		fmt.Fprintln(out, "It does not show they were true when they were written.")
+	case "broken":
+		fmt.Fprintln(out, "\nThe chain does not verify: a row at or before the break was edited, removed")
+		fmt.Fprintln(out, "or reordered after sealing. Rows past the break were not checked.")
+	}
 }
 
 func runAuditKeys(cmd *cobra.Command, args []string) error {

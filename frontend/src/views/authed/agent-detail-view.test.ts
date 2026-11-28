@@ -3260,7 +3260,13 @@ describe('AgentDetailView', () => {
     const text = getDeepText(status).replace(/\s+/g, ' ');
     expect(text).to.contain('uses its configured models');
     expect(text).to.contain('2');
-    expect(text).to.not.contain('Every model is currently allowed');
+    expect(text).to.not.contain('Every model is currently allowed'); // The footer under the alias field must tell the same story (#2589).
+    const help = getDeepText(
+      element.shadowRoot?.querySelector('#allowed-models-help')
+    ).replace(/\s+/g, ' ');
+    expect(help).to.not.contain('allow all models');
+    expect(help).to.not.contain('allow every model');
+    expect(help).to.contain('only the configured models');
   });
 
   it('saving budgets no longer derives allowed_models from the budget keys', async () => {

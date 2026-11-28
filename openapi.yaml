@@ -58974,6 +58974,11 @@ components:
           type: number
           title: Estimated Cost
           default: 0.0
+        api_equivalent_cost:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Api Equivalent Cost
         endpoint:
           anyOf:
           - type: string
@@ -59034,6 +59039,10 @@ components:
           default: false
         cache_summary:
           $ref: '#/components/schemas/RuntimeSessionCacheSummary'
+        subscription_usage:
+          anyOf:
+          - $ref: '#/components/schemas/SubscriptionUsageSummary'
+          - type: 'null'
       type: object
       required:
       - cache_summary

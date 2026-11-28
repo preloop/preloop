@@ -1385,6 +1385,8 @@ export interface RuntimeSessionRequestItem {
   completion_tokens: number;
   total_tokens: number;
   estimated_cost: number;
+  /** Subscription request only: estimate at API prices, not billed (#2592). */
+  api_equivalent_cost?: number | null;
   endpoint: string | null;
   auth_subject_type?: string | null;
   tools: RuntimeSessionRequestTool[];
@@ -1442,6 +1444,8 @@ export interface RuntimeSessionRequestListResponse {
   next_offset: number | null;
   has_more: boolean;
   cache_summary?: RuntimeSessionCacheSummary;
+  /** Whole-session subscription workload and its estimate (#2592). */
+  subscription_usage?: SubscriptionUsageSummary | null;
 }
 
 /**

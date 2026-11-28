@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -340,5 +341,70 @@ func TestEvidenceVerifyReportsAMissingFilePlainly(t *testing.T) {
 
 	if err == nil || !strings.Contains(err.Error(), "could not read") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestEvidenceVerifyClaimsNoProvenanceWhenTheSignatureFails(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherPublic, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := writeTemp(t, "export.tar.gz", signedExport(t, private, "x", "x"))
+	pointCLIAt(t, serveKeys(t, otherPublic, nil).URL)
+
+	out, verifyErr := runEvidence(t, path)
+
+	if verifyErr == nil {
+		t.Fatalf("a signature from an unpublished key passed:\n%s", out)
+	}
+	if strings.Contains(out, "the one Preloop built") {
+		t.Fatalf("provenance claimed after a failed signature: %q", out)
+	}
+	if !strings.Contains(out, "member digests match") ||
+		!strings.Contains(out, "provenance is unverified") ||
+		!strings.Contains(out, "--execution") {
+		t.Fatalf("output = %q", out)
+	}
+}
+
+func TestEvidenceVerifyPointsAnUnsignedPackAtItsReceipt(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed := signedExport(t, private, "x", "x")
+	files := map[string][]byte{}
+	gz, err := gzip.NewReader(bytes.NewReader(signed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := tar.NewReader(gz)
+	for {
+		header, err := reader.Next()
+		if err != nil {
+			break
+		}
+		body, _ := io.ReadAll(reader)
+		if header.Name != verify.SignatureMember {
+			files[header.Name] = body
+		}
+	}
+	path := writeTemp(t, "evidence.tar.gz", tarGz(t, files))
+	pointCLIAt(t, "http://127.0.0.1:1")
+
+	out, verifyErr := runEvidence(t, path)
+
+	if verifyErr == nil {
+		t.Fatalf("an unsigned archive passed:\n%s", out)
+	}
+	if strings.Contains(out, "the one Preloop built") {
+		t.Fatalf("provenance claimed for an unsigned archive: %q", out)
+	}
+	if !strings.Contains(out, "detached receipt") {
+		t.Fatalf("output = %q", out)
 	}
 }

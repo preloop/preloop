@@ -98,6 +98,7 @@ from preloop.schemas.gateway_usage import (
     ManagedAgentManualSetupResponse,
     ManagedAgentOnboardingRollbackRequest,
     ManagedAgentOnboardingRollbackResponse,
+    SubscriptionUsageSummary,
     OnboardingCleanupRemoved,
     OnboardingCreatedResources,
     ManagedAgentEnrollmentRestoreRequest,
@@ -4235,6 +4236,50 @@ def get_account_session_artifact(
     )
 
 
+def _api_equivalent_cost(row: Any, meta: Any) -> Optional[float]:
+    """The API-equivalent estimate a subscription request carries, if any.
+
+    Args:
+        row: One ``ApiUsage`` row.
+        meta: Its ``meta_data``.
+
+    Returns:
+        The estimate in USD, or None for metered or unpriced requests.
+    """
+    if getattr(row, "cost_source", None) != "subscription":
+        return None
+    value = meta.get("api_equivalent_cost") if isinstance(meta, dict) else None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _session_subscription_usage(
+    totals: dict[str, Any],
+) -> Optional[SubscriptionUsageSummary]:
+    """Shape a session's subscription totals like the Cost page's block.
+
+    Args:
+        totals: ``crud_api_usage.get_subscription_usage_summary`` output.
+
+    Returns:
+        The summary, or None when the session made no subscription requests.
+    """
+    requests = int(totals.get("request_count") or 0)
+    if not requests:
+        return None
+    covered = int(totals.get("coverage_rows") or 0)
+    return SubscriptionUsageSummary(
+        request_count=requests,
+        prompt_tokens=totals["prompt_tokens"],
+        completion_tokens=totals["completion_tokens"],
+        total_tokens=totals["total_tokens"],
+        api_equivalent_cost=totals["api_equivalent_cost"],
+        covered_requests=covered,
+        coverage=covered / requests,
+    )
+
+
 def _request_row_to_item(row: Any) -> RuntimeSessionRequestItem:
     """Convert an ApiUsage row into a unified-timeline request item.
 
@@ -4282,6 +4327,7 @@ def _request_row_to_item(row: Any) -> RuntimeSessionRequestItem:
         completion_tokens=int(row.completion_tokens or 0),
         total_tokens=int(row.total_tokens or 0),
         estimated_cost=float(row.estimated_cost or 0.0),
+        api_equivalent_cost=_api_equivalent_cost(row, meta),
         endpoint=row.endpoint,
         auth_subject_type=row.auth_subject_type,
         tools=tools,
@@ -4363,6 +4409,15 @@ async def list_account_runtime_session_requests(
                 runtime_session_id=runtime_session_id,
             )
         )
+        subscription_usage = _session_subscription_usage(
+            crud_api_usage.get_subscription_usage_summary(
+                db,
+                account_id=account.id,
+                start=cutoff,
+                end=None,
+                runtime_session_id=runtime_session_id,
+            )
+        )
         next_offset = offset + len(items)
         return RuntimeSessionRequestListResponse(
             items=items,
@@ -4373,6 +4428,7 @@ async def list_account_runtime_session_requests(
             next_offset=next_offset if next_offset < total else None,
             has_more=next_offset < total,
             cache_summary=RuntimeSessionCacheSummary(**cache_summary.as_dict()),
+            subscription_usage=subscription_usage,
         )
 
     return await run_db_off_loop(_query)

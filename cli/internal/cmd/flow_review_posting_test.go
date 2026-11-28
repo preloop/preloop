@@ -28,6 +28,8 @@ type reviewPostingServer struct {
 	// concurrent makes the flow change on the server between the CLI's read
 	// and its write, as another editor would.
 	concurrent bool
+	// trackerType is served for GET /trackers/t1 when set.
+	trackerType string
 }
 
 func newReviewFlow() map[string]any {
@@ -77,6 +79,8 @@ func startReviewPostingServer(t *testing.T, state *reviewPostingServer) {
 			}
 			state.flow["git_clone_config"] = body["git_clone_config"]
 			_ = json.NewEncoder(w).Encode(state.flow)
+		case r.URL.Path == "/api/v1/trackers/t1" && state.trackerType != "":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "t1", "tracker_type": state.trackerType})
 		case r.URL.Path == "/api/v1/flows/executions/"+reviewExecutionID && r.Method == http.MethodGet:
 			_ = json.NewEncoder(w).Encode(map[string]any{"status": "SUCCEEDED", "platform_review": state.record})
 		case r.URL.Path == "/api/v1/flows/executions/"+reviewExecutionID+"/refinalize" && r.Method == http.MethodPost:
@@ -781,5 +785,42 @@ func TestReviewPostingRefinalizePreviewAndApply(t *testing.T) {
 	}
 	if state.refinalize[1]["dry_run"] != false || state.refinalize[1]["expected_digest"] != strings.Repeat("a", 64) {
 		t.Fatalf("apply body: %v", state.refinalize[1])
+	}
+}
+
+func TestReviewPostingShowFlagsANonGitHubTrackerUpFront(t *testing.T) {
+	state := &reviewPostingServer{flow: newReviewFlow(), trackerType: "gitlab"}
+	startReviewPostingServer(t, state)
+
+	out, err := runReviewPosting(t, "show", reviewFlowID)
+	if err != nil {
+		t.Fatalf("show: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "[missing] GitHub repositories") || !strings.Contains(out, "gitlab tracker") {
+		t.Fatalf("the provider incompatibility is not shown: %q", out)
+	}
+	if strings.Contains(out, "[check in GitHub]") {
+		t.Fatalf("a GitLab flow was sent to GitHub permissions: %q", out)
+	}
+
+	out, err = runReviewPosting(t, "show", reviewFlowID, "--json")
+	if err != nil {
+		t.Fatalf("show --json: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "supports GitHub repositories only") {
+		t.Fatalf("json missing list lacks the provider reason: %q", out)
+	}
+}
+
+func TestReviewPostingShowPassesAGitHubTracker(t *testing.T) {
+	state := &reviewPostingServer{flow: newReviewFlow(), trackerType: "github"}
+	startReviewPostingServer(t, state)
+
+	out, err := runReviewPosting(t, "show", reviewFlowID)
+	if err != nil {
+		t.Fatalf("show: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "[ok] GitHub repositories") || !strings.Contains(out, "[check in GitHub]") {
+		t.Fatalf("output = %q", out)
 	}
 }

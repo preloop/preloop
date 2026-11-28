@@ -355,6 +355,35 @@ describe('RecordsView', () => {
     );
   });
 
+  it('keeps the place-hold dialog open when a nested select closes (#2587)', async () => {
+    install({ holds: [] });
+    const el = await fixture<RecordsView>(html`<records-view></records-view>`);
+    await waitUntil(
+      () => el.shadowRoot?.querySelector('[data-testid="holds-empty"]'),
+      'empty holds did not render'
+    );
+    (
+      el.shadowRoot!.querySelector(
+        '[data-testid="open-place-hold"]'
+      ) as HTMLElement
+    ).click();
+    await el.updateComplete;
+    const select = el.shadowRoot!.querySelector(
+      'sl-dialog[label="Place legal hold"] sl-select'
+    ) as HTMLElement;
+    // Shoelace's select emits a bubbling sl-after-hide when its listbox closes.
+    select.dispatchEvent(
+      new CustomEvent('sl-after-hide', { bubbles: true, composed: true })
+    );
+    await el.updateComplete;
+    const dialog = el.shadowRoot!.querySelector(
+      'sl-dialog[label="Place legal hold"]'
+    ) as HTMLElement & { open: boolean };
+    expect(dialog.open).to.equal(true);
+    expect(el.shadowRoot!.querySelector('[data-testid="place-reason"]')).to
+      .exist;
+  });
+
   it('releases a legal hold after a reason is given', async () => {
     install({ holds: [HOLD] });
     const listed = await fixture<RecordsView>(

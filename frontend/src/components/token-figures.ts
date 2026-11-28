@@ -177,7 +177,8 @@ export function tokenFiguresTitle(
     parts.push(
       `${formatExactTokenCount(cache.hit)} input tokens read from cache, ` +
         `${formatExactTokenCount(cache.miss)} not cached ` +
-        `(${formatCacheHitRate(cache.ratio)} hit)`
+        `(${formatCacheHitRate(cache.ratio)} hit, of read plus not cached; ` +
+        'cache writes excluded)'
     );
     if (write > 0) {
       parts.push(`${formatExactTokenCount(write)} written to cache`);

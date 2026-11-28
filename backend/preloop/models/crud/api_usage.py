@@ -4474,10 +4474,11 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         db: Session,
         *,
         account_id: Union[uuid.UUID, str],
-        start: datetime,
-        end: datetime,
+        start: Optional[datetime],
+        end: Optional[datetime],
         runtime_principal_id: Optional[str] = None,
         exclude_retries: bool = False,
+        runtime_session_id: Optional[Union[uuid.UUID, str]] = None,
     ) -> Dict[str, Any]:
         """Summarize subscription-covered gateway workload in a window (#1401).
 
@@ -4491,10 +4492,12 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         Args:
             db: Database session.
             account_id: Owning account id.
-            start: Inclusive window start.
-            end: Exclusive window end.
+            start: Inclusive window start; None leaves it open.
+            end: Exclusive window end; None leaves it open.
             runtime_principal_id: Optional managed-agent principal filter.
             exclude_retries: Drop rows marked as retries.
+            runtime_session_id: Optional runtime session filter, for the
+                per-session estimate (#2592).
 
         Returns:
             Dict with ``request_count``, ``prompt_tokens``,
@@ -4527,9 +4530,13 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             # Keep the sparse subscription index eligible in prepared plans.
             ApiUsage.cost_source == literal_column("'subscription'"),
             exclude_customer_overhead_condition(),
-            ApiUsage.timestamp >= start,
-            ApiUsage.timestamp < end,
         )
+        if start is not None:
+            query = query.filter(ApiUsage.timestamp >= start)
+        if end is not None:
+            query = query.filter(ApiUsage.timestamp < end)
+        if runtime_session_id is not None:
+            query = query.filter(ApiUsage.runtime_session_id == runtime_session_id)
         if runtime_principal_id:
             query = query.filter(ApiUsage.runtime_principal_id == runtime_principal_id)
         if exclude_retries:

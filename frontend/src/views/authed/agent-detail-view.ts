@@ -4806,13 +4806,21 @@ export class AgentDetailView extends LitElement {
                             }}
                           ></sl-input>
                           <div
+                            id="allowed-models-help"
                             style="font-size: 0.8rem; color: var(--console-meta-color);"
                           >
                             The authoritative comma separated list of gateway
                             aliases behind the checkboxes above, including
                             aliases not offered as checkboxes. Model names and
                             ids typed here are converted to aliases on save.
-                            Leave empty to allow all models.
+                            ${
+                              /* Must agree with the status line above: with
+                                 bindings, an empty list keeps the agent on
+                                 its configured models (#2589). */
+                              this.getConfiguredModelBindings().length > 0
+                                ? 'Leave empty to keep the default above: only the configured models.'
+                                : 'Leave empty to allow every model.'
+                            }
                           </div>
                         </div>
                       </div>

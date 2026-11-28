@@ -464,3 +464,28 @@ func TestAuditVerifyReportsUnwalkedCheckpointsHonestly(t *testing.T) {
 		t.Fatalf("signature should still verify: %#v", checked)
 	}
 }
+
+func TestAuditVerifyBrokenWalkGivesNoIntegrityAssurance(t *testing.T) {
+	chain := newFakeChain(t, 6)
+	chain.entries[1].Payload["status"] = "failure"
+	chain.addCheckpoint(t, 5, chain.entries[4].RowHash)
+	pointCLIAt(t, chain.serve(t).URL)
+
+	out, err := runAudit(t)
+
+	if err == nil {
+		t.Fatalf("a broken chain exited zero:\n%s", out)
+	}
+	if strings.Contains(out, "were not reordered, removed or edited") {
+		t.Fatalf("a failed walk printed the integrity assurance: %q", out)
+	}
+	if strings.Contains(out, "Checkpoint at sequence 5: verified") {
+		t.Fatalf("an anchor past the break printed as verified: %q", out)
+	}
+	if !strings.Contains(out, "Checkpoint at sequence 5: signature valid, rows not checked") {
+		t.Fatalf("output = %q", out)
+	}
+	if !strings.Contains(out, "Rows past the break were not checked") {
+		t.Fatalf("output = %q", out)
+	}
+}

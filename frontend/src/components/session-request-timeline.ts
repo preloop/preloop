@@ -10,6 +10,7 @@ import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import type {
   RuntimeSessionCacheSummary,
   RuntimeSessionRequestItem,
+  SubscriptionUsageSummary,
 } from '../types';
 import { formatCost, formatNumber } from '../utils/session-observer';
 
@@ -27,6 +28,14 @@ type ThresholdMode = 'tokens' | 'usd';
  * cost. Provides sort, a cost/token threshold filter, and a failed-only
  * toggle. This replaces the sparse captured-event timeline.
  */
+/**
+ * What the session cache hit ratio divides by (#2591). Other surfaces divide
+ * by every prompt token, cache writes included, so each says which it uses.
+ */
+export const CACHE_HIT_RATIO_BASIS =
+  'Cache reads divided by cache reads plus uncached input. Cache writes are ' +
+  'not in the denominator, so this is higher than a share of all prompt tokens.';
+
 @customElement('session-request-timeline')
 export class SessionRequestTimeline extends LitElement {
   @property({ type: Array })
@@ -53,6 +62,13 @@ export class SessionRequestTimeline extends LitElement {
    */
   @property({ type: Object })
   cacheSummary?: RuntimeSessionCacheSummary;
+
+  /**
+   * Subscription workload over the whole session, with its API-equivalent
+   * estimate (#2592). Null or undefined: no subscription requests.
+   */
+  @property({ type: Object })
+  subscriptionUsage?: SubscriptionUsageSummary | null;
 
   @state()
   private sort: RequestTimelineSort = 'recent';
@@ -163,6 +179,16 @@ export class SessionRequestTimeline extends LitElement {
       font-weight: 700;
     }
 
+    .cost-equivalent,
+    .subscription-estimate {
+      color: var(--sl-color-neutral-600);
+      font-size: var(--sl-font-size-x-small);
+    }
+
+    .subscription-estimate {
+      margin-bottom: var(--sl-spacing-small);
+    }
+
     .empty {
       color: var(--sl-color-neutral-600);
       padding: var(--sl-spacing-large);
@@ -201,6 +227,11 @@ export class SessionRequestTimeline extends LitElement {
     .cache-stat {
       display: grid;
       gap: 1px;
+    }
+
+    .cache-stat-basis {
+      color: var(--sl-color-neutral-600);
+      font-size: var(--sl-font-size-x-small);
     }
 
     .cache-stat-label {
@@ -374,6 +405,17 @@ export class SessionRequestTimeline extends LitElement {
         </div>
         <div class="request-cost">
           <div class="cost-value">${formatCost(row.estimated_cost)}</div>
+          ${
+            typeof row.api_equivalent_cost === 'number'
+              ? html`<div
+                  class="cost-equivalent"
+                  data-testid="request-api-equivalent"
+                  title="Subscription request: $0 billed here. This is an estimate of the same call at pay-per-use API prices, not a bill."
+                >
+                  est. ${formatCost(row.api_equivalent_cost)} at API prices
+                </div>`
+              : nothing
+          }
         </div>
       </div>
     `;
@@ -387,6 +429,37 @@ export class SessionRequestTimeline extends LitElement {
    * split. Savings are rendered only when the backend supplied an exact
    * catalog-priced figure; otherwise the reason is shown instead of a number.
    */
+  /**
+   * The session's API-equivalent estimate for its subscription requests.
+   * Spend stays $0; the estimate is labelled and kept apart from it, and is
+   * a lower bound when some requests carry no price (#2592).
+   */
+  private renderSubscriptionEstimate() {
+    const usage = this.subscriptionUsage;
+    if (!usage?.request_count) return nothing;
+    const covered = usage.covered_requests ?? 0;
+    const requests = usage.request_count;
+    const noun =
+      requests === 1 ? 'subscription request' : 'subscription requests';
+    const text = !covered
+      ? `No API-equivalent estimate: none of ${formatNumber(requests)} ${noun} carries a price.`
+      : `${covered < requests ? 'At least ' : ''}${formatUsd(usage.api_equivalent_cost)} ` +
+        `estimated at API prices for ${covered < requests ? `${formatNumber(covered)} of ` : ''}` +
+        `${formatNumber(requests)} ${noun}. Billed: $0 (covered by the subscription). ` +
+        'An estimate, not a bill.';
+    return html`<div
+      class="subscription-estimate"
+      data-testid="session-api-equivalent"
+      title=${
+        covered
+          ? `Exact estimate ${formatUsdExact(usage.api_equivalent_cost)}`
+          : ''
+      }
+    >
+      ${text}
+    </div>`;
+  }
+
   private renderCacheSummary() {
     const summary = this.cacheSummary;
     if (!summary || !summary.requests_with_cache_data) return nothing;
@@ -409,9 +482,16 @@ export class SessionRequestTimeline extends LitElement {
       >
         <div class="cache-stat">
           <span class="cache-stat-label">Cache hit ratio</span>
-          <span class="cache-stat-value" data-testid="cache-hit-ratio">
+          <span
+            class="cache-stat-value"
+            data-testid="cache-hit-ratio"
+            title=${CACHE_HIT_RATIO_BASIS}
+          >
             ${ratio === null ? 'not reported' : `${ratio}%`}
           </span>
+          <span class="cache-stat-basis" data-testid="cache-hit-ratio-basis"
+            >of reads + uncached input; writes excluded</span
+          >
         </div>
         <div class="cache-stat">
           <span class="cache-stat-label">Cached prompt</span>
@@ -548,7 +628,7 @@ export class SessionRequestTimeline extends LitElement {
           requests
         </span>
       </div>
-      ${this.renderCacheSummary()}
+      ${this.renderSubscriptionEstimate()} ${this.renderCacheSummary()}
       ${
         this.loading && !rows.length
           ? html`<div class="empty"><sl-spinner></sl-spinner></div>`

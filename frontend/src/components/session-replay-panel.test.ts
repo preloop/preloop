@@ -1651,6 +1651,12 @@ describe('SessionReplayPanel Requests summary and replay start', () => {
     const pct = /(\d+)%/.exec(text);
     expect(pct).to.not.equal(null);
     expect(Number(pct![1])).to.be.at.most(100);
+    // The share names its denominator (#2591).
+    expect(text).to.contain('% of prompt');
+    const sub = element.shadowRoot?.querySelector(
+      '[data-testid="chat-summary-cached"]'
+    );
+    expect(sub?.getAttribute('title')).to.contain('cache writes');
   });
 
   it('tools count comes from tool rows', async () => {
