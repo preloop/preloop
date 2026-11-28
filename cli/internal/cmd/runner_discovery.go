@@ -73,6 +73,14 @@ func (s *runnerDiscoverySchedule) due(now time.Time, interval time.Duration) boo
 	return !now.Before(s.NextAttempt) && (s.LastSuccess.IsZero() || now.Sub(s.LastSuccess) >= interval*9/10)
 }
 
+// Wake for a due report between the usual policy/configuration polls.
+func (s *runnerDiscoverySchedule) pollDelay(now time.Time) time.Duration {
+	if until := s.NextAttempt.Sub(now); until > 0 && until < time.Minute {
+		return until
+	}
+	return time.Minute
+}
+
 func (s *runnerDiscoverySchedule) completed(now time.Time, interval time.Duration, err error) {
 	s.LastRun = now
 	s.FailureReason, s.HTTPStatus = "", 0
@@ -354,7 +362,7 @@ func startRunnerDiscovery(state *runnerState) func() {
 					saved = schedule.runnerDiscoveryState
 				}
 			}
-			timer.Reset(time.Minute)
+			timer.Reset(schedule.pollDelay(time.Now()))
 		}
 	}()
 	return func() { close(stop) }

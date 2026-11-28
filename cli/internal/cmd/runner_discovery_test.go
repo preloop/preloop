@@ -465,3 +465,20 @@ func TestRunnerDiscoveryRejectionStatusAndRecovery(t *testing.T) {
 		t.Fatal("failure survived recovery")
 	}
 }
+
+func TestRunnerDiscoveryWakesAtAdvertisedRetry(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	schedule := newRunnerDiscoverySchedule(now, runnerDiscoveryState{}, func() float64 { return 0.5 })
+	schedule.completed(now, 24*time.Hour, errors.New("offline"))
+	// The first policy/config poll is one minute after the failure. The
+	// jittered retry is six seconds later, before the following regular poll.
+	poll := now.Add(time.Minute)
+	if got := schedule.pollDelay(poll); got != 6*time.Second {
+		t.Fatalf("next retry in %s, worker wakes in %s", schedule.NextAttempt.Sub(poll), got)
+	}
+	for _, at := range []time.Time{now, schedule.NextAttempt, schedule.NextAttempt.Add(time.Minute)} {
+		if delay := schedule.pollDelay(at); delay != time.Minute {
+			t.Fatalf("unexpected poll delay %s", delay)
+		}
+	}
+}
