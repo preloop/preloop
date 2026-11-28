@@ -4354,48 +4354,13 @@ def rotate_flow_webhook_secret(
     return rotated
 
 
-@router.put(
-    "/flows/{flow_id}",
-    response_model=schemas.FlowResponse,
-    responses=CONDITIONAL_RESPONSES,
-)
-@require_permission("edit_flows")
-def update_flow(
-    *,
-    db: Session = Depends(get_db),
-    flow_id: uuid.UUID,
-    flow_in: schemas.FlowUpdate,
-    current_user: User = Depends(get_current_active_user),
-    if_match: Optional[str] = Header(
-        default=None, alias="If-Match", description=IF_MATCH_DESCRIPTION
-    ),
-    response: Response = None,  # type: ignore[assignment]
-):
-    """Update a flow.
+def prepare_flow_update(
+    *, db: Session, flow: models.Flow, flow_in: schemas.FlowUpdate, current_user: User
+) -> None:
+    """Validate and normalize an update against the caller's locked flow.
 
-    Top-level fields that are sent replace the stored value; fields that are
-    omitted are kept. A nested object that is sent (``agent_config``,
-    ``git_clone_config``, ``webhook_config``, ``result_schema``,
-    ``custom_commands``, ``schedule_config``, ``notifications``) replaces the
-    stored object whole, except that omitted webhook secrets are kept and the
-    run-limit fields merge into ``agent_config``.
-
-    With ``If-Match`` the update is conditional: it is applied only when the
-    flow is still at that revision, checked under the row lock, and refused
-    with 412 otherwise. The response's ``ETag`` is the new revision.
+    Only the input model is modified. Callers decide whether to persist it.
     """
-    ensure_permission_in_oss(db, current_user, "edit_flows")
-    condition = if_match_condition(if_match)
-    # Settings saves preserve omitted credentials from the current locked row,
-    # so a concurrent rotation cannot be undone by a stale ORM snapshot. The
-    # same lock makes the If-Match check and the write one atomic step.
-    flow = crud_flow.get(
-        db=db, id=flow_id, account_id=current_user.account_id, for_update=True
-    )
-    if not flow:
-        raise HTTPException(status_code=404, detail="Flow not found")
-    require_flow_revision(condition, flow)
-
     from preloop.services.flow_conversations import interactive_settings
 
     try:
@@ -4454,7 +4419,7 @@ def update_flow(
         existing_in_account = crud_flow.get_by_name_and_account(
             db, name=flow_in.name, account_id=current_user.account_id
         )
-        if existing_in_account and str(existing_in_account.id) != str(flow_id):
+        if existing_in_account and str(existing_in_account.id) != str(flow.id):
             raise HTTPException(
                 status_code=400,
                 detail=f"A flow with name '{flow_in.name}' already exists in your account",
@@ -4676,6 +4641,51 @@ def update_flow(
         ),
     )
 
+
+@router.put(
+    "/flows/{flow_id}",
+    response_model=schemas.FlowResponse,
+    responses=CONDITIONAL_RESPONSES,
+)
+@require_permission("edit_flows")
+def update_flow(
+    *,
+    db: Session = Depends(get_db),
+    flow_id: uuid.UUID,
+    flow_in: schemas.FlowUpdate,
+    current_user: User = Depends(get_current_active_user),
+    if_match: Optional[str] = Header(
+        default=None, alias="If-Match", description=IF_MATCH_DESCRIPTION
+    ),
+    response: Response = None,  # type: ignore[assignment]
+):
+    """Update a flow.
+
+    Top-level fields that are sent replace the stored value; fields that are
+    omitted are kept. A nested object that is sent (``agent_config``,
+    ``git_clone_config``, ``webhook_config``, ``result_schema``,
+    ``custom_commands``, ``schedule_config``, ``notifications``) replaces the
+    stored object whole, except that omitted webhook secrets are kept and the
+    run-limit fields merge into ``agent_config``.
+
+    With ``If-Match`` the update is conditional: it is applied only when the
+    flow is still at that revision, checked under the row lock, and refused
+    with 412 otherwise. The response's ``ETag`` is the new revision.
+    """
+    ensure_permission_in_oss(db, current_user, "edit_flows")
+    condition = if_match_condition(if_match)
+    # Settings saves preserve omitted credentials from the current locked row,
+    # so a concurrent rotation cannot be undone by a stale ORM snapshot. The
+    # same lock makes the If-Match check and the write one atomic step.
+    flow = crud_flow.get(
+        db=db, id=flow_id, account_id=current_user.account_id, for_update=True
+    )
+    if not flow:
+        raise HTTPException(status_code=404, detail="Flow not found")
+    require_flow_revision(condition, flow)
+
+    prepare_flow_update(db=db, flow=flow, flow_in=flow_in, current_user=current_user)
+    existing_secret = (flow.webhook_config or {}).get("webhook_secret")
     old_enabled = flow.is_enabled
     from preloop.services.flow_result_schema import ResultSchemaError
 
