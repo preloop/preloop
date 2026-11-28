@@ -97,16 +97,20 @@ Every request body is one JSON object with exactly these keys:
 | `agent.discovered` | A workstation discovery report (from `agents discover --report`, or from onboarding unless turned off) names an agent tool that was not reported before | `candidate_id`, `agent_kind`, `agent_version`, `workstation_fingerprint` (salted hash), `config_path_hash` (salted hash), `mcp_server_count`, `enrolled`, `os_family`, `status`, `first_seen_at` |
 | `ai_model.credential_rejected` | A provider first rejects a customer model API key for authentication or billing | `ai_model_id`, `model_name`, `reference_id`, `provider`, `code` (`upstream_auth_rejected`, `upstream_billing_rejected`), sanitized `message`, `first_rejected_at`, `remedy` |
 | `agent.onboarded` | A managed-agent enrollment is validated for the first time | `agent_id`, `agent_name`, `agent_kind`, `source_type` (`discovered`, `custom`), `outcome` (`created`, `relinked`, `merged`), `enrollment_id`, `owner_user_id`, `actor_user_id`, `gateway_routed`, `mcp_rewritten`, `mcp_server_count` |
-| `fleet.finding` | A configured fleet alert opens or recovers | Provider-owned compatibility payload, not core v1 `data`; delivered through the default approval workflow's webhook (see below) |
+| `fleet.finding` | A configured fleet alert opens or recovers | Provider-owned compatibility payload, not core v1 `data`; sent on every open, resolve and recovery transition (see below) |
 
 `fleet.finding` is selectable when the server exposes `fleet_coverage`, but its
 payload is owned by the fleet provider and is outside the core v1 envelope
-contract. The existing workflow compatibility path sends a generic HTTP receiver
-a top-level object with `type: "fleet_finding"`, `finding_id`, `rule`, `state`,
-`title`, `detail`, `evidence`, `limitation`, `opened_at`, `last_evaluated_at` and
-`url`; chat webhook targets receive a `text` body instead. It uses the default
-approval workflow's webhook, so selecting `fleet.finding` on an account endpoint
-does not redirect delivery there. The rule's webhook channel must also be enabled.
+contract. The envelope's `data` holds a top-level object with
+`type: "fleet_finding"`, `finding_id`, `rule`, `state`, `title`, `detail`,
+`evidence`, `limitation`, `opened_at`, `last_evaluated_at` and `url`. Every
+account endpoint whose filter includes `fleet.finding` (or that has no filter)
+receives one event per transition: when a finding opens, when it resolves, and
+when it opens again later. The event id is derived from the finding, its
+`opened_at` and its state, so a retried evaluation does not send twice. The
+default approval workflow's webhook keeps receiving the same transitions in its
+historical body (a `text` body for chat targets). The rule's webhook channel
+must be enabled for either route.
 
 `agent.discovered` fires once per new candidate row; a workstation that reports
 the same tool again only moves `last_seen_at`. It carries no user name,

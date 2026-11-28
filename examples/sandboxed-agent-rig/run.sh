@@ -8,7 +8,8 @@
 #
 #   ./run.sh              all variants
 #   ./run.sh ro-settings  one variant (writable, ro-settings, ro-everything,
-#                         wrong-owner, no-login, stale-login)
+#                         wrong-owner, no-login, stale-login,
+#                         subscription-picker)
 #   KEEP=1 ./run.sh       leave the stack running afterwards
 #
 # It never contacts a real provider or a hosted Preloop.
@@ -18,7 +19,7 @@ cd "$(dirname "$0")"
 export PRELOOP_DISABLE_TELEMETRY=true
 VARIANTS=("$@")
 if [ ${#VARIANTS[@]} -eq 0 ]; then
-  VARIANTS=(writable ro-settings ro-everything wrong-owner no-login stale-login)
+  VARIANTS=(writable ro-settings ro-everything wrong-owner no-login stale-login subscription-picker)
 fi
 OUT=out
 FAILURES=0
@@ -503,6 +504,75 @@ PY
   run "$svc" "preloop agents onboard --cancel 'Claude Code'"
   expect_status 0
   expect "Cancelled the pending setup"
+  server_state | tee -a "$TRANSCRIPT"
+}
+
+# --- Variant 6 ------------------------------------------------------------
+# add_api_key_model: one account model with a synthetic API key, so the
+# picker has something to offer besides the agent's own login.
+add_api_key_model() {
+  compose exec -T -e RIG_TOKEN="$RIG_PRELOOP_TOKEN" preloop python - <<'PY'
+import json, os, urllib.request
+
+body = json.dumps({
+    "name": "Rig API-key model",
+    "provider_name": "anthropic",
+    "model_identifier": "claude-haiku-4-5",
+    "api_endpoint": "http://mock-anthropic:8080",
+    "api_key": "sk-ant-api03-rig-synthetic-account-key-0001",
+}).encode()
+request = urllib.request.Request(
+    "http://127.0.0.1:8000/api/v1/ai-models",
+    data=body,
+    headers={
+        "Authorization": "Bearer " + os.environ["RIG_TOKEN"],
+        "Content-Type": "application/json",
+    },
+)
+urllib.request.urlopen(request, timeout=30).read()
+print("account model added: anthropic/claude-haiku-4-5 (API key)")
+PY
+}
+
+# A subscription login and a settings file that names no model, Claude Code's
+# stock setup: the picker offers the subscription first, ahead of the account's
+# API-key model. Checked on a writable home and on a read-only settings file.
+variant_subscription_picker() {
+  begin subscription-picker "no model in settings, a subscription login and an account API-key model"
+  add_api_key_model | tee -a "$TRANSCRIPT"
+  local login
+  login=$(printf '{"claudeAiOauth":{"accessToken":"sk-ant-oat01-rig-synthetic-container-login-0001","refreshToken":"sk-ant-ort01-rig-synthetic-refresh-0001","expiresAt":%s,"scopes":["user:inference"],"subscriptionType":"max"}}' "$(( ($(date +%s) + 86400 * 30) * 1000 ))")
+  local settings='{"env":{"ANTHROPIC_BASE_URL":"http://mock-anthropic:8080"}}'
+
+  note "Writable home."
+  compose exec -T agent-writable bash -c 'umask 077; cat > ~/.claude/settings.json' <<<"$settings"
+  compose exec -T agent-writable bash -c 'umask 077; cat > ~/.claude/.credentials.json' <<<"$login"
+  run agent-writable 'grep -c "\"model\"" ~/.claude/settings.json || true'
+  run_tty agent-writable 'n\n' "preloop agents onboard 'Claude Code'"
+  expect "model: anthropic/claude-fable-5 (subscription login)"
+  refute "model: anthropic/claude-haiku-4-5"
+  expect "Nothing was changed."
+
+  note "Read-only settings.json."
+  host "write a settings file without a model to state/ro-settings/claude/settings.json"
+  printf '%s\n' "$settings" > state/ro-settings/claude/settings.json.new
+  python3 - state/ro-settings/claude/settings.json.new state/ro-settings/claude/settings.json <<'PY'
+import sys
+with open(sys.argv[2], "r+") as handle:
+    handle.seek(0)
+    handle.write(open(sys.argv[1]).read())
+    handle.truncate()
+PY
+  rm -f state/ro-settings/claude/settings.json.new
+  compose exec -T agent-ro-settings bash -c 'umask 077; cat > ~/.claude/.credentials.json' <<<"$login"
+  run agent-ro-settings 'grep " /home/agent/.claude/settings.json " /proc/self/mountinfo | cut -d" " -f4-6; grep -c "\"model\"" ~/.claude/settings.json || true'
+  local before
+  before=$(grep -c "model: anthropic/claude-fable-5 (subscription login)" "$TRANSCRIPT" || true)
+  run_tty agent-ro-settings 'n\n' "preloop agents onboard 'Claude Code'"
+  if [ "$(grep -c "model: anthropic/claude-fable-5 (subscription login)" "$TRANSCRIPT" || true)" -le "$before" ]; then
+    echo "RIG FAILURE ($CURRENT): the read-only variant did not offer the subscription first" >&2
+    FAILURES=$((FAILURES + 1))
+  fi
   server_state | tee -a "$TRANSCRIPT"
 }
 

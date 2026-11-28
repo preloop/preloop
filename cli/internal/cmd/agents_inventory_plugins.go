@@ -202,3 +202,30 @@ func fullPluginSemver(value string) bool {
 	core, _, _ = strings.Cut(core, "+")
 	return strings.Count(core, ".") == 2
 }
+
+// claudeDefaultBuiltinPlugins are the plugins Claude Code compiles into its
+// binary and lists under "Built-in plugins" by default (verified on 2.1.328
+// through 2.1.332). They have no install record on disk: the binary registers
+// them at startup, and settings can only switch one off through
+// enabledPlugins["<name>@builtin"]. Gated built-ins are not listed.
+var claudeDefaultBuiltinPlugins = []string{
+	"cc-plugin-agents-md",
+	"cc-plugin-plugin-authoring",
+	"cc-plugin-privacy",
+}
+
+// claudeBuiltinPlugins reports Claude Code's default built-in plugins for a
+// profile that has a Claude Code directory.
+func (r *extensionRoot) claudeBuiltinPlugins(enabled map[string]bool) {
+	if info, err := r.stat(".claude"); err != nil || !info.IsDir() {
+		return
+	}
+	for _, name := range claudeDefaultBuiltinPlugins {
+		id := name + "@builtin"
+		ext := inventoryExtension{Kind: "plugin", ID: id, SourceKind: "builtin", Scope: "user", Enabled: "true"}
+		if value, ok := enabled[id]; ok && !value {
+			ext.Enabled = "false"
+		}
+		r.scan.add(ext)
+	}
+}

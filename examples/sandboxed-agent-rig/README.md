@@ -18,6 +18,7 @@ Guide for users: [Sandboxed and containerised agents](../../docs/guide/clients/s
 | `wrong-owner` | writable mount, file owned by another uid (0644) | writable volume | none (API key upstream) | `permission denied (owned by uid 0, running as uid 10001)` |
 | `no-login` | read-only bind mount | writable volume | none | MCP-only onboarding, nothing to probe |
 | `stale-login` | read-only bind mount | writable volume | a token the provider rejects | the rejected login is not reported as onboarded and its source is named; `--cancel` removes what onboarding created |
+| `subscription-picker` | writable home, then the read-only bind mount | writable volume | done inside the container (credentials file), settings name no model, account has an API-key model | the subscription login is the proposed model ahead of the account's API-key model; cancelling changes nothing |
 
 The container user is uid 10001 in every variant, which is neither root nor a
 typical host user.
