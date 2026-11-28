@@ -1,0 +1,13 @@
+{
+ "id": 1002,
+ "name": "CI",
+ "workflow_id": 7,
+ "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+ "head_branch": "main",
+ "event": "push",
+ "status": "completed",
+ "conclusion": "success",
+ "run_attempt": 1,
+ "html_url": "https://github.com/example-org/example-repo/actions/runs/1002",
+ "created_at": "2026-11-28T05:30:00Z"
+}

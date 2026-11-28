@@ -127,3 +127,93 @@ with a dedicated minimal-scope token (contents read/write, and actions
 read if the flow reads CI) when you do.
 A run whose agent writes `result.json` with `"status": "failure"` ends
 FAILED with the agent's summary as the error.
+
+## Deterministic CI collection
+
+Reading CI through the API turn by turn costs tokens and time, and the agent
+cannot easily see failing test ids. The repository ships
+`scripts/ci_health_collect.py` (standard library only), which reads CI and
+writes one compact JSON file for the agent. The preset's prompt does not
+call it yet; to adopt it, replace step 1 of your flow's prompt with this
+command and have the agent read the output:
+
+<!-- example: fragment -->
+```bash
+export GH_TOKEN="$PRELOOP_GIT_TOKEN_1"
+python3 scripts/ci_health_collect.py collect \
+  --github-repo owner/name \
+  --window-hours 24 \
+  --previous previous/result.json \
+  --flow-branch-prefix preloop/<flow name slug>- \
+  --out evidence/ci-health.json
+```
+
+- **Reads** GitHub Actions runs created since the previous run's window
+  end, with a one-hour overlap; run ids already seen are skipped. A run
+  still in progress is remembered and re-read by id on later collections
+  until it finishes (given up after 24 hours), however long it runs.
+  Requests are sequential and GET only. The collector stops, and marks the
+  data partial, when `X-RateLimit-Remaining` falls below `--min-remaining`,
+  on `Retry-After` or HTTP 429, on a refused token, on a 404 from a listing
+  (a wrong repository name or a token without access), or at
+  `--max-calls`. It exits 2 when no source could be read. Jobs and logs are
+  immutable, so they are cached under `--cache-dir`.
+- **Aggregates** per workflow and per job: success rate, reruns, p50/p95
+  queue wait and duration, runner minutes by OS, the slowest jobs, and
+  shard imbalance. Imbalance is the slowest shard over the mean shard, per
+  run, for job names such as `backend (2/4)`.
+- **Extracts failure signatures** from the logs of failed jobs, up to
+  `--max-logs`. It recognizes the pytest short summary, `go test`, vitest
+  and jest output, and JUnit XML (`--junit report.xml`). A job with no
+  recognized test failure is keyed by its job and first error annotation.
+  Each signature carries its test id, a normalized error class, the jobs,
+  commits and run links, and whether the same job also passed on the same
+  commit.
+- **GitLab CI** (optional, read-only): `--gitlab-project group/name`,
+  `--gitlab-api https://<host>/api/v4` and a token in `--gitlab-token-env`
+  (default `GITLAB_TOKEN`). Pipelines, jobs, retries and traces are
+  normalized to the same aggregates and signatures. Without a token,
+  GitLab sources are skipped.
+
+### Flake ledger and value summary
+
+The collector keeps its state under `ci_health_state` in the run's
+`result.json`. The next run receives that file as `previous/result.json`
+(schedule payload `previous_result_execution_id: last`), so the state
+persists with no extra storage. It is bounded to stay well inside the
+256 KiB previous-result limit. It holds:
+
+- `ledger`: one entry per signature, with `first_seen`, `last_seen`,
+  `failures`, `windows_seen`, `flaky_evidence` (failed and passed on the
+  same commit), recent `jobs`, `shas` and `runs`, and `passes_since_seen`.
+  The agent owns `status` (`new`, `open`, `tracked`, `resolved`), `issue`,
+  `pr` and `note`. A resolved signature that fails again becomes
+  `regressed`.
+- `trend`: one point per window (success rate, queue p95, runner minutes,
+  failures, slowest job).
+- `history`: one entry per run (change kind, tokens, cost, early stop).
+
+Once a week the output gains `value_summary`. It covers runs and early
+stops, PRs opened and merged, failures fixed, runner minutes saved per week,
+tokens and cost, and cost per merged PR. The collector finds the flow's own
+pull requests by head branch prefix, with one list request per repository.
+Legacy publication names branches `preloop/<flow name slug>-<execution id>`,
+so pass that prefix with `--flow-branch-prefix`. Have the prompt put a
+`Runner minutes saved per week (estimate): N` line in each PR body; the
+collector reads the claim back from merged PRs. Tokens and cost are only as
+complete as the runs that recorded them in their history entry.
+
+The output also has `early_stop` and `changed_reasons`. When no job failed,
+no signature is new or regressed, no open signature went quiet and no
+summary is due, the agent can write a short report and exit.
+
+The agent ends by merging the state and its history entry into its result.
+Its ledger edits, written under `ci_health_state.ledger` in `result.json`,
+take precedence:
+
+<!-- example: fragment -->
+```bash
+python3 scripts/ci_health_collect.py finalize \
+  --collector evidence/ci-health.json --result result.json \
+  --entry '{"change": "none", "early_stop": true}'
+```

@@ -1,0 +1,4 @@
+2026-11-28T03:10:58.1234567Z ============================= short test summary info ============================
+2026-11-28T03:10:58.1234568Z [31mFAILED[0m tests/test_flows.py::TestSchedule::test_next_run - AssertionError: assert 3 == 4
+2026-11-28T03:10:58.1234569Z ERROR tests/test_db.py::test_pool - sqlalchemy.exc.OperationalError: connection refused at 0x7f3a2b
+2026-11-28T03:10:59.0000000Z ##[error]Process completed with exit code 1.
