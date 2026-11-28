@@ -626,19 +626,32 @@ class GitHubSource:
         body = self.client.get(url, cache=True)
         return None if body is None else body.decode("utf-8", "replace")
 
-    def pull_state(self, number: int) -> dict[str, Any] | None:
-        """Read a pull request's state for the value summary.
+    def flow_pulls(self, prefix: str) -> list[dict[str, Any]]:
+        """List the newest pull requests opened from the flow's branches.
+
+        One request: the 100 most recently created pull requests, filtered
+        by head branch prefix.
 
         Args:
-            number: The pull request number.
+            prefix: Head branch prefix of the flow's pull requests.
 
         Returns:
-            ``{"state", "merged_at"}`` or None.
+            Normalized pull requests (see :func:`_pull`).
         """
-        data = self.client.get_json(f"{self.api}/repos/{self.repo}/pulls/{number}")
-        if not data:
-            return None
-        return {"state": data.get("state"), "merged_at": data.get("merged_at")}
+        url = (
+            f"{self.api}/repos/{self.repo}/pulls?state=all&sort=created"
+            "&direction=desc&per_page=100"
+        )
+        return [
+            _pull(
+                item.get("html_url"),
+                item.get("created_at"),
+                item.get("merged_at"),
+                item.get("body"),
+            )
+            for item in self.client.get_json(url) or []
+            if ((item.get("head") or {}).get("ref") or "").startswith(prefix)
+        ]
 
 
 class GitLabSource:
@@ -741,20 +754,29 @@ class GitLabSource:
         body = self.client.get(url, cache=True)
         return None if body is None else body.decode("utf-8", "replace")
 
-    def pull_state(self, number: int) -> dict[str, Any] | None:
-        """Read a merge request's state.
+    def flow_pulls(self, prefix: str) -> list[dict[str, Any]]:
+        """List the newest merge requests opened from the flow's branches.
 
         Args:
-            number: The merge request iid.
+            prefix: Source branch prefix of the flow's merge requests.
 
         Returns:
-            ``{"state", "merged_at"}`` or None.
+            Normalized merge requests (see :func:`_pull`).
         """
-        url = f"{self.api}/projects/{self.encoded}/merge_requests/{number}"
-        data = self.client.get_json(url)
-        if not data:
-            return None
-        return {"state": data.get("state"), "merged_at": data.get("merged_at")}
+        url = (
+            f"{self.api}/projects/{self.encoded}/merge_requests?state=all"
+            "&order_by=created_at&sort=desc&per_page=100"
+        )
+        return [
+            _pull(
+                item.get("web_url"),
+                item.get("created_at"),
+                item.get("merged_at"),
+                item.get("description"),
+            )
+            for item in self.client.get_json(url) or []
+            if (item.get("source_branch") or "").startswith(prefix)
+        ]
 
 
 # --------------------------------------------------------------------------
@@ -1109,15 +1131,42 @@ def fit_state(state: dict[str, Any]) -> dict[str, Any]:
     return state
 
 
-def _pr_number(url: str | None) -> int | None:
-    match = re.search(r"/(?:pull|merge_requests)/(\d+)", url or "")
-    return int(match.group(1)) if match else None
+_MINUTES_SAVED = re.compile(
+    r"runner minutes saved per week[^0-9\n]*([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE
+)
+
+
+def _pull(
+    url: str | None, created: str | None, merged: str | None, body: str | None
+) -> dict[str, Any]:
+    """Normalize a pull or merge request for the value summary.
+
+    The flow's prompt has every pull request body state
+    ``Runner minutes saved per week (estimate): N``; that claim is read
+    back here so the summary needs no per-run bookkeeping.
+
+    Args:
+        url: The web URL.
+        created: Creation time.
+        merged: Merge time, if merged.
+        body: The description.
+
+    Returns:
+        ``{"url", "created_at", "merged_at", "minutes_saved_per_week"}``.
+    """
+    match = _MINUTES_SAVED.search(body or "")
+    return {
+        "url": url,
+        "created_at": created,
+        "merged_at": merged,
+        "minutes_saved_per_week": float(match.group(1)) if match else 0.0,
+    }
 
 
 def value_summary(
     history: list[dict[str, Any]],
     ledger: dict[str, dict[str, Any]],
-    pr_states: dict[str, dict[str, Any]],
+    pulls: list[dict[str, Any]],
     now: datetime,
     days: int = 7,
 ) -> dict[str, Any]:
@@ -1126,7 +1175,7 @@ def value_summary(
     Args:
         history: Per-run entries recorded by ``finalize``.
         ledger: The current flake ledger.
-        pr_states: Pull request URL to ``{"state", "merged_at"}``.
+        pulls: The flow's pull requests (see :func:`_pull`).
         now: The collection time.
         days: The summary period.
 
@@ -1137,10 +1186,13 @@ def value_summary(
     """
     start = now - timedelta(days=days)
     recent = [h for h in history if (parse_time(h.get("at")) or start) >= start]
-    prs = [h for h in recent if h.get("pull_request")]
-    merged = [
-        h for h in prs if (pr_states.get(h["pull_request"]) or {}).get("merged_at")
-    ]
+
+    def within(stamp: str | None) -> bool:
+        parsed = parse_time(stamp)
+        return parsed is not None and parsed >= start
+
+    prs = [p for p in pulls if within(p.get("created_at"))]
+    merged = [p for p in pulls if within(p.get("merged_at"))]
     costs = [h["cost_usd"] for h in recent if h.get("cost_usd") is not None]
     tokens = [h["tokens"] for h in recent if h.get("tokens") is not None]
     fixed = [
@@ -1157,9 +1209,10 @@ def value_summary(
         "early_stops": sum(1 for h in recent if h.get("early_stop")),
         "prs_opened": len(prs),
         "prs_merged": len(merged),
+        "merged_pull_requests": [p["url"] for p in merged][:10],
         "failures_fixed": len(fixed),
         "runner_minutes_saved_per_week_est": round(
-            sum(float(h.get("runner_minutes_saved_per_week") or 0) for h in merged),
+            sum(p["minutes_saved_per_week"] for p in merged),
             1,
         ),
         "tokens": sum(tokens) if tokens else None,
@@ -1394,37 +1447,36 @@ def collect(
 
 
 def add_value_summary(
-    output: dict[str, Any], sources: list[Any], now: datetime
+    output: dict[str, Any],
+    sources: list[Any],
+    now: datetime,
+    branch_prefix: str | None,
 ) -> None:
     """Attach the weekly value summary when it is due.
 
-    Pull request states are read for the PRs the flow's history recorded,
-    one request each, from the source whose repository the URL names.
+    The flow's pull requests are found by head branch prefix, one request
+    per source; without a prefix, PR figures are reported as unknown.
 
     Args:
         output: The collector output, updated in place.
         sources: Provider adapters.
         now: The collection time.
+        branch_prefix: Head branch prefix of the flow's pull requests.
     """
     if not output["summary_due"]:
         return
     state = output[STATE_KEY]
-    pr_states: dict[str, dict[str, Any]] = {}
-    for entry in state["history"]:
-        url = entry.get("pull_request")
-        number = _pr_number(url)
-        if not url or number is None or url in pr_states:
-            continue
-        for source in sources:
-            if source.repo in url:
-                try:
-                    pr_states[url] = source.pull_state(number) or {}
-                except StopFetchingError:
-                    pr_states[url] = {}
-                break
-    output["value_summary"] = value_summary(
-        state["history"], state["ledger"], pr_states, now
-    )
+    pulls: list[dict[str, Any]] = []
+    complete = bool(branch_prefix)
+    for source in sources if branch_prefix else []:
+        try:
+            pulls.extend(source.flow_pulls(branch_prefix))
+        except StopFetchingError:
+            complete = False
+    summary = value_summary(state["history"], state["ledger"], pulls, now)
+    if not complete:
+        summary["pull_requests_complete"] = False
+    output["value_summary"] = summary
     state["value_summary_at"] = iso(now)
 
 
@@ -1440,8 +1492,8 @@ def finalize(
     Args:
         collector_path: The collector's output file.
         result_path: The agent's result.json, created if missing.
-        entry: This run's history entry (pull_request, change kind, tokens,
-            cost_usd, runner_minutes_saved_per_week, early_stop).
+        entry: This run's history entry (change kind, tokens,
+            cost_usd, early_stop).
         now: The finalize time.
 
     Returns:
@@ -1549,6 +1601,11 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     run.add_argument("--max-calls", type=int, default=3000)
     run.add_argument("--min-remaining", type=int, default=200)
     run.add_argument("--junit", action="append", default=[])
+    run.add_argument(
+        "--flow-branch-prefix",
+        help="head branch prefix of the flow's own pull requests, for the "
+        "weekly value summary (for example preloop/daily-ci-and-qa-review-)",
+    )
     run.add_argument("--out", default="evidence/ci-health.json")
     run.add_argument("--now", help="window end (ISO-8601), for tests")
     fin = sub.add_parser("finalize", help="merge collector state into result.json")
@@ -1590,7 +1647,7 @@ def main(argv: list[str] | None = None, transport: Transport = urllib_transport)
         args.max_logs,
         [Path(p) for p in args.junit],
     )
-    add_value_summary(output, sources, now)
+    add_value_summary(output, sources, now, args.flow_branch_prefix)
     clients = {id(s.client): s.client for s in sources}.values()
     output["window"]["api_calls"] = sum(c.calls for c in clients)
     output["window"]["cache_hits"] = sum(c.cache_hits for c in clients)

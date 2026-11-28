@@ -76,8 +76,8 @@ class FakeApi:
             return "gh_runs_page1.json"
         if "/actions/jobs/" in path:
             return f"gh_log_{parts[-2]}.txt"
-        if "/pulls/" in path:
-            return f"gh_pull_{parts[-1]}.json"
+        if path.endswith("/pulls"):
+            return "gh_pulls.json"
         if path.endswith("/pipelines"):
             return "gl_pipelines.json"
         if "/pipelines/" in path and path.endswith("/jobs"):
@@ -362,7 +362,7 @@ def test_state_fits_the_previous_result_budget(output: dict[str, Any]) -> None:
     }
     state["trend"] = state["trend"] * chc.MAX_TREND_ENTRIES
     state["seen_runs"] = [f"gi{10**10 + i}" for i in range(chc.MAX_SEEN_RUNS)]
-    state["history"] = [{"at": chc.iso(NOW), "pull_request": "u" * 80}] * 60
+    state["history"] = [{"at": chc.iso(NOW), "change": "u" * 80}] * 60
     assert len(json.dumps(state)) < chc.STATE_BUDGET_BYTES
 
 
@@ -412,7 +412,7 @@ def test_finalize_merges_state_and_agent_ledger_edits(
             "--result",
             str(result),
             "--entry",
-            json.dumps({"pull_request": f"https://github.com/{REPO}/pull/2610"}),
+            json.dumps({"change": "flake", "cost_usd": 1.5}),
             "--now",
             chc.iso(NOW),
         ]
@@ -423,7 +423,7 @@ def test_finalize_merges_state_and_agent_ledger_edits(
     entry = merged[chc.STATE_KEY]["ledger"][sig_id]
     assert entry["status"] == "resolved"
     assert entry["resolved_at"] == chc.iso(NOW)
-    assert merged[chc.STATE_KEY]["history"][-1]["pull_request"].endswith("/2610")
+    assert merged[chc.STATE_KEY]["history"][-1]["cost_usd"] == 1.5
 
 
 def test_weekly_value_summary_reads_pr_states(tmp_path: Path) -> None:
@@ -433,10 +433,9 @@ def test_weekly_value_summary_reads_pr_states(tmp_path: Path) -> None:
         "history": [
             {
                 "at": chc.iso(NOW - timedelta(days=2)),
-                "pull_request": f"https://github.com/{REPO}/pull/2610",
+                "change": "flake",
                 "tokens": 1_000_000,
                 "cost_usd": 4.0,
-                "runner_minutes_saved_per_week": 90,
             },
             {
                 "at": chc.iso(NOW - timedelta(days=1)),
@@ -466,6 +465,8 @@ def test_weekly_value_summary_reads_pr_states(tmp_path: Path) -> None:
                 str(out_path),
                 "--now",
                 chc.iso(NOW),
+                "--flow-branch-prefix",
+                "preloop/daily-ci-and-qa-review-",
             ],
             transport=api,
         )
@@ -473,13 +474,26 @@ def test_weekly_value_summary_reads_pr_states(tmp_path: Path) -> None:
     assert all(h.get("Authorization") == "Bearer t" for h in api.headers)
     summary = json.loads(out_path.read_text())["value_summary"]
     assert summary["runs"] == 2
-    assert summary["prs_opened"] == 1
+    # The unrelated branch and the PR older than a week do not count.
+    assert summary["prs_opened"] == 2
     assert summary["prs_merged"] == 1
+    assert summary["merged_pull_requests"] == [
+        "https://github.com/example-org/example-repo/pull/21"
+    ]
     assert summary["early_stops"] == 1
     assert summary["cost_usd"] == 4.5
     assert summary["cost_per_merged_pr_usd"] == 4.5
     assert summary["tokens_per_merged_pr"] == 1_050_000
     assert summary["runner_minutes_saved_per_week_est"] == 90.0
+
+
+def test_value_summary_without_prefix_marks_prs_unknown(
+    output: dict[str, Any],
+) -> None:
+    """Without a branch prefix the PR counts are flagged as incomplete."""
+    chc.add_value_summary(output, [github(FakeApi())], NOW, None)
+    assert output["value_summary"]["pull_requests_complete"] is False
+    assert output[chc.STATE_KEY]["value_summary_at"] == chc.iso(NOW)
 
 
 def test_quiet_window_stops_early(output: dict[str, Any]) -> None:

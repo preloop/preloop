@@ -1,0 +1,38 @@
+[
+ {
+  "html_url": "https://github.com/example-org/example-repo/pull/21",
+  "created_at": "2026-11-26T08:00:00Z",
+  "merged_at": "2026-11-27T10:00:00Z",
+  "head": {
+   "ref": "preloop/daily-ci-and-qa-review-0000aaaa"
+  },
+  "body": "Fix order-dependent schedule test.\n\nRunner minutes saved per week (estimate): 90\n"
+ },
+ {
+  "html_url": "https://github.com/example-org/example-repo/pull/22",
+  "created_at": "2026-11-27T08:00:00Z",
+  "merged_at": null,
+  "head": {
+   "ref": "preloop/daily-ci-and-qa-review-0000bbbb"
+  },
+  "body": "Rebalance shards."
+ },
+ {
+  "html_url": "https://github.com/example-org/example-repo/pull/23",
+  "created_at": "2026-11-27T09:00:00Z",
+  "merged_at": "2026-11-27T12:00:00Z",
+  "head": {
+   "ref": "feature/unrelated"
+  },
+  "body": "Runner minutes saved per week: 999"
+ },
+ {
+  "html_url": "https://github.com/example-org/example-repo/pull/9",
+  "created_at": "2026-11-10T08:00:00Z",
+  "merged_at": "2026-11-11T08:00:00Z",
+  "head": {
+   "ref": "preloop/daily-ci-and-qa-review-0000cccc"
+  },
+  "body": ""
+ }
+]

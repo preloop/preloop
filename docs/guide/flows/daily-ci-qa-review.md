@@ -185,14 +185,17 @@ persists with no extra storage. It is bounded to stay well inside the
   `regressed`.
 - `trend`: one point per window (success rate, queue p95, runner minutes,
   failures, slowest job).
-- `history`: one entry per run (pull request URL, change kind, tokens,
-  cost, estimated runner minutes saved per week, early stop).
+- `history`: one entry per run (change kind, tokens, cost, early stop).
 
-Once a week the output gains `value_summary`: runs and early stops, PRs
-opened and merged (states read from the forge), failures fixed, the runner
-minutes saved per week claimed by merged changes, tokens and cost, and
-cost per merged PR. Tokens and cost are only as complete as the runs that
-recorded them.
+Once a week the output gains `value_summary`. It covers runs and early
+stops, PRs opened and merged, failures fixed, runner minutes saved per week,
+tokens and cost, and cost per merged PR. The collector finds the flow's own
+pull requests by head branch prefix, with one list request per repository.
+Legacy publication names branches `preloop/<flow name slug>-<execution id>`,
+so pass that prefix with `--flow-branch-prefix`. Have the prompt put a
+`Runner minutes saved per week (estimate): N` line in each PR body; the
+collector reads the claim back from merged PRs. Tokens and cost are only as
+complete as the runs that recorded them in their history entry.
 
 The output also has `early_stop` and `changed_reasons`. When no job failed,
 no signature is new or regressed, no open signature went quiet and no
@@ -206,5 +209,5 @@ take precedence:
 ```bash
 python3 scripts/ci_health_collect.py finalize \
   --collector evidence/ci-health.json --result result.json \
-  --entry '{"pull_request": null, "change": "none", "early_stop": true}'
+  --entry '{"change": "none", "early_stop": true}'
 ```
