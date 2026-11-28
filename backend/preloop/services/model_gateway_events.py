@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 _REDACTED_TEXT = "***REDACTED***"
 # Bump when a rule starts or stops masking a shape. Stored records keep the
 # version they were written with; they are not rewritten.
-REDACTION_RULESET = "2026-11-19"
+REDACTION_RULESET = "2026-11-28"
 REDACTION_RULE_ORDER: tuple[str, ...] = (
     "private_key",
     "authorization_bearer",
@@ -249,6 +249,38 @@ def _redact_assignment(match: re.Match[str]) -> str:
     return f"{match.group('prefix')}{_REDACTED_TEXT}"
 
 
+# One word in lower case or with a leading capital, optionally joined by
+# hyphens: ``authentication``, ``Token``, ``token-based``. That is prose.
+_PROSE_WORDS = re.compile(r"^[A-Za-z][a-z]*(?:-[A-Za-z][a-z]*)*$")
+# Token punctuation the closing ``\b`` left out of the match, as in
+# ``bearer abcdefgh=`` or ``bearer abcdefgh~``. Whatever follows it (a
+# period, a backtick, a quote) does not matter. A period alone does not
+# count, so ``bearer authentication.`` stays prose.
+_TOKEN_TAIL = re.compile(r"[=+/~]")
+
+
+def _redact_bearer_value(match: re.Match[str]) -> str:
+    """Mask the value after a bare ``bearer`` unless it is an ordinary word.
+
+    ``bearer authentication`` and ``Bearer token-based`` are prose. A value
+    with a digit, an inner capital, or a ``.``, ``_``, ``~``, ``+``, ``/``
+    or ``=`` is token-shaped and is masked, including a trailing ``=``,
+    ``+``, ``/`` or ``~`` that ends the value (``bearer abcdefgh=.``). An ``Authorization: Bearer``
+    header is masked by its own rule before this one runs, whatever the
+    value looks like.
+
+    Args:
+        match: A ``bearer_token`` match; group 1 is the keyword.
+
+    Returns:
+        The original text for prose, otherwise the keyword and the marker.
+    """
+    value = match.group(0)[len(match.group(1)) :].strip()
+    if _PROSE_WORDS.match(value) and not _TOKEN_TAIL.match(match.string, match.end()):
+        return match.group(0)
+    return f"{match.group(1)} {_REDACTED_TEXT}"
+
+
 _TEXT_RULES: tuple[tuple[str, re.Pattern[str], _TextReplacement], ...] = (
     (
         "private_key",
@@ -266,7 +298,7 @@ _TEXT_RULES: tuple[tuple[str, re.Pattern[str], _TextReplacement], ...] = (
     (
         "bearer_token",
         re.compile(r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/=-]{8,}\b"),
-        rf"\1 {_REDACTED_TEXT}",
+        _redact_bearer_value,
     ),
     ("keyword_assignment", _KEYWORD_ASSIGNMENT, _redact_assignment),
     # sk-proj- and sk-ant- use this same prefix, so they need no extra rule.

@@ -160,6 +160,7 @@ def build(binding, head):
     if token:
         headers["Authorization"] = "Bearer " + token
     auth = b64(("x-access-token:" + gh_token).encode())
+    # This API requires bearer authentication and a JSON object.
 """
 
 
@@ -193,7 +194,7 @@ def test_ordinary_source_is_stored_complete_and_byte_identical() -> None:
     document = capture_tools({}, _tool_result(_ORDINARY_SOURCE), capture_content=True)
     assert document["capture_complete"] is True
     assert document["storage_redacted"] is False
-    assert document["redaction_ruleset"] == "2026-11-19"
+    assert document["redaction_ruleset"] == "2026-11-28"
     assert document["observations"][0]["value"] == _ORDINARY_SOURCE
     assert document["observations"][0]["redacted"] is False
     assert "redactions" not in document["observations"][0]
@@ -201,7 +202,7 @@ def test_ordinary_source_is_stored_complete_and_byte_identical() -> None:
     assert stored["observations"][0]["value"] == _ORDINARY_SOURCE
     assert stored["capture_complete"] is True
     assert stored["storage_redacted"] is False
-    assert stored["redaction_ruleset"] == "2026-11-19"
+    assert stored["redaction_ruleset"] == "2026-11-28"
 
 
 def test_placeholder_url_is_stored_complete() -> None:
@@ -364,7 +365,7 @@ def test_real_looking_key_is_masked_and_records_the_rule() -> None:
     assert record["redactions"] == [{"rule": "keyword_assignment", "count": 1}]
     assert document["capture_complete"] is False
     assert document["storage_redacted"] is True
-    assert document["redaction_ruleset"] == "2026-11-19"
+    assert document["redaction_ruleset"] == "2026-11-28"
     stored = _stored_document(document)
     assert secret not in stored["observations"][0]["value"]
     assert stored["observations"][0]["redactions"] == [
@@ -372,7 +373,7 @@ def test_real_looking_key_is_masked_and_records_the_rule() -> None:
     ]
     assert stored["capture_complete"] is False
     assert stored["storage_redacted"] is True
-    assert stored["redaction_ruleset"] == "2026-11-19"
+    assert stored["redaction_ruleset"] == "2026-11-28"
 
 
 def test_latest_results_are_retained_before_trailing_prose() -> None:

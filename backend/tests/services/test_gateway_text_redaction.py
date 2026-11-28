@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from preloop.services.model_gateway_events import redact_sensitive_text
+from preloop.services.model_gateway_events import (
+    REDACTION_RULESET,
+    redact_sensitive_text,
+)
 
 _SK = "sk-testsecret1234567890"
 # Pieces stay separate so the file does not contain one vendor-shaped literal.
@@ -227,7 +230,56 @@ _CASES: list[tuple[str, str, list[tuple[str, int]]]] = [
         f"Authorization: Bearer {_REDACTED}",
         [("authorization_bearer", 1)],
     ),
-    (f"bearer {'a' * 8}", f"bearer {_REDACTED}", [("bearer_token", 1)]),
+    (f"bearer {'a1' * 4}", f"bearer {_REDACTED}", [("bearer_token", 1)]),
+    # Prose after "bearer" is not a credential (public issue #2393).
+    (
+        "This API requires bearer authentication and a JSON object.",
+        "This API requires bearer authentication and a JSON object.",
+        [],
+    ),
+    ("Use Bearer Authentication here.", "Use Bearer Authentication here.", []),
+    ("a bearer token-based scheme", "a bearer token-based scheme", []),
+    ("bearer authorization", "bearer authorization", []),
+    # Token-shaped values after a bare "bearer" are still masked.
+    (f"bearer {'Aa1' * 6}", f"bearer {_REDACTED}", [("bearer_token", 1)]),
+    ("Bearer abcdEFGHijkl", f"Bearer {_REDACTED}", [("bearer_token", 1)]),
+    ("bearer abc.def.ghi", f"bearer {_REDACTED}", [("bearer_token", 1)]),
+    ("bearer abcdefgh123", f"bearer {_REDACTED}", [("bearer_token", 1)]),
+    ("bearer abcdefgh=", f"bearer {_REDACTED}=", [("bearer_token", 1)]),
+    ("bearer abcdefgh+/ end", f"bearer {_REDACTED}+/ end", [("bearer_token", 1)]),
+    ('"bearer abcdefgh=="', f'"bearer {_REDACTED}=="', [("bearer_token", 1)]),
+    ("bearer abcdefgh=.", f"bearer {_REDACTED}=.", [("bearer_token", 1)]),
+    ("`bearer abcdefgh=`", f"`bearer {_REDACTED}=`", [("bearer_token", 1)]),
+    ("bearer abcdefgh~", f"bearer {_REDACTED}~", [("bearer_token", 1)]),
+    ("bearer abcdefgh/:", f"bearer {_REDACTED}/:", [("bearer_token", 1)]),
+    ("`bearer authentication`", "`bearer authentication`", []),
+    # A sentence-final period stays prose.
+    ("Use bearer authentication.", "Use bearer authentication.", []),
+    (f"Bearer {_JWT}", f"Bearer {_REDACTED}", [("bearer_token", 1)]),
+    # The header rule masks any value, prose-shaped or not.
+    (
+        "Authorization: Bearer authentication",
+        f"Authorization: Bearer {_REDACTED}",
+        [("authorization_bearer", 1)],
+    ),
+    (
+        f"Authorization: Bearer {_JWT}",
+        f"Authorization: Bearer {_REDACTED}",
+        [("authorization_bearer", 1)],
+    ),
+    # A deleted line in a diff is still text that was in the repository, and
+    # a removed credential may never have been rotated. It is masked the
+    # same as an added line.
+    (
+        f'-    headers = {{"X-Test": "Bearer {"Aa1" * 6}"}}',
+        f'-    headers = {{"X-Test": "Bearer {_REDACTED}"}}',
+        [("bearer_token", 1)],
+    ),
+    (
+        f"-Authorization: Bearer {'Aa1' * 6}",
+        f"-Authorization: Bearer {_REDACTED}",
+        [("authorization_bearer", 1)],
+    ),
     (f"id-token: write {_JWT}", f"id-token: write {_REDACTED}", [("jwt", 1)]),
 ]
 
@@ -256,3 +308,8 @@ def test_redaction_rules(
     for secret in (_SK, _JWT, _AWS, _SLACK, _GLPAT, _GH_PAT, _GHP, _PRELOOP, _RUN):
         if secret in source and secret not in expected:
             assert secret not in text
+
+
+def test_ruleset_version_moves_with_the_prose_bearer_change() -> None:
+    """Records written after the prose change carry a new ruleset version."""
+    assert REDACTION_RULESET == "2026-11-28"
