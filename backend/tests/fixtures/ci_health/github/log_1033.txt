@@ -1,0 +1,6 @@
+2026-01-01T10:14:00.0000000Z  RUN  v3.2.4 /home/runner/work/app/app/frontend
+2026-01-01T10:14:50.0000000Z  FAIL  src/components/flow-editor.test.ts > flow editor > saves a schedule change
+2026-01-01T10:14:50.0000000Z AssertionError: expected "every 2 hours" to be "every 3 hours"
+2026-01-01T10:14:51.0000000Z  × src/components/run-list.test.ts > run list > paginates 50 rows 12ms
+2026-01-01T10:15:00.0000000Z  Test Files  2 failed | 140 passed (142)
+2026-01-01T10:15:00.0000000Z ##[error]Process completed with exit code 1.

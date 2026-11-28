@@ -1426,7 +1426,12 @@ def _register_control_plane_routes(
         flow_conversations.router, prefix="/api/v1", tags=["Flow conversations"]
     )
     app.include_router(publication_credentials.router, prefix="/api/v1")
-    from preloop.api.endpoints import result_validation
+    from preloop.api.endpoints import flow_state, result_validation
+
+    app.include_router(flow_state.router, prefix="/api/v1", tags=["Flows"])
+    from preloop.api.endpoints import ci_health as ci_health_endpoints
+
+    app.include_router(ci_health_endpoints.router, prefix="/api/v1", tags=["Flows"])
 
     app.include_router(result_validation.router, prefix="/api/v1")
     app.include_router(

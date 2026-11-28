@@ -2593,6 +2593,94 @@ export async function refreshToolCostFlags(): Promise<ToolCostFlag[]> {
   return Array.isArray(data) ? (data as ToolCostFlag[]) : [];
 }
 
+/** One point of a repository's CI health series. */
+export interface CiHealthPoint {
+  at: string;
+  success_rate: number | null;
+  queue_p95_s: number | null;
+  slowest_gate: string | null;
+  slowest_gate_p95_s: number | null;
+  runner_minutes: number | null;
+  rerun_rate: number | null;
+}
+
+/** A ledger signature worth a look (regressed, flaky or open). */
+export interface CiHealthFlake {
+  id: string;
+  framework: string | null;
+  test: string | null;
+  error: string | null;
+  count: number | null;
+  flaky: boolean | null;
+  status: string | null;
+  first_seen: string | null;
+  last_seen: string | null;
+  linked: string[] | null;
+  repositories: string[] | null;
+  jobs: string[] | null;
+}
+
+/** What a CI review flow cost and delivered over one window. */
+export interface CiHealthValue {
+  start: string;
+  end: string;
+  runs: { total: number; succeeded: number; failed: number; skipped: number };
+  tokens: number;
+  cost_usd_est: number;
+  pull_requests_opened: number;
+  pull_requests_merged: number;
+  failures_fixed: number;
+  failures_regressed: number;
+  runner_minutes_saved_per_week_est: number | null;
+  cost_per_merged_pull_request_usd_est: number | null;
+  tokens_per_merged_pull_request: number | null;
+}
+
+/** GET /flows/{id}/ci-health. */
+export interface FlowCiHealth {
+  generated_at: string;
+  days: number;
+  first_run_at: string | null;
+  last_run_at: string | null;
+  ledger: { counts: Record<string, number>; flaky: number };
+  repositories: Record<
+    string,
+    {
+      latest: CiHealthPoint | null;
+      prior: CiHealthPoint | null;
+      series: CiHealthPoint[];
+    }
+  >;
+  top_flakes: CiHealthFlake[];
+  week: CiHealthValue;
+  prior_week: CiHealthValue;
+  pull_requests: Array<{
+    url: string;
+    state: string;
+    opened_at: string | null;
+    merged_at: string | null;
+  }>;
+}
+
+/**
+ * The CI health card of a flow that runs the ci_health_report collector.
+ *
+ * @returns The view, or null when the flow has no CI health ledger (404).
+ */
+export async function getFlowCiHealth(
+  flowId: string,
+  days = 7
+): Promise<FlowCiHealth | null> {
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/flows/${encodeURIComponent(flowId)}/ci-health?days=${days}`
+  );
+  if (response.status === 404) return null;
+  if (!response.ok) {
+    throw new Error('Failed to fetch CI health');
+  }
+  return response.json();
+}
+
 export async function getFlowGatewayUsageSummary(
   flowId: string,
   params: GatewayUsageSummaryParams = {}

@@ -1,0 +1,4 @@
+[
+  {"id": 3020, "name": "build", "stage": "build", "status": "success", "allow_failure": false, "created_at": "2026-01-01T07:00:05.000Z", "started_at": "2026-01-01T07:00:25.000Z", "finished_at": "2026-01-01T07:03:25.000Z", "web_url": "https://gitlab.example.com/example-group/sub/svc/-/jobs/3020", "tag_list": ["docker"], "retried": false},
+  {"id": 3021, "name": "unit", "stage": "test", "status": "success", "allow_failure": false, "created_at": "2026-01-01T07:03:30.000Z", "started_at": "2026-01-01T07:03:50.000Z", "finished_at": "2026-01-01T07:08:50.000Z", "web_url": "https://gitlab.example.com/example-group/sub/svc/-/jobs/3021", "tag_list": ["docker"], "retried": false}
+]

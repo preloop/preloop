@@ -169,6 +169,7 @@ tracked as follow-up work.
 | `flow_execution.total_tokens` | Not a secret: count, type or timestamp | `20251118_add_execution_metrics_to_flow_execution` |
 | `flow_feedback.event_key` | Not a secret: identifier, dedupe or lookup key | `20260906_flow_feedback` |
 | `flow_runner.token_hash` | One-way hash | `20260817_add_flow_runners` |
+| `flow_state.key` | Not a secret: the name of a flow state value | `20270105_flow_state` |
 | `flow_thread.lease_token` | Not a secret: lease ownership marker | `20260906_flow_feedback` |
 | `gateway_identity_provider.api_key_id` | Not a secret: foreign key | `20261010_gateway_idp` |
 | `gateway_identity_provider.max_token_lifetime_seconds` | Not a secret: count, type or timestamp | `20261010_gateway_idp` |
