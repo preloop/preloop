@@ -278,3 +278,61 @@ describe('native hook tool decisions (#2561)', () => {
     expect(tool.phase).to.equal('completed');
   });
 });
+
+describe('native hook rows pair with the gateway call (#2588)', () => {
+  const anthropicCall = (id: string, toolId: string, at: string) => ({
+    ...event(id, {
+      request: { messages: [] },
+      response: {
+        content: [
+          {
+            type: 'tool_use',
+            id: toolId,
+            name: 'Bash',
+            input: { command: 'ls' },
+          },
+        ],
+      },
+    }),
+    timestamp: at,
+  });
+  const hookRow = (id: string, at: string): RuntimeSessionActivityItem =>
+    ({
+      activity_id: id,
+      activity_type: 'tool_call',
+      timestamp: at,
+      title: 'Bash',
+      tool_name: 'Bash',
+      status: 'allowed',
+      summary: 'command (2 chars)',
+      metadata: {
+        origin: 'native_hook',
+        source: 'claude_code',
+        decision: 'allow',
+      },
+    }) as RuntimeSessionActivityItem;
+
+  it('counts one tool per call when both the gateway and the hook saw it', () => {
+    const tools = sessionTools(
+      [
+        anthropicCall('r1', 'toolu_a', '2026-10-02T10:00:00Z'),
+        anthropicCall('r2', 'toolu_b', '2026-10-02T10:00:10Z'),
+      ],
+      [
+        hookRow('h1', '2026-10-02T10:00:02Z'),
+        hookRow('h2', '2026-10-02T10:00:12Z'),
+      ]
+    );
+    expect(tools).to.have.length(2);
+    expect(tools.map((tool) => tool.callId)).to.deep.equal([
+      'toolu_a',
+      'toolu_b',
+    ]);
+    expect(tools.every((tool) => tool.decision === 'allowed')).to.equal(true);
+  });
+
+  it('keeps a hook row with no matching gateway call', () => {
+    const tools = sessionTools([], [hookRow('h1', '2026-10-02T10:00:02Z')]);
+    expect(tools).to.have.length(1);
+  });
+});

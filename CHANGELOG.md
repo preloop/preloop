@@ -98,6 +98,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `execution: not_run_hook_recorded` and the call's `tool_origin`, and says
   that the harness does not resume the call, so the agent has to issue it
   again (#2595).
+- A flow run that parks on an approval no longer ends `STOPPED` when its
+  runner exits: the runner's stop report releases the lease and the run waits
+  for the decision. On a private-runner host profile the decision starts a
+  fresh run of the task that carries the answer, and the agent is told so when
+  it parks instead of being promised its session back (#2598).
+- A native command approval raised by the onboarded Claude Code hook inside a
+  host-profile flow run is linked to that execution and parks it, so the run
+  no longer carries on and publishes while the approval is pending (#2597).
+- GitLab feedback binds to the flow's own merge request: the repository
+  identity comes from the hook's `project` id instead of the id-less legacy
+  `repository` object (#2599).
+- A published merge request URL keeps a non-default port, so links to a
+  self-hosted GitLab on a custom port open (#2600).
 
 - `preloop policy apply` now records a policy version for every successful
   apply, prints its number, and `preloop policy list` and rollback can use it.

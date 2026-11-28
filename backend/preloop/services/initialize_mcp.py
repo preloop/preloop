@@ -184,7 +184,10 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
     logger.info("Installed cancel scope error filter for nested MCP session cleanup")
 
     # Create server
+    from preloop.services.flow_definition_tools import register_flow_definition_tools
+
     mcp = create_dynamic_mcp_server()
+    register_flow_definition_tools(mcp)
 
     # Import the MCP router functions (existing tool implementations)
     from preloop.api.endpoints import mcp as mcp_router

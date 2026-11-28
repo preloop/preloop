@@ -6,6 +6,7 @@ import uuid
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from pydantic import AwareDatetime
 from sqlalchemy.orm import Session
 
 from preloop.api.auth import get_current_active_user
@@ -13,6 +14,8 @@ from preloop.api.common import get_accessible_projects
 from preloop.api.traffic_attribution import mark_empty_after_create
 from preloop.utils.permissions import ensure_permission_in_oss, require_permission
 
+from preloop.schemas.project_discovery import ProjectDiscovery
+from preloop.services.project_discovery import discover_projects
 from preloop.schemas.readiness import ReadinessPolicy, ReadinessPolicyInput
 from preloop.schemas.project import (
     ProjectCreate,
@@ -389,6 +392,47 @@ def list_organization_projects(
 
     # Format the response to match the expected structure
     return {"items": project_dicts, "total": total, "limit": limit, "offset": offset}
+
+
+@router.get("/projects/discovery", response_model=ProjectDiscovery)
+@require_permission("view_projects")
+@require_permission("view_runtime_sessions")
+def get_project_discovery(
+    days: int = Query(14, ge=1, le=90),
+    limit: int = Query(20, ge=1, le=50),
+    as_of: Optional[AwareDatetime] = Query(
+        None, description="Inclusive window end, defaulting to now."
+    ),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> ProjectDiscovery:
+    """Discover project candidates from stored activity in an inclusive UTC window.
+
+    The latest active day ranks first, then the number of distinct work items,
+    pushes and sessions, then the latest instant and stable candidate ID. Repeated
+    observations of one work item contribute once. Up to 500 recent rows per
+    input and eight evidence items per candidate are used. A missing source
+    has unknown coverage. Directory and hostless repository hints can carry
+    possible project IDs for confirmation.
+    """
+    try:
+        end = (as_of or datetime.datetime.now(datetime.timezone.utc)).astimezone(
+            datetime.timezone.utc
+        )
+        start = end - datetime.timedelta(days=days)
+    except OverflowError as exc:
+        raise HTTPException(
+            status_code=422, detail="Window is outside the supported date range"
+        ) from exc
+    projects = get_accessible_projects(db=db, current_user=current_user)
+    return discover_projects(
+        db,
+        account_id=current_user.account_id,
+        projects=[p for p in projects if p.is_active],
+        start=start,
+        end=end,
+        limit=limit,
+    )
 
 
 @router.get("/projects/{project_id}", response_model=ProjectResponse)

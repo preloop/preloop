@@ -15,9 +15,10 @@ Guide for users: [Sandboxed and containerised agents](../../docs/guide/clients/s
 | `writable` | writable volume | writable volume | done inside the container (credentials file) | the ordinary case: one review, one Enter, step lines, receipt, extension report, one real request; cancelling changes nothing; no terminal prints the plan and refuses |
 | `ro-settings` | single file bind-mounted read-only from the host | writable volume | done inside the container (credentials file) | the manual step as one block (at most 45 rows, the key in one block), manual merge, resume that names what is missing, a trailing comma located by line, one real request, discovery report, offboard with printed removal |
 | `ro-everything` | read-only bind mount, read-only root filesystem | not writable | `CLAUDE_CODE_OAUTH_TOKEN` in the environment | resume token, `--manual-output`, the environment-variable form with `--from-env` |
-| `wrong-owner` | writable mount, file owned by another uid (0644) | writable volume | none (API key upstream) | `permission denied (owned by uid 0, running as uid 10001)` |
-| `no-login` | read-only bind mount | writable volume | none | MCP-only onboarding, nothing to probe |
+| `wrong-owner` | writable mount, file owned by another uid (0644) | writable volume | none (API key upstream) | owner handoff, gateway probe, and a native `claude -p` using the same registered model |
+| `no-login` | read-only bind mount | writable volume | none | MCP-only review choice and resume with a replacement key issued through the console API |
 | `stale-login` | read-only bind mount | writable volume | a token the provider rejects | the rejected login is not reported as onboarded and its source is named; `--cancel` removes what onboarding created |
+| `subscription-picker` | writable home, then the read-only bind mount | writable volume | done inside the container (credentials file), settings name no model, account has an API-key model | the subscription login is the proposed model ahead of the account's API-key model; cancelling changes nothing |
 
 The container user is uid 10001 in every variant, which is neither root nor a
 typical host user.

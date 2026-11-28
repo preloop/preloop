@@ -51,6 +51,74 @@ class CRUDFlow(CRUDBase[models.Flow]):
         """Initialize with the Flow model."""
         super().__init__(model=models.Flow)
 
+    def get_execution_project_flow(
+        self,
+        db: Session,
+        *,
+        account_id: UUID,
+        project_id: UUID,
+        flow_id: UUID,
+        execution_id: UUID,
+    ) -> models.Flow | None:
+        """Lock the caller and load its grants only at its launch revision."""
+        query = (
+            select(models.Flow)
+            .options(load_only(models.Flow.id, models.Flow.allowed_mcp_tools))
+            .join(models.FlowExecution, models.FlowExecution.flow_id == models.Flow.id)
+            .where(
+                models.Flow.id == flow_id,
+                models.Flow.account_id == account_id,
+                models.Flow.trigger_project_ids == [str(project_id)],
+                models.FlowExecution.id == execution_id,
+                models.FlowExecution.flow_revision == models.Flow.config_revision,
+            )
+            .with_for_update(read=True, of=models.Flow)
+        )
+        return db.scalar(query)
+
+    def get_single_project(
+        self,
+        db: Session,
+        *,
+        account_id: UUID,
+        project_id: UUID,
+        flow_id: UUID,
+        lock: bool,
+    ) -> models.Flow | None:
+        """Optionally share-lock a target selected inside its exact scope."""
+        query = select(models.Flow).where(
+            models.Flow.id == flow_id,
+            models.Flow.account_id == account_id,
+            models.Flow.trigger_project_ids == [str(project_id)],
+        )
+        if lock:
+            query = query.with_for_update(read=True, of=models.Flow)
+        return db.scalar(query)
+
+    def list_single_project(
+        self,
+        db: Session,
+        *,
+        account_id: UUID,
+        project_id: UUID,
+        after: UUID | None,
+        limit: int,
+    ) -> list[models.Flow]:
+        """Page through flows explicitly scoped to exactly this project."""
+        query = (
+            select(models.Flow)
+            .where(
+                models.Flow.account_id == account_id,
+                models.Flow.trigger_project_ids == [str(project_id)],
+            )
+            .options(
+                load_only(models.Flow.id, models.Flow.name, models.Flow.config_revision)
+            )
+        )
+        if after is not None:
+            query = query.where(models.Flow.id > after)
+        return list(db.scalars(query.order_by(models.Flow.id).limit(limit)))
+
     def lock_revision(
         self,
         db: Session,

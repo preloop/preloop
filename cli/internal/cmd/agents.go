@@ -370,16 +370,12 @@ The separate --unattended enrollment-token flow does not use prompt defaults.
 This is the mutating companion to 'preloop agents discover'. Use --dry-run to
 preview the planned config and account changes without writing anything.
 
-Claude Code is onboarded without pinning the stock opus/sonnet/haiku model
-families, so /model follows Claude Code's own defaults. With subscription OAuth
-and gateway family autoregistration enabled, new Anthropic releases arrive with
-the next Claude Code update and unseen ids register on first use. API-key
-accounts must use --pin-model-families or run preloop models sync to populate
-new ids before selecting them.
-The Fable pair and the custom model option are still written. Pass
---pin-model-families for API-key accounts or a gateway whose family
-autoregistration is disabled; the choice is saved in the local enrollment state so a later refresh
-honours it without the flag.
+With subscription OAuth, Claude Code follows its own stock family defaults.
+When the gateway enables family autoregistration, it can register a newly
+released model on first use. Pass --pin-model-families to use account models
+when autoregistration is disabled. API-key accounts use catalog-backed family
+pins by default. Run preloop models sync to discover new releases. The pinning
+choice is saved for preloop agents refresh.
 
 A missing agent binary does not fail onboarding: the MCP and model routing
 configuration still applies and the managed launcher step is skipped with a
@@ -980,7 +976,7 @@ func init() {
 	agentsEnrollCmd.Flags().Bool("cancel", false, "cancel a manual setup that is waiting for the local change and remove what it created in Preloop")
 	registerOnboardSelectionFlags(agentsEnrollCmd)
 	registerClaudeDesktopRouteFlags(agentsEnrollCmd)
-	agentsEnrollCmd.Flags().Bool("pin-model-families", false, "Claude Code only: keep writing the opus/sonnet/haiku family pins and the Fable pair, also on Claude Code 2.1.321+ (use for API-key accounts or when family autoregistration is disabled; the choice persists for refresh)")
+	agentsEnrollCmd.Flags().Bool("pin-model-families", false, "Claude Code only: keep writing the opus/sonnet/haiku family pins and the Fable pair, also on Claude Code 2.1.321+ (default for API-key routes; use when subscription family autoregistration is disabled; the choice persists for refresh)")
 	agentsListCmd.Flags().Bool("json", false, "output managed agents as JSON")
 	agentsStatusCmd.Flags().Bool("json", false, "output allowlisted managed status as JSON")
 	agentsValidateCmd.Flags().Bool("live", false, "run a supported direct gateway route/accounting probe in addition to config validation (application behavior unverified)")

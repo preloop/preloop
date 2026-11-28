@@ -485,6 +485,10 @@ def test_real_bearer_exchange_and_self_acknowledgment(
     app.dependency_overrides[get_db_session] = lambda: db_session
     with TestClient(app) as client:
         headers = {"Authorization": f"Bearer {token}"}
+        identity_path = "/api/v1/agents/enrollment/identity"
+        refused = client.get(identity_path, headers=headers)
+        assert refused.status_code == 403
+        assert refused.json()["detail"]["code"] == "api_key_scope_denied"
         denied = client.post(
             "/api/v1/agents/enrollment/authorities",
             headers=headers,
@@ -506,6 +510,10 @@ def test_real_bearer_exchange_and_self_acknowledgment(
         )
         assert again.status_code in {401, 403}
         runtime_headers = {"Authorization": f"Bearer {runtime}"}
+        identity = client.get(identity_path, headers=runtime_headers)
+        assert identity.status_code == 200
+        assert identity.json() == {"agent_id": response.json()["apps"][0]["agent_id"]}
+        assert client.get(identity_path, headers=headers).status_code in {401, 403}
         ack = client.post("/api/v1/agents/enrollment/applied", headers=runtime_headers)
         assert ack.status_code == 200, ack.text
         assert ack.json() == {"state": "configured"}

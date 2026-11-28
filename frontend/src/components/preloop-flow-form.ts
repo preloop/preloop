@@ -340,6 +340,21 @@ const FEEDBACK_LIMITS = {
   },
 } as const;
 
+/**
+ * The trigger service accepts filters at the top of ``trigger_config`` and,
+ * for older flows, nested under ``filter_conditions`` (nested keys win). The
+ * form edits the flat shape, so a nested filter is lifted to the top on load
+ * and saved back flat, which the trigger service reads the same way (#2601).
+ */
+export function flattenFilterConditions(flow: any): void {
+  const config = flow?.trigger_config;
+  const nested = config?.filter_conditions;
+  if (!config || typeof config !== 'object') return;
+  if (!nested || typeof nested !== 'object' || Array.isArray(nested)) return;
+  const { filter_conditions: _nested, ...flat } = config;
+  flow.trigger_config = { ...flat, ...nested };
+}
+
 @customElement('preloop-flow-form')
 export class PreloopFlowForm extends LitElement {
   static styles = [
@@ -909,6 +924,7 @@ export class PreloopFlowForm extends LitElement {
 
   willUpdate(changedProperties: Map<string | number | symbol, unknown>) {
     if (changedProperties.has('flow')) {
+      flattenFilterConditions(this.flow);
       const flowId = this.flow?.id;
       if (flowId && this.savedTrigger?.flowId !== flowId) {
         this.savedTrigger = { flowId, fingerprint: this.triggerFingerprint() };

@@ -188,7 +188,7 @@ func listGatewayModelChoices(
 	}
 	for i := range models {
 		model := models[i]
-		if managedGatewayAliasConflictsWithIdentity(model) {
+		if !model.editableForOnboarding() || managedGatewayAliasConflictsWithIdentity(model) {
 			continue
 		}
 		alias := strings.TrimSpace(gatewayAliasForAIModel(model))

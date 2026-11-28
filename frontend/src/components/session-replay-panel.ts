@@ -5920,11 +5920,14 @@ export class SessionReplayPanel extends LitElement {
           >
           ${
             summary.cachedTokens > 0
-              ? html`<span class="chat-summary-sub"
+              ? html`<span
+                  class="chat-summary-sub"
+                  data-testid="chat-summary-cached"
+                  title="Cache reads divided by all prompt tokens: cache reads, cache writes and uncached input. The request log's cache hit ratio leaves cache writes out, so it reads higher."
                   >(${formatNumber(summary.cachedTokens)}
                   cached${
                     summary.cachedPct !== null
-                      ? html` · ${summary.cachedPct}%`
+                      ? html` · ${summary.cachedPct}% of prompt`
                       : nothing
                   })</span
                 >`

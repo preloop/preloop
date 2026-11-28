@@ -559,3 +559,82 @@ def test_plain_key_session_lists_requests_as_api_key(client, db_session, test_us
     assert session["runtime_principal_type"] == "api_key"
     assert session["runtime_principal_id"] == str(api_key.id)
     assert session["session_source_type"] == "api_key"
+
+
+def test_runtime_session_requests_carry_the_api_equivalent_estimate(
+    client, db_session, test_user
+):
+    """Subscription rows show $0 spend and keep their estimate apart (#2592)."""
+    session = _make_session(db_session, test_user.account_id)
+    now = datetime.now(UTC)
+    for equivalent in (0.25, 0.5, None):
+        meta = {"api_equivalent_cost": equivalent} if equivalent is not None else {}
+        crud_api_usage.log_gateway_request(
+            db_session,
+            endpoint="/anthropic/v1/messages",
+            method="POST",
+            status_code=200,
+            duration=0.5,
+            account_id=str(test_user.account_id),
+            runtime_session_id=str(session.id),
+            model_alias="anthropic/example-model",
+            provider_name="anthropic",
+            prompt_tokens=100,
+            completion_tokens=10,
+            total_tokens=110,
+            estimated_cost=0.0,
+            cost_source="subscription",
+            meta_data=meta,
+        )
+    _log_request(
+        db_session,
+        account_id=test_user.account_id,
+        runtime_session_id=session.id,
+        status_code=200,
+        total_tokens=100,
+        estimated_cost=0.02,
+        when=now,
+        meta_data={"api_equivalent_cost": 9.0},
+    )
+    db_session.commit()
+
+    body = client.get(f"/api/v1/runtime-sessions/{session.id}/requests").json()
+
+    equivalents = sorted(
+        (item["api_equivalent_cost"] for item in body["items"]),
+        key=lambda value: (value is None, value),
+    )
+    # The metered row's stray field is ignored: only subscription rows carry it.
+    assert equivalents == [0.25, 0.5, None, None]
+    assert all(
+        item["estimated_cost"] == 0.0
+        for item in body["items"]
+        if item["api_equivalent_cost"] is not None
+    )
+    usage = body["subscription_usage"]
+    assert usage["request_count"] == 3
+    assert usage["covered_requests"] == 2
+    assert usage["api_equivalent_cost"] == 0.75
+    assert usage["api_equivalent_cost_is_estimate"] is True
+
+
+def test_runtime_session_requests_without_subscription_traffic_have_no_estimate(
+    client, db_session, test_user
+):
+    """A metered-only session reports no subscription block."""
+    session = _make_session(db_session, test_user.account_id)
+    _log_request(
+        db_session,
+        account_id=test_user.account_id,
+        runtime_session_id=session.id,
+        status_code=200,
+        total_tokens=100,
+        estimated_cost=0.02,
+        when=datetime.now(UTC),
+    )
+    db_session.commit()
+
+    body = client.get(f"/api/v1/runtime-sessions/{session.id}/requests").json()
+
+    assert body["subscription_usage"] is None
+    assert body["items"][0]["api_equivalent_cost"] is None
