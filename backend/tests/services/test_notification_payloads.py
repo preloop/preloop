@@ -413,3 +413,113 @@ class TestQuestionPayloads:
         assert payload["type"] == "new_approval_request"
         assert "is_question" not in payload
         assert "question_options" not in payload
+
+
+def _large_runner_flow() -> dict:
+    """A runner flow snapshot shaped like one with many repositories."""
+    return {
+        "runner": {
+            "name": "Build runner",
+            "device": {"hostname": "build.example.com", "os": "macOS"},
+        },
+        "scope": "this_run",
+        "scope_label": "Approving allows this run only. " * 3,
+        "harness": "Claude Code",
+        "model": "model-x",
+        "flow": {
+            "id": "00000000-0000-0000-0000-000000000001",
+            "name": "Daily review",
+            "href": "https://app.example.com/console/flows/00000000",
+        },
+        "trigger": {"kind": "schedule", "label": "Scheduled run"},
+        "repositories": [
+            {"repository": f"https://example.com/org/repo-{i}.git", "branch": "main"}
+            for i in range(12)
+        ],
+        "directory": "/home/jane/work/runner/workspaces/daily-review",
+        "publication": {"can_push": True, "label": "Can push a branch"},
+        "limits": {"timeout_seconds": 3600},
+    }
+
+
+def test_owner_consent_push_fits_apns_limit() -> None:
+    """A large runner flow snapshot must not push the payload past 4 KB."""
+    from preloop.services.push_notifications.notification_payloads import (
+        APNS_MAX_PAYLOAD_BYTES,
+        payload_size,
+    )
+
+    payload = NotificationPayloadBuilder.new_approval_request(
+        request_id="00000000-0000-0000-0000-0000000000aa",
+        tool_name="owner_consent",
+        tool_args={"runner_id": "r", "execution_id": "e"},
+        summary='Allow flow "Daily review" to run Claude Code on Build runner?',
+        rule_context={"runner_flow": _large_runner_flow()},
+    )
+
+    assert payload_size(payload) < APNS_MAX_PAYLOAD_BYTES
+    compact = payload["data"]["runner_flow"]
+    assert compact["flow"]["name"] == "Daily review"
+    assert compact["runner"] == {"name": "Build runner"}
+    assert compact["harness"] == "Claude Code"
+    assert "repositories" not in compact
+    assert payload["approval_request_id"].endswith("aa")
+
+
+def test_oversized_summary_is_clipped_to_budget() -> None:
+    """Optional text is dropped or clipped rather than failing delivery."""
+    from preloop.services.push_notifications.notification_payloads import (
+        PUSH_PAYLOAD_BUDGET_BYTES,
+        payload_size,
+    )
+
+    payload = NotificationPayloadBuilder.new_approval_request(
+        request_id="00000000-0000-0000-0000-0000000000bb",
+        tool_name="owner_consent",
+        summary="x" * 6000,
+    )
+
+    assert payload_size(payload) <= PUSH_PAYLOAD_BUDGET_BYTES
+    assert payload["type"] == "new_approval_request"
+    assert payload["aps"]["alert"]["body"]
+
+
+def test_oversized_question_options_fit_and_keep_first_options() -> None:
+    """ask_user pushes with many long options still fit the APNs limit."""
+    from preloop.services.push_notifications.notification_payloads import (
+        APNS_MAX_PAYLOAD_BYTES,
+        payload_size,
+    )
+
+    options = [f"Option {i} " + "x" * 40 for i in range(100)]
+    payload = NotificationPayloadBuilder.new_approval_request(
+        request_id="00000000-0000-0000-0000-0000000000cc",
+        tool_name="ask_user",
+        tool_args={"is_question": True, "question": "Pick one", "options": options},
+    )
+
+    assert payload_size(payload) < APNS_MAX_PAYLOAD_BYTES
+    kept = payload["data"]["question_options"]
+    assert kept and kept[0].startswith("Option 0")
+    assert payload["data"]["is_question"] is True
+
+
+def test_fit_payload_terminates_when_text_cannot_shrink_enough() -> None:
+    """Text at the floor does not spin; the fallback still fits the budget."""
+    from preloop.services.push_notifications.notification_payloads import (
+        _fit_payload,
+        payload_size,
+    )
+
+    payload = {
+        "aps": {"alert": {"title": "t" * 21, "subtitle": "s" * 21, "body": "b" * 25}},
+        "approval_request_id": "00000000-0000-0000-0000-0000000000dd",
+        "question": "q" * 3000,
+        "data": {"title": "t" * 21, "body": "b" * 25, "question": "q" * 3000},
+    }
+
+    fitted = _fit_payload(payload, 1024)
+
+    assert payload_size(fitted) <= 1024
+    assert fitted["aps"]["alert"]["body"]
+    assert fitted["approval_request_id"].endswith("dd")

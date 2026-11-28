@@ -23011,6 +23011,160 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/runners/{runner_id}/flow-grants:
+    get:
+      tags:
+      - Runners
+      summary: List Runner Flow Grants
+      description: List flows the owner always allows on this runner.
+      operationId: list_runner_flow_grants_api_v1_runners__runner_id__flow_grants_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: runner_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Runner Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RunnerFlowGrantResponse'
+                title: Response List Runner Flow Grants Api V1 Runners  Runner Id  Flow
+                  Grants Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+    post:
+      tags:
+      - Runners
+      summary: Create Runner Flow Grant
+      description: 'Always allow one flow on this runner until the owner revokes it.
+
+
+        Pass ``approval_request_id`` to grant from an owner consent request (the
+
+        flow may then belong to another account that routes to this runner), or
+
+        ``flow_id`` for a flow in the owner''s own account.'
+      operationId: create_runner_flow_grant_api_v1_runners__runner_id__flow_grants_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: runner_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Runner Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunnerFlowGrantCreate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunnerFlowGrantResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/runner-flow-grants:
+    get:
+      tags:
+      - Runners
+      summary: List My Runner Flow Grants
+      description: List every active grant the current user gave on their runners.
+      operationId: list_my_runner_flow_grants_api_v1_runner_flow_grants_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/RunnerFlowGrantResponse'
+                type: array
+                title: Response List My Runner Flow Grants Api V1 Runner Flow Grants
+                  Get
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/runner-flow-grants/{grant_id}:
+    delete:
+      tags:
+      - Runners
+      summary: Revoke Runner Flow Grant
+      description: Revoke a grant; the next run of the flow asks the owner again.
+      operationId: revoke_runner_flow_grant_api_v1_runner_flow_grants__grant_id__delete
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: grant_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Grant Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunnerFlowGrantResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/runners/{runner_id}/session-options:
     get:
       tags:
@@ -56826,6 +56980,65 @@ components:
       - runner_count
       - online_runner_count
       title: RunnerFleetSummary
+    RunnerFlowGrantCreate:
+      properties:
+        flow_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Flow Id
+        approval_request_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Approval Request Id
+      type: object
+      title: RunnerFlowGrantCreate
+      description: Request body for a new grant.
+    RunnerFlowGrantResponse:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        runner_id:
+          type: string
+          format: uuid
+          title: Runner Id
+        runner_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Runner Name
+        flow_id:
+          type: string
+          format: uuid
+          title: Flow Id
+        flow_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Flow Name
+        approval_request_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Approval Request Id
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      type: object
+      required:
+      - id
+      - runner_id
+      - flow_id
+      - created_at
+      title: RunnerFlowGrantResponse
+      description: An active grant as shown on the runner page and the approval list.
     RunnerPolicy:
       properties:
         requirement:

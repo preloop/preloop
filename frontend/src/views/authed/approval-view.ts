@@ -9,6 +9,8 @@ import {
   AuthedElement,
   fetchWithAuth,
   getAgentGovernance,
+  createRunnerFlowGrant,
+  revokeRunnerFlowGrant,
   getUserProfile,
   hasPermission,
   permissionErrorFromResponse,
@@ -156,6 +158,8 @@ export class ApprovalView extends AuthedElement {
    */
   @state()
   private alwaysAllow = false;
+  /** Owner consent: also allow this flow on this runner until revoked. */
+  @state() private alwaysAllowFlow = false;
 
   /**
    * Permissions of the signed-in user. `null` is not "no permissions": it is
@@ -769,6 +773,7 @@ export class ApprovalView extends AuthedElement {
     this.waitingNext = [];
     this.waitingNextFetched = 0;
     this.alwaysAllow = false;
+    this.alwaysAllowFlow = false;
     this.nowMs = Date.now();
     this.loading = true;
     this.publicOnly = false;
@@ -1066,6 +1071,10 @@ export class ApprovalView extends AuthedElement {
       if (action === 'approve' && this.alwaysAllow && decided) {
         this.alwaysAllow = false;
         await this.applyAlwaysAllow(decided);
+      }
+      if (action === 'approve' && this.alwaysAllowFlow && decided) {
+        this.alwaysAllowFlow = false;
+        await this.applyRunnerFlowGrant(decided);
       }
       if (generation !== this.requestGeneration || requestId !== this.requestId)
         return;
@@ -1959,6 +1968,48 @@ export class ApprovalView extends AuthedElement {
    * there, and an allow behind it would never be reached. The previous rule
    * set is kept so Undo can put it back exactly.
    */
+  /** The runner id of an owner consent request that can carry a flow grant. */
+  private runnerFlowGrantTarget(request: ApprovalRequest): string | null {
+    // The signed-out token page cannot create a grant (no session).
+    if (this.publicOnly || request.tool_name !== 'owner_consent') return null;
+    if (!request.rule_context?.runner_flow?.flow) return null;
+    const runnerId = (request.tool_args as Record<string, unknown> | undefined)
+      ?.runner_id;
+    return typeof runnerId === 'string' && runnerId ? runnerId : null;
+  }
+
+  /** Store "allow this flow on this runner until revoked" after approving. */
+  private async applyRunnerFlowGrant(request: ApprovalRequest) {
+    const runnerId = this.runnerFlowGrantTarget(request);
+    if (!runnerId) return;
+    const flowName =
+      request.rule_context?.runner_flow?.flow?.name || 'this flow';
+    try {
+      const grant = await createRunnerFlowGrant(runnerId, {
+        approval_request_id: request.id,
+      });
+      showToast(
+        `Later runs of ${flowName} start on this runner without asking. Revoke it on the Runners page.`,
+        'success',
+        {
+          label: 'Undo',
+          onClick: () => {
+            void revokeRunnerFlowGrant(grant.id).then(
+              () =>
+                showToast('Grant revoked. Later runs ask again.', 'neutral'),
+              (err: Error) => showToast(err.message, 'danger')
+            );
+          },
+        }
+      );
+    } catch (err: any) {
+      showToast(
+        `Approved, but the always-allow grant was not saved: ${err.message}`,
+        'danger'
+      );
+    }
+  }
+
   private async applyAlwaysAllow(request: ApprovalRequest) {
     const agentId = request.managed_agent_id;
     if (!agentId) return;
@@ -2178,6 +2229,22 @@ export class ApprovalView extends AuthedElement {
               >
                 Always allow ${request.tool_name} for
                 ${request.managed_agent_name || 'this agent'}
+              </sl-checkbox>`
+            : ''
+        }
+        ${
+          this.runnerFlowGrantTarget(request)
+            ? html`<sl-checkbox
+                class="always-allow always-allow-flow"
+                ?checked=${this.alwaysAllowFlow}
+                ?disabled=${this.submitting}
+                @sl-change=${(e: any) => (this.alwaysAllowFlow = e.target.checked)}
+              >
+                Always allow
+                ${request.rule_context?.runner_flow?.flow?.name || 'this flow'}
+                on
+                ${request.rule_context?.runner_flow?.runner?.name || 'this runner'}
+                until revoked
               </sl-checkbox>`
             : ''
         }

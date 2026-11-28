@@ -1183,7 +1183,19 @@ def lease_job(
             if outcome is not None:
                 outcome["consent_status"] = "declined"
             continue
-        if consent_mode != "always":
+        granted = None
+        if consent_mode != "always" and consent_owner is not None and flow_id:
+            # A standing "allow this flow on this runner" grant answers the
+            # owner's question before a new request is created.
+            from preloop.models.crud import runner_flow_grant as crud_grant
+
+            granted = crud_grant.active(
+                db,
+                runner_id=candidate.id,
+                flow_id=flow_id,
+                owner_user_id=consent_owner,
+            )
+        if consent_mode != "always" and granted is None:
             if consent_owner is None:
                 # Legacy/system runners cannot answer an owner request. Keep
                 # looking for usable capacity instead of inventing a refusal.
@@ -1281,7 +1293,11 @@ def lease_job(
             resource_type="flow_runner",
             resource_id=str(runner.id),
             status="success",
-            details={"execution_id": str(execution_id), "decision": consent_mode},
+            details={
+                "execution_id": str(execution_id),
+                "decision": "grant" if granted is not None else consent_mode,
+                **({"grant_id": str(granted.id)} if granted is not None else {}),
+            },
             commit=False,
         )
         db.add(assignment)

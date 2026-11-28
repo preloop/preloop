@@ -14,6 +14,9 @@ import {
   approveRequest,
   declineRequest,
   decideApprovalsBatch,
+  listRunnerFlowGrants,
+  revokeRunnerFlowGrant,
+  type RunnerFlowGrant,
 } from '../../api';
 import type { ApprovalRequest } from '../../types';
 import '../../components/question-answer-panel';
@@ -596,9 +599,58 @@ export class ApprovalsView extends AuthedElement {
     this.readFilterLocation();
     window.addEventListener('popstate', this.onFilterPopState);
     this.addEventListener('keydown', this.onKeyDown);
+    void this.loadFlowGrants();
     await this.loadApprovalRequests();
     if (this.isConnected && lifecycle === this.lifecycle)
       this.connectWebSocket();
+  }
+
+  /** Standing "always allow this flow on this runner" grants of this owner. */
+  @state() private flowGrants: RunnerFlowGrant[] = [];
+
+  private async loadFlowGrants(): Promise<void> {
+    const grants = await listRunnerFlowGrants().catch(
+      () => [] as RunnerFlowGrant[]
+    );
+    this.flowGrants = Array.isArray(grants) ? grants : [];
+  }
+
+  private async revokeFlowGrant(grant: RunnerFlowGrant): Promise<void> {
+    try {
+      await revokeRunnerFlowGrant(grant.id);
+      this.flowGrants = this.flowGrants.filter((row) => row.id !== grant.id);
+      showToast('Grant revoked. Later runs of the flow ask again.', 'neutral');
+    } catch (error) {
+      showToast(
+        error instanceof Error ? error.message : String(error),
+        'danger'
+      );
+    }
+  }
+
+  private renderFlowGrants() {
+    if (!this.flowGrants.length) return nothing;
+    return html`<section class="flow-grants" aria-label="Always allowed flows">
+      <h3>Always allowed on your runners</h3>
+      <ul>
+        ${this.flowGrants.map(
+          (grant) =>
+            html`<li>
+              <span
+                >${grant.flow_name || 'A flow'} on
+                ${grant.runner_name || 'a runner'}</span
+              >
+              <sl-button
+                class="revoke-flow-grant"
+                size="small"
+                variant="text"
+                @click=${() => void this.revokeFlowGrant(grant)}
+                >Revoke</sl-button
+              >
+            </li>`
+        )}
+      </ul>
+    </section>`;
   }
 
   disconnectedCallback() {
@@ -1746,7 +1798,7 @@ export class ApprovalsView extends AuthedElement {
                 `
               : nothing
           }
-          ${this.renderStatStrip()}
+          ${this.renderStatStrip()} ${this.renderFlowGrants()}
 
           <!-- Filters -->
           <div class="filters-row">

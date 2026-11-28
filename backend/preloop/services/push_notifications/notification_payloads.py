@@ -1,9 +1,137 @@
 """Notification payload templates for Apple Push Notifications."""
 
-from typing import Dict, Any, Optional
+import json
 from datetime import datetime
+from typing import Any, Dict, Optional
 
 from preloop.models.schemas.approval_request import classify_approval_risk
+
+# APNs rejects alert payloads over 4096 bytes with 413 PayloadTooLarge. Keep a
+# margin for the proxy envelope and JSON encoder differences.
+APNS_MAX_PAYLOAD_BYTES = 4096
+PUSH_PAYLOAD_BUDGET_BYTES = 3584
+
+
+def compact_runner_flow(runner_flow: Dict[str, Any]) -> Dict[str, Any]:
+    """Keep only the runner flow facts a notification card renders.
+
+    The full snapshot (repositories, directory, labels) can exceed the APNs
+    payload limit once it is duplicated into the ``data`` block. Clients fetch
+    the rest from the API when the request is opened.
+
+    Args:
+        runner_flow: ``rule_context.runner_flow`` snapshot.
+
+    Returns:
+        A small dict with the same key shape.
+    """
+    compact: Dict[str, Any] = {}
+    runner = runner_flow.get("runner")
+    if isinstance(runner, dict) and runner.get("name"):
+        compact["runner"] = {"name": str(runner["name"])[:80]}
+    flow = runner_flow.get("flow")
+    if isinstance(flow, dict):
+        compact["flow"] = {
+            key: str(flow[key])[:120] for key in ("id", "name") if flow.get(key)
+        }
+    for key in ("harness", "model", "scope"):
+        if runner_flow.get(key):
+            compact[key] = str(runner_flow[key])[:80]
+    return compact
+
+
+def payload_size(payload: Dict[str, Any]) -> int:
+    """Return the encoded JSON size of a push payload in bytes.
+
+    Args:
+        payload: Push payload dict.
+
+    Returns:
+        UTF-8 byte length of the compact JSON encoding.
+    """
+    return len(
+        json.dumps(
+            payload, separators=(",", ":"), ensure_ascii=False, default=str
+        ).encode("utf-8")
+    )
+
+
+_MIN_TEXT = 20
+_MAX_QUESTION_OPTIONS = 4
+_OPTION_TEXT = 40
+_FALLBACK_BODY = "Open Preloop to decide."
+
+
+def _set_custom(payload: Dict[str, Any], key: str, value: Any) -> None:
+    """Write a custom key at the top level and in ``data`` when present."""
+    for block in (payload, payload.get("data")):
+        if isinstance(block, dict) and key in block:
+            block[key] = value
+
+
+def _drop_custom(payload: Dict[str, Any], key: str) -> None:
+    """Remove a custom key from the top level and from ``data``."""
+    payload.pop(key, None)
+    if isinstance(payload.get("data"), dict):
+        payload["data"].pop(key, None)
+
+
+def _clip(text: str, limit: int) -> str:
+    """Clip ``text`` to ``limit`` characters with an ellipsis."""
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def _fit_payload(payload: Dict[str, Any], budget: int) -> Dict[str, Any]:
+    """Trim a push payload until it fits ``budget`` bytes.
+
+    Steps, each taken only while the payload is still too large: drop
+    descriptive custom keys; shorten and cap question options (the buttons
+    map back by position, so the first options are kept); halve alert text
+    down to a floor; finally replace the body with a fixed prompt and keep
+    only routing keys. Every loop strictly shrinks its text, so it ends.
+
+    Args:
+        payload: Approval push payload with ``aps`` and ``data`` blocks.
+        budget: Maximum encoded size in bytes.
+
+    Returns:
+        The same payload, trimmed in place.
+    """
+
+    def fits() -> bool:
+        return payload_size(payload) <= budget
+
+    for key in ("runner_flow", "summary", "rule_name", "agent_name"):
+        if fits():
+            return payload
+        _drop_custom(payload, key)
+    options = payload.get("question_options")
+    if not fits() and isinstance(options, list):
+        _set_custom(
+            payload,
+            "question_options",
+            [_clip(str(o), _OPTION_TEXT) for o in options[:_MAX_QUESTION_OPTIONS]],
+        )
+    if not fits() and isinstance(payload.get("question"), str):
+        _set_custom(payload, "question", _clip(payload["question"], 200))
+    alert = payload.get("aps", {}).get("alert", {})
+    for key in ("body", "subtitle", "title"):
+        while not fits():
+            text = alert.get(key) or ""
+            if len(text) <= _MIN_TEXT + 1:
+                break
+            alert[key] = _clip(text, max(_MIN_TEXT + 1, len(text) // 2))
+            _set_custom(payload, key, alert[key])
+    if not fits():
+        # Last resort: a deliverable prompt beats a rejected push.
+        for key in ("question", "question_options", "external_url"):
+            _drop_custom(payload, key)
+        alert["body"] = _FALLBACK_BODY
+        alert["subtitle"] = _clip(alert.get("subtitle") or "", _MIN_TEXT + 1)
+        alert["title"] = _clip(alert.get("title") or "", _MIN_TEXT + 1)
+        _set_custom(payload, "body", _FALLBACK_BODY)
+        _set_custom(payload, "title", alert["title"])
+    return payload
 
 
 class NotificationPayloadBuilder:
@@ -233,7 +361,7 @@ class NotificationPayloadBuilder:
         if isinstance(runner_flow, dict):
             # Runner owner consent: the device, flow and harness the owner
             # is asked to allow, so the card reads without a fetch.
-            custom_data["runner_flow"] = runner_flow
+            custom_data["runner_flow"] = compact_runner_flow(runner_flow)
         if expires_at:
             custom_data["expires_at"] = expires_at.isoformat()
         if is_question:
@@ -269,7 +397,7 @@ class NotificationPayloadBuilder:
             },
         }
 
-        return payload
+        return _fit_payload(payload, PUSH_PAYLOAD_BUDGET_BYTES)
 
     @staticmethod
     def request_expiring_soon(

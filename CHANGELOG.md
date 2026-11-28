@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a line says the command is still waiting after a minute. In the
   copy-and-paste flow an empty line prints the link again instead of failing,
   and a code the server does not accept can be replaced without starting over.
+- Runner owners can always allow one flow on one runner until they revoke it.
+  Tick "Always allow <flow> on <runner> until revoked" when approving a runner
+  flow request; later runs of that flow on that runner start without a new
+  owner request. Grants are listed and revocable on the Runners page and the
+  Approvals list, and creating, using and revoking one is audited.
 - Extension content for review. After `preloop agents discover --report` the
   CLI uploads the redacted text behind each reported extension hash (skill and
   command files, hook commands with their matcher, plugin manifests and the
@@ -92,6 +97,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Execution history shows the recorded harness and model instead of the flow's
   current harness. Runs without recorded selection remain unknown; runner leases
   retain the dispatched model after the lease is released.
+- Mobile push for runner flow approvals failed with APNs `PayloadTooLarge`
+  because the full runner flow snapshot was copied twice into the payload.
+  Push now carries only the flow, runner, harness and model, and every
+  approval push is trimmed to fit the APNs size limit.
 - Runner-proxied local models can load and reason beyond the former 60-second
   silence and 600-second request limits. Server settings now default to 600
   seconds of model silence and 3600 seconds total, capped by the flow's remaining

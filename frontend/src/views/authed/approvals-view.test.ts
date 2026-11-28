@@ -13,6 +13,8 @@ describe('ApprovalsView', () => {
   let fetchStub: sinon.SinonStub;
   /** Per id results the stubbed batch endpoint should return, if any. */
   let batchOutcomes: Record<string, unknown> = {};
+  /** Grants the stubbed runner-flow-grants endpoint lists. */
+  let flowGrants: unknown[] = [];
 
   function createFetchStub(approvalRequests: unknown[] = []) {
     return sinon
@@ -52,6 +54,11 @@ describe('ApprovalsView', () => {
 
         if (url.includes('/api/v1/approval-requests') && method === 'GET') {
           return json(approvalRequests);
+        }
+
+        if (url.includes('/api/v1/runner-flow-grants')) {
+          if (method === 'DELETE') return json({ id: 'grant-1' });
+          return json(flowGrants);
         }
 
         return json({ detail: `Unhandled: ${method} ${url}` });
@@ -166,6 +173,45 @@ describe('ApprovalsView', () => {
     await element.updateComplete;
     return element;
   }
+
+  it('lists always-allowed runner flows and revokes one', async () => {
+    flowGrants = [
+      {
+        id: 'grant-1',
+        runner_id: 'runner-1',
+        runner_name: 'Work laptop',
+        flow_id: 'flow-1',
+        flow_name: 'Nightly review',
+        created_at: '2026-06-01T10:00:00Z',
+      },
+    ];
+    try {
+      const element = await renderList([]);
+      await waitUntil(
+        () => !!element.shadowRoot!.querySelector('section.flow-grants'),
+        'grants not rendered'
+      );
+      const section = element.shadowRoot!.querySelector('section.flow-grants')!;
+      expect(section.textContent).to.contain('Nightly review');
+      expect(section.textContent).to.contain('Work laptop');
+      (section.querySelector('.revoke-flow-grant') as HTMLElement).click();
+      await waitUntil(
+        () => !element.shadowRoot!.querySelector('section.flow-grants'),
+        'grant not removed'
+      );
+      expect(
+        fetchStub
+          .getCalls()
+          .some(
+            (c) =>
+              String(c.args[0]).includes('/runner-flow-grants/grant-1') &&
+              (c.args[1] as RequestInit)?.method === 'DELETE'
+          )
+      ).to.equal(true);
+    } finally {
+      flowGrants = [];
+    }
+  });
 
   it('labels decisions from recorded causes without inferring a person', async () => {
     const requests = [

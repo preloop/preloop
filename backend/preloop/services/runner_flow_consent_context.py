@@ -256,7 +256,8 @@ def build_runner_flow_context(
         "scope": SCOPE_THIS_RUN,
         "scope_label": (
             "Approving allows this run only. Later runs of this flow ask again "
-            "unless the runner is set to always allow flows."
+            "unless you always allow this flow on this runner, or set the "
+            "runner to always allow flows."
         ),
     }
     if device:
