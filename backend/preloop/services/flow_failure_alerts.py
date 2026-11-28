@@ -72,8 +72,9 @@ STREAK_SCAN_LIMIT = 200
 #: Terminal statuses that mean the run failed.
 FAILURE_STATUSES = frozenset({"FAILED", "TIMEOUT", "TIMED_OUT", "ABORTED", "ERROR"})
 
-#: Operator-ended runs: neutral for streak counting.
-NEUTRAL_STATUSES = frozenset({"STOPPED", "CANCELLED", "CANCELED"})
+#: Operator-ended runs and pre-check skips (#2541): neutral for streak
+#: counting. A skip neither extends nor resets a failure streak.
+NEUTRAL_STATUSES = frozenset({"STOPPED", "CANCELLED", "CANCELED", "SKIPPED"})
 
 CLASSIFY_FAILURE = "failure"
 CLASSIFY_SUCCESS = "success"

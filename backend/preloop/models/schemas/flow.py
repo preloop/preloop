@@ -19,6 +19,7 @@ from pydantic import (
 )
 
 from preloop.models.schemas.executor_eligibility import ExecutorEligibility
+from preloop.models.schemas.flow_precheck import FlowPrecheck
 from preloop.models.schemas.verification import (
     EffectivePublicationPolicy,
     ResolvedVerificationPolicy,
@@ -1975,6 +1976,16 @@ class FlowBase(BaseModel):
             "result_schema is null."
         ),
     )
+    precheck: Optional[FlowPrecheck] = Field(
+        default=None,
+        description=(
+            "Deterministic pre-check evaluated on the server before an "
+            "execution is dispatched. When no check matches, the tick is "
+            "recorded as a SKIPPED execution and no agent starts; when one "
+            "matches, the matched items are passed to the run as "
+            "trigger_event.payload.precheck. Null means no pre-check."
+        ),
+    )
     # Per-run limits as the console's flow form edits them. They are stored
     # as agent_config.limits (max_usd / max_turns), which the model gateway
     # enforces, so they are excluded from model_dump() and never reach the
@@ -2202,6 +2213,11 @@ class CiFlowPreflightRead(BaseModel):
 
 class FlowResponse(FlowBase):
     id: UUID
+    # Read back as stored. The stored document was validated when it was
+    # saved; reading it as a plain mapping keeps a list read working for a
+    # row whose pre-check no longer validates (edited out of band, a check
+    # type removed), which the evaluation reports as a flow_config failure.
+    precheck: Optional[Dict[str, Any]] = None  # type: ignore[assignment]
     executor_eligibility: Optional[ExecutorEligibility] = None
     config_warnings: List[FlowConfigWarning] = Field(
         default_factory=list,

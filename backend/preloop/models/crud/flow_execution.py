@@ -2333,6 +2333,232 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         )
         return row[0] if row else None
 
+    # --- Pre-check outcomes (#2541) ------------------------------------------
+
+    #: Status of an execution a pre-check skipped: inserted already terminal,
+    #: no agent, no tokens, no cost.
+    STATUS_SKIPPED = "SKIPPED"
+
+    def last_non_skipped(self, db: Session, *, flow_id: Any) -> Optional[FlowExecution]:
+        """Newest execution of the flow that a pre-check neither skipped nor failed.
+
+        The cursor ``since: last_run`` and ``max_skip_hours`` read: a skip
+        must not move it, or work that arrived during a quiet period would
+        be lost.
+
+        Args:
+            db: Database session.
+            flow_id: Flow to read.
+
+        Returns:
+            The execution, or None when every execution so far was skipped
+            or failed in its pre-check (or there is none).
+        """
+        decision = FlowExecution.trigger_event_details["payload"]["precheck"][
+            "decision"
+        ].astext
+        return (
+            db.query(FlowExecution)
+            .options(
+                load_only(
+                    FlowExecution.id,
+                    FlowExecution.status,
+                    FlowExecution.start_time,
+                    FlowExecution.trigger_event_details,
+                )
+            )
+            .filter(
+                FlowExecution.flow_id == flow_id,
+                FlowExecution.status != self.STATUS_SKIPPED,
+                # A pre-check failure read nothing from the tracker either:
+                # it must not move the cursor, or the window it failed to read
+                # would be skipped by the next successful evaluation.
+                or_(
+                    decision.is_(None),
+                    decision != "fail",
+                ),
+            )
+            .order_by(FlowExecution.start_time.desc())
+            .first()
+        )
+
+    def record_precheck_skip(
+        self,
+        db: Session,
+        *,
+        flow_id: Any,
+        trigger_event_details: Dict[str, Any],
+        reason: str,
+        summary: str,
+        now: Optional[datetime] = None,
+    ) -> FlowExecution:
+        """Record a skipped tick, folding it into the previous skip if any.
+
+        When the flow's newest execution is already ``SKIPPED`` for the same
+        reason, that row is updated instead of inserting another: its
+        ``end_time`` moves to now and ``payload.precheck.skip_count`` grows by
+        one. A run, a failure or a different reason starts a new row.
+
+        Args:
+            db: Database session; committed here.
+            flow_id: Flow the tick belongs to.
+            trigger_event_details: Trigger snapshot with the decision document
+                at ``payload.precheck``.
+            reason: Skip reason (``nothing_to_do`` ...), the fold key.
+            summary: One-line summary for ``model_output_summary``.
+            now: Clock override for tests.
+
+        Returns:
+            The inserted or folded execution.
+        """
+        moment = now or datetime.now(timezone.utc)
+        stamp = moment.isoformat()
+        newest = (
+            db.query(FlowExecution)
+            .filter(FlowExecution.flow_id == flow_id)
+            .order_by(FlowExecution.start_time.desc())
+            .with_for_update()
+            .first()
+        )
+        if newest is not None and newest.status == self.STATUS_SKIPPED:
+            details = dict(newest.trigger_event_details or {})
+            payload = dict(details.get("payload") or {})
+            previous = payload.get("precheck")
+            if isinstance(previous, dict) and previous.get("reason") == reason:
+                incoming = dict(
+                    (trigger_event_details.get("payload") or {}).get("precheck") or {}
+                )
+                count = int(previous.get("skip_count") or 1) + 1
+                incoming.update(
+                    {
+                        "skip_count": count,
+                        "first_skipped_at": previous.get("first_skipped_at") or stamp,
+                        "last_skipped_at": stamp,
+                    }
+                )
+                payload["precheck"] = incoming
+                details["payload"] = payload
+                newest.trigger_event_details = details
+                newest.end_time = moment
+                newest.model_output_summary = summary
+                db.commit()
+                db.refresh(newest)
+                return newest
+        details = dict(trigger_event_details)
+        payload = dict(details.get("payload") or {})
+        document = dict(payload.get("precheck") or {})
+        document.update(
+            {"skip_count": 1, "first_skipped_at": stamp, "last_skipped_at": stamp}
+        )
+        payload["precheck"] = document
+        details["payload"] = payload
+        execution = self.create(
+            db,
+            obj_in=FlowExecutionCreate(
+                flow_id=flow_id,
+                status=self.STATUS_SKIPPED,
+                start_time=moment,
+                end_time=moment,
+                trigger_event_details=details,
+                model_output_summary=summary,
+            ),
+        )
+        db.commit()
+        db.refresh(execution)
+        return execution
+
+    def record_precheck_failure(
+        self,
+        db: Session,
+        *,
+        flow_id: Any,
+        trigger_event_details: Dict[str, Any],
+        error_message: str,
+        failure_category: str,
+        now: Optional[datetime] = None,
+    ) -> FlowExecution:
+        """Insert a ``FAILED`` execution for a pre-check that could not decide.
+
+        The row is terminal on insert; no agent was started for it.
+
+        Args:
+            db: Database session; committed here.
+            flow_id: Flow the trigger belongs to.
+            trigger_event_details: Trigger snapshot with the decision document
+                at ``payload.precheck``.
+            error_message: Names the check and the cause; no credentials.
+            failure_category: ``precheck_failed`` or ``flow_config``.
+            now: Clock override for tests.
+
+        Returns:
+            The new execution.
+        """
+        moment = now or datetime.now(timezone.utc)
+        execution = self.create(
+            db,
+            obj_in=FlowExecutionCreate(
+                flow_id=flow_id,
+                status="FAILED",
+                start_time=moment,
+                end_time=moment,
+                trigger_event_details=trigger_event_details,
+                error_message=error_message,
+                failure_category=failure_category,
+            ),
+        )
+        db.commit()
+        db.refresh(execution)
+        return execution
+
+    #: Statuses in which an execution still owns the pull request it is
+    #: bound to, for the pre-check's ``exclude.active_execution``.
+    PRECHECK_ACTIVE_STATUSES = (
+        "PENDING",
+        "QUEUED",
+        "INITIALIZING",
+        "STARTING",
+        "RUNNING",
+        "WAITING_FOR_HUMAN",
+        "WAITING_FOR_CHILDREN",
+    )
+
+    def active_pull_request_urls(
+        self, db: Session, *, account_id: Any, limit: int = 500
+    ) -> List[str]:
+        """Pull request URLs that a non-terminal execution is bound to.
+
+        An execution is bound to a pull request when the pull request
+        triggered it (``payload.pull_request.html_url``, or the issue a
+        comment was made on) or when the run publishes to it
+        (``result.pr_url``). Read across every flow of the account: whoever
+        is working on the pull request, the pre-check leaves it alone.
+
+        Args:
+            db: Database session.
+            account_id: Account whose executions count.
+            limit: Most executions read.
+
+        Returns:
+            Raw URLs, not normalized; the caller normalizes.
+        """
+        details = FlowExecution.trigger_event_details
+        rows = (
+            db.query(
+                FlowExecution.result["pr_url"].astext,
+                details["payload"]["pull_request"]["html_url"].astext,
+                details["payload"]["issue"]["pull_request"]["html_url"].astext,
+            )
+            .join(Flow, Flow.id == FlowExecution.flow_id)
+            .filter(
+                Flow.account_id == account_id,
+                FlowExecution.status.in_(self.PRECHECK_ACTIVE_STATUSES),
+            )
+            .order_by(FlowExecution.start_time.desc())
+            .limit(limit)
+            .all()
+        )
+        return [url for row in rows for url in row if url]
+
     def get_by_result_pr_url(
         self,
         db: Session,
@@ -3402,10 +3628,43 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 .filter(
                     self.model.flow_id.in_(flow_ids),
                     self.model.start_time >= start_date,
+                    # A pre-check skip is not a run (#2541); it is counted
+                    # on its own below.
+                    self.model.status != self.STATUS_SKIPPED,
                 )
                 .group_by(self.model.flow_id)
                 .all()
             )
+            # Skipped ticks in the window. Consecutive skips fold into one
+            # row carrying skip_count, so the count is the sum of those, for
+            # the rows whose last skip falls in the window. A row is counted
+            # whole: the fold keeps a count, not each tick's time, so a row
+            # that started before the window also brings its earlier skips.
+            # Documented as such; an exact count would need a row per tick,
+            # which is what folding exists to avoid.
+            skip_count = cast(
+                self.model.trigger_event_details["payload"]["precheck"][
+                    "skip_count"
+                ].astext,
+                Numeric,
+            )
+            skipped_map = {
+                str(row.flow_id): row
+                for row in db.query(
+                    self.model.flow_id,
+                    func.coalesce(func.sum(func.coalesce(skip_count, 1)), 0).label(
+                        "skipped"
+                    ),
+                    func.max(self.model.end_time).label("last_skipped_at"),
+                )
+                .filter(
+                    self.model.flow_id.in_(flow_ids),
+                    self.model.status == self.STATUS_SKIPPED,
+                    self.model.end_time >= start_date,
+                )
+                .group_by(self.model.flow_id)
+                .all()
+            }
             # Spend belongs to the run, so the window is the run's
             # start_time, not the usage row's timestamp. A long run, a
             # delayed gateway write, or a backdated start_time would
@@ -3489,6 +3748,19 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                     "cost": window_cost_map.get(str(row.flow_id), 0.0),
                     "token_usage": window_token_map.get(str(row.flow_id)),
                 }
+            for flow_key, row in skipped_map.items():
+                window = window_map.setdefault(
+                    flow_key,
+                    {
+                        "runs": 0,
+                        "failed": 0,
+                        "last_run_at": None,
+                        "cost": 0.0,
+                        "token_usage": None,
+                    },
+                )
+                window["skipped_count"] = int(row.skipped or 0)
+                window["last_skipped_at"] = row.last_skipped_at
 
         class FlowStatResponse:
             def __init__(self, row):
@@ -3509,6 +3781,8 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 self.failed = window["failed"] if window else 0
                 self.last_run_at = window["last_run_at"] if window else None
                 self.cost = window["cost"] if window else 0.0
+                self.skipped_count = (window or {}).get("skipped_count", 0)
+                self.last_skipped_at = (window or {}).get("last_skipped_at")
                 # Tokens are always measured over the same period as the
                 # counts beside them: the window when one was asked for (None
                 # there means "no run in this window", not "no tokens"), the
@@ -4143,6 +4417,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             "ABORTED",
             "CANCELLED",
             "CANCELED",
+            "SKIPPED",
         }
     )
 

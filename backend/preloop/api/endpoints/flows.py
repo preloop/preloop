@@ -14,7 +14,7 @@ from fastapi import (
     Request,
     Response,
 )
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.orm import Session
 
 from preloop.plugins.account_hooks import AuthorizationContext
@@ -29,9 +29,11 @@ from preloop.api.flow_preconditions import (
     require_flow_revision,
     set_flow_etag,
 )
+from preloop.api.heavy_routes import heavy_route
 from preloop.api.loop_safety import run_db_off_loop
 from preloop.api.traffic_attribution import set_reason_code
 from preloop.models.schemas.flow import CiFlowPreflightRead
+from preloop.models.schemas.flow_precheck import FlowPrecheck
 from preloop.models.schemas.flow_revision import FlowRevisionMismatchError
 from preloop.cra.evidence_pack import (
     EvidenceMemberError,
@@ -693,6 +695,14 @@ def create_flow(
     except CallableFlowsError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    _reject_invalid_precheck(
+        db,
+        account_id=current_user.account_id,
+        precheck=flow_in.precheck,
+        trigger_project_ids=flow_in.trigger_project_ids,
+        git_clone_config=flow_in.git_clone_config,
+    )
+
     from preloop.services.flow_result_schema import ResultSchemaError
 
     try:
@@ -714,6 +724,36 @@ def create_flow(
     )
 
     return _with_config_warnings(db, flow, account_id=current_user.account_id)
+
+
+def _reject_invalid_precheck(
+    db: Session,
+    *,
+    account_id: Any,
+    precheck: Any,
+    trigger_project_ids: Any,
+    git_clone_config: Any,
+) -> None:
+    """Refuse a pre-check that reads outside the flow's projects (#2541).
+
+    Raises:
+        HTTPException: 422 naming the check and the repository.
+    """
+    from preloop.services.flow_precheck import (
+        PrecheckConfigError,
+        validate_precheck_scope,
+    )
+
+    try:
+        validate_precheck_scope(
+            db,
+            account_id=account_id,
+            precheck=precheck,
+            trigger_project_ids=trigger_project_ids,
+            git_clone_config=git_clone_config,
+        )
+    except (PrecheckConfigError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 def _with_config_warnings(db: Session, flow: Any, *, account_id: Any) -> Any:
@@ -926,6 +966,15 @@ def _attach_flow_stats(
                 # printed next to it.
                 "token_usage": (getattr(stat, "token_usage", None) if stat else None),
                 "last_run_at": last_run_at.isoformat() if last_run_at else None,
+                # Pre-check skips in the window (#2541), not counted in runs.
+                "skipped_count": (
+                    int(getattr(stat, "skipped_count", 0) or 0) if stat else 0
+                ),
+                "last_skipped_at": (
+                    stat.last_skipped_at.isoformat()
+                    if stat and getattr(stat, "last_skipped_at", None)
+                    else None
+                ),
             }
 
         stats_map = {
@@ -1453,6 +1502,7 @@ _TERMINAL_EXECUTION_STATUSES = {
     "STOPPED",
     "TIMEOUT",
     "CANCELLED",
+    "SKIPPED",
 }
 
 
@@ -4057,6 +4107,13 @@ async def trigger_flow_execution(
             "created."
         ),
     ),
+    skip_precheck: bool = Query(
+        default=False,
+        description=(
+            "Start the run without evaluating the flow's pre-check, for a "
+            "flow whose pre-check lists manual in applies_to."
+        ),
+    ),
 ):
     """
     Trigger a flow execution: a restricted CI review, or a human test run.
@@ -4263,6 +4320,7 @@ async def trigger_flow_execution(
                 account_id=current_user.account_id, db=db, user=current_user
             ),
             expected_revision=expected_revision,
+            evaluate_precheck=chat_origin is None and not skip_precheck,
         )
     except FlowRevisionMismatchError as exc:
         raise precondition_failed(exc.current_revision) from None
@@ -4290,6 +4348,116 @@ async def trigger_flow_execution(
             },
         )
     return result
+
+
+class PrecheckEvaluateRequest(BaseModel):
+    """Optional draft to evaluate instead of the stored pre-check."""
+
+    precheck: Optional[FlowPrecheck] = None
+
+
+class PrecheckEvaluateResponse(BaseModel):
+    """The decision a pre-check would make now; nothing was recorded."""
+
+    action: str = Field(description="run, skip or fail.")
+    summary: str
+    reason: Optional[str] = None
+    failure_category: Optional[str] = None
+    error_message: Optional[str] = None
+    document: Dict[str, Any] = Field(
+        description=(
+            "The decision document a run would receive at "
+            "trigger_event.payload.precheck."
+        )
+    )
+
+
+@router.post(
+    "/flows/{flow_id}/precheck/evaluate",
+    response_model=PrecheckEvaluateResponse,
+    summary="Evaluate a flow's pre-check without starting a run",
+)
+# Its own pool: an evaluation can hold the thread for the pre-check timeout,
+# which must not starve the shared worker pool other sync endpoints use.
+@heavy_route
+@require_permission("execute_flows")
+def evaluate_flow_precheck(
+    *,
+    db: Session = Depends(get_db),
+    flow_id: uuid.UUID,
+    body: Optional[PrecheckEvaluateRequest] = None,
+    current_user: User = Depends(get_current_active_user),
+) -> PrecheckEvaluateResponse:
+    """Dry run of the flow's pre-check (#2541).
+
+    Reads the tracker exactly as a scheduled tick would, using the shared
+    read cache, and returns the decision. No execution is created and no
+    agent starts. Send ``{"precheck": {...}}`` to evaluate an unsaved draft
+    against the flow's saved projects. The caller must be allowed to run the
+    flow, so the dry run cannot be used to list pull requests of a flow the
+    caller could not start.
+
+    Raises:
+        HTTPException: 404 when the flow is not visible, 403 when the caller
+            may not run it, 422 when the draft reads outside the flow's
+            projects or the flow has no pre-check.
+    """
+    # A sync handler, so the request session is used on the worker thread
+    # FastAPI runs it on; the async evaluation is driven from there on the
+    # application's event loop.
+    import anyio.from_thread
+
+    ensure_permission_in_oss(db, current_user, "execute_flows")
+    flow = crud_flow.get(db=db, id=flow_id, account_id=current_user.account_id)
+    if not flow:
+        raise HTTPException(status_code=404, detail="Flow not found")
+    from preloop.services.flow_precheck import (
+        evaluate_precheck,
+        precheck_enabled,
+    )
+    from preloop.services.flow_trigger_service import FlowTriggerService
+
+    try:
+        anyio.from_thread.run(
+            FlowTriggerService(db)._authorize_flow_run,
+            flow,
+            AuthorizationContext(
+                account_id=current_user.account_id, db=db, user=current_user
+            ),
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    draft = body.precheck if body is not None else None
+    if draft is None and flow.precheck is None:
+        raise HTTPException(status_code=422, detail="The flow has no pre-check")
+    if draft is not None:
+        _reject_invalid_precheck(
+            db,
+            account_id=current_user.account_id,
+            precheck=draft,
+            trigger_project_ids=flow.trigger_project_ids,
+            git_clone_config=flow.git_clone_config,
+        )
+
+    async def _evaluate() -> Any:
+        return await evaluate_precheck(
+            db, flow, {"payload": {}}, trigger_kind="dry_run", precheck=draft
+        )
+
+    outcome = anyio.from_thread.run(_evaluate)
+    if outcome is None:  # pragma: no cover - dry_run always evaluates
+        raise HTTPException(status_code=422, detail="The flow has no pre-check")
+    document = dict(outcome.document)
+    if not precheck_enabled():
+        document["disabled"] = True
+    return PrecheckEvaluateResponse(
+        action=outcome.action,
+        summary=outcome.summary,
+        reason=outcome.reason,
+        failure_category=outcome.failure_category,
+        error_message=outcome.error_message,
+        document=document,
+    )
 
 
 @router.post("/flows/executions/{execution_id}/retry")
@@ -4857,6 +5025,25 @@ def update_flow(
     require_flow_revision(condition, flow)
 
     prepare_flow_update(db=db, flow=flow, flow_in=flow_in, current_user=current_user)
+    sent = flow_in.model_fields_set
+    if sent & {"precheck", "trigger_project_ids", "git_clone_config"}:
+        # The scope is the flow after the save: a sent field replaces the
+        # stored one, an omitted field keeps it.
+        _reject_invalid_precheck(
+            db,
+            account_id=current_user.account_id,
+            precheck=flow_in.precheck if "precheck" in sent else flow.precheck,
+            trigger_project_ids=(
+                flow_in.trigger_project_ids
+                if "trigger_project_ids" in sent
+                else flow.trigger_project_ids
+            ),
+            git_clone_config=(
+                flow_in.git_clone_config
+                if "git_clone_config" in sent
+                else flow.git_clone_config
+            ),
+        )
     existing_secret = (flow.webhook_config or {}).get("webhook_secret")
     old_enabled = flow.is_enabled
     from preloop.services.flow_result_schema import ResultSchemaError

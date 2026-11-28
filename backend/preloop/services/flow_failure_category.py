@@ -141,6 +141,10 @@ it*, not about severity:
     The agent repeated the same tool calls without progress and was stopped.
 ``flow_config``
     The saved flow configuration cannot run.
+``precheck_failed``
+    The flow's pre-check (#2541) could not decide whether there was work: the
+    tracker was unreachable, refused the credential, rate limited the read, or
+    the evaluation ran out of time or requests. The agent never started.
 ``agent_reported_failure``
     The result document explicitly says the work could not complete.
 ``orchestrator_error`` / ``execution_error``
@@ -232,6 +236,7 @@ FAILURE_CATEGORY_AGENT_REPORTED_FAILURE = "agent_reported_failure"
 FAILURE_CATEGORY_ORCHESTRATOR_ERROR = "orchestrator_error"
 FAILURE_CATEGORY_EXECUTION_ERROR = "execution_error"
 FAILURE_CATEGORY_MODEL_POLICY = "model_policy"
+FAILURE_CATEGORY_PRECHECK_FAILED = "precheck_failed"
 
 FAILURE_CATEGORIES = (
     FAILURE_CATEGORY_LAUNCH_PAYLOAD_TOO_LARGE,
@@ -243,6 +248,7 @@ FAILURE_CATEGORIES = (
     FAILURE_CATEGORY_ORCHESTRATOR_ERROR,
     FAILURE_CATEGORY_EXECUTION_ERROR,
     FAILURE_CATEGORY_MODEL_POLICY,
+    FAILURE_CATEGORY_PRECHECK_FAILED,
     FAILURE_CATEGORY_RUNNER_CONFLICT,
     FAILURE_CATEGORY_RUNNER_ERROR,
     FAILURE_CATEGORY_MODEL_TRANSIENT,

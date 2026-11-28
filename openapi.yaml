@@ -22512,6 +22512,17 @@ paths:
           type: string
           format: uuid
           title: Flow Id
+      - name: skip_precheck
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: Start the run without evaluating the flow's pre-check, for
+            a flow whose pre-check lists manual in applies_to.
+          default: false
+          title: Skip Precheck
+        description: Start the run without evaluating the flow's pre-check, for a
+          flow whose pre-check lists manual in applies_to.
       - name: If-Match
         in: header
         required: false
@@ -22583,6 +22594,59 @@ paths:
         - head_sha
         title: CiReviewRequest
         type: object
+  /api/v1/flows/{flow_id}/precheck/evaluate:
+    post:
+      tags:
+      - Flows
+      summary: Evaluate a flow's pre-check without starting a run
+      description: "Dry run of the flow's pre-check (#2541).\n\nReads the tracker\
+        \ exactly as a scheduled tick would, using the shared\nread cache, and returns\
+        \ the decision. No execution is created and no\nagent starts. Send ``{\"precheck\"\
+        : {...}}`` to evaluate an unsaved draft\nagainst the flow's saved projects.\
+        \ The caller must be allowed to run the\nflow, so the dry run cannot be used\
+        \ to list pull requests of a flow the\ncaller could not start.\n\nRaises:\n\
+        \    HTTPException: 404 when the flow is not visible, 403 when the caller\n\
+        \        may not run it, 422 when the draft reads outside the flow's\n   \
+        \     projects or the flow has no pre-check."
+      operationId: evaluate_flow_precheck_api_v1_flows__flow_id__precheck_evaluate_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: '#/components/schemas/PrecheckEvaluateRequest'
+              - type: 'null'
+              title: Body
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrecheckEvaluateResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/flows/executions/{execution_id}/retry:
     post:
       tags:
@@ -40655,6 +40719,69 @@ components:
       type: object
       title: DashboardTelemetryResponse
       description: Aggregate high-level metrics for the global dashboard control plane.
+    DefaultBranchCiCheck:
+      properties:
+        id:
+          type: string
+          pattern: ^[a-z0-9][a-z0-9_-]{0,39}$
+          title: Id
+          description: Name of the check in the decision document, for example 'stale_prs'.
+            Lower case letters, digits, '-' and '_'.
+        repositories:
+          items:
+            type: string
+            maxLength: 200
+            minLength: 1
+          type: array
+          maxItems: 10
+          title: Repositories
+          description: owner/name of the repositories to read. Empty means every repository
+            of the flow's projects. Each one must belong to the flow's projects.
+        min_count:
+          type: integer
+          maximum: 50.0
+          minimum: 1.0
+          title: Min Count
+          description: The check matches when at least this many items are found.
+          default: 1
+        max_items:
+          type: integer
+          maximum: 50.0
+          minimum: 1.0
+          title: Max Items
+          description: Most items passed to the run; the rest set truncated.
+          default: 25
+        type:
+          type: string
+          const: default_branch_ci
+          title: Type
+        branch:
+          type: string
+          maxLength: 200
+          title: Branch
+          description: Branch to read; empty means the repository default branch.
+          default: ''
+        state:
+          type: string
+          enum:
+          - failing
+          - passing
+          title: State
+          default: failing
+        required_only:
+          type: boolean
+          title: Required Only
+          description: Count only the checks branch protection requires. Falls back
+            to every check when the branch has no required checks or the credential
+            cannot read branch protection.
+          default: true
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - type
+      title: DefaultBranchCiCheck
+      description: The combined check state of a branch head.
     DeliveryReportActionRequest:
       properties:
         kind:
@@ -44162,6 +44289,79 @@ components:
       type: object
       title: ExternalApprovalResult
       description: References and flat string fields; never evidence or nested objects.
+    FailedCiRunsCheck:
+      properties:
+        id:
+          type: string
+          pattern: ^[a-z0-9][a-z0-9_-]{0,39}$
+          title: Id
+          description: Name of the check in the decision document, for example 'stale_prs'.
+            Lower case letters, digits, '-' and '_'.
+        repositories:
+          items:
+            type: string
+            maxLength: 200
+            minLength: 1
+          type: array
+          maxItems: 10
+          title: Repositories
+          description: owner/name of the repositories to read. Empty means every repository
+            of the flow's projects. Each one must belong to the flow's projects.
+        min_count:
+          type: integer
+          maximum: 50.0
+          minimum: 1.0
+          title: Min Count
+          description: The check matches when at least this many items are found.
+          default: 1
+        max_items:
+          type: integer
+          maximum: 50.0
+          minimum: 1.0
+          title: Max Items
+          description: Most items passed to the run; the rest set truncated.
+          default: 25
+        type:
+          type: string
+          const: failed_ci_runs
+          title: Type
+        since:
+          anyOf:
+          - type: string
+            enum:
+            - last_run
+            - previous_tick
+          - $ref: '#/components/schemas/PrecheckSinceHours'
+          title: Since
+          description: 'last_run: since the newest execution of this flow that was
+            not skipped. previous_tick: since the schedule''s previous fire time.
+            {hours: N}: the last N hours.'
+          default: last_run
+        branches:
+          items:
+            type: string
+            maxLength: 200
+            minLength: 1
+          type: array
+          maxItems: 20
+          title: Branches
+          description: Only these branches; empty means all.
+        workflows:
+          items:
+            type: string
+            maxLength: 200
+            minLength: 1
+          type: array
+          maxItems: 20
+          title: Workflows
+          description: Only these workflow names; empty means all.
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - type
+      title: FailedCiRunsCheck
+      description: Workflow runs that failed since a point in time.
     FailedExecutionCategory:
       properties:
         category:
@@ -45522,6 +45722,14 @@ components:
           description: Apply result_schema to the captured result.json. Ignored when
             result_schema is null.
           default: true
+        precheck:
+          anyOf:
+          - $ref: '#/components/schemas/FlowPrecheck'
+          - type: 'null'
+          description: Deterministic pre-check evaluated on the server before an execution
+            is dispatched. When no check matches, the tick is recorded as a SKIPPED
+            execution and no agent starts; when one matches, the matched items are
+            passed to the run as trigger_event.payload.precheck. Null means no pre-check.
         max_budget:
           anyOf:
           - type: number
@@ -46048,9 +46256,10 @@ components:
             (a parked run could not be continued), gateway_bypassed (a private-runner
             host CLI made no request through the Preloop gateway), timeout, cancelled,
             flow_config, agent_reported_failure, agent_tool_loop, orchestrator_error,
-            execution_error, model_policy, runner_unavailable, ci_authorization; unknown
-            is a legacy value. Null for successful or still-running executions, and
-            for executions that predate this field.'
+            execution_error, model_policy, runner_unavailable, ci_authorization, precheck_failed
+            (the flow''s pre-check could not read the tracker, so the agent was not
+            started); unknown is a legacy value. Null for successful or still-running
+            executions, and for executions that predate this field.'
         result_schema_validation:
           anyOf:
           - additionalProperties: true
@@ -46241,12 +46450,31 @@ components:
             fails for another reason while that read-back is still owed, and is null
             once the publication is posted or no read-back has failed. Null without
             the opt-in.'
+        precheck:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Precheck
+          description: 'The flow pre-check''s decision document for this execution
+            (#2541).
+
+
+            Read from ``trigger_event_details.payload.precheck``: the matched
+
+            items a run was started with, the summary and fold count of a
+
+            ``SKIPPED`` execution, or the error of a pre-check that failed. Null
+
+            when no pre-check was evaluated.'
+          readOnly: true
       type: object
       required:
       - flow_id
       - id
       - created_at
       - updated_at
+      - precheck
       title: FlowExecutionResponse
     FlowFailureNotifications:
       properties:
@@ -46413,6 +46641,77 @@ components:
       type: object
       title: FlowNotifications
       description: Per-flow terminal notifications. NULL on the row means none.
+    FlowPrecheck:
+      properties:
+        version:
+          type: integer
+          const: 1
+          title: Version
+          default: 1
+        applies_to:
+          items:
+            type: string
+            enum:
+            - schedule
+            - manual
+          type: array
+          minItems: 1
+          title: Applies To
+          description: 'Trigger kinds that evaluate the pre-check. schedule: every
+            tick. manual: console, API and CLI runs, unless the caller passes skip_precheck.
+            Retries, continuations, delegated children and restricted CI runs never
+            evaluate it.'
+        run_if:
+          type: string
+          enum:
+          - any
+          - all
+          title: Run If
+          description: Run when any check matches, or only when all of them do.
+          default: any
+        on_error:
+          type: string
+          enum:
+          - fail
+          - run
+          title: On Error
+          description: 'fail: a tracker error records a FAILED execution (precheck_failed)
+            and the agent does not start. run: the run starts and the context names
+            the error.'
+          default: fail
+        max_skip_hours:
+          anyOf:
+          - type: number
+            maximum: 8760.0
+            exclusiveMinimum: 0.0
+          - type: 'null'
+          title: Max Skip Hours
+          description: Run anyway (forced) once the newest execution that was not
+            skipped is older than this.
+        checks:
+          items:
+            oneOf:
+            - $ref: '#/components/schemas/OpenPullRequestsCheck'
+            - $ref: '#/components/schemas/DefaultBranchCiCheck'
+            - $ref: '#/components/schemas/FailedCiRunsCheck'
+            - $ref: '#/components/schemas/IssuesCheck'
+            discriminator:
+              propertyName: type
+              mapping:
+                default_branch_ci: '#/components/schemas/DefaultBranchCiCheck'
+                failed_ci_runs: '#/components/schemas/FailedCiRunsCheck'
+                issues: '#/components/schemas/IssuesCheck'
+                open_pull_requests: '#/components/schemas/OpenPullRequestsCheck'
+          type: array
+          maxItems: 8
+          minItems: 1
+          title: Checks
+      additionalProperties: false
+      type: object
+      required:
+      - checks
+      title: FlowPrecheck
+      description: 'A flow''s pre-check: run only when the tracker says there is work.'
     FlowResponse:
       properties:
         chat_alias:
@@ -46659,6 +46958,12 @@ components:
           description: Apply result_schema to the captured result.json. Ignored when
             result_schema is null.
           default: true
+        precheck:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Precheck
         max_budget:
           anyOf:
           - type: number
@@ -47235,6 +47540,14 @@ components:
           description: Apply result_schema to the captured result.json. Ignored when
             result_schema is null.
           default: true
+        precheck:
+          anyOf:
+          - $ref: '#/components/schemas/FlowPrecheck'
+          - type: 'null'
+          description: Deterministic pre-check evaluated on the server before an execution
+            is dispatched. When no check matches, the tick is recorded as a SKIPPED
+            execution and no agent starts; when one matches, the matched items are
+            passed to the run as trigger_event.payload.precheck. Null means no pre-check.
         max_budget:
           anyOf:
           - type: number
@@ -51035,6 +51348,72 @@ components:
       type: object
       title: IssueUpdate
       description: Model for updating an issue.
+    IssuesCheck:
+      properties:
+        id:
+          type: string
+          pattern: ^[a-z0-9][a-z0-9_-]{0,39}$
+          title: Id
+          description: Name of the check in the decision document, for example 'stale_prs'.
+            Lower case letters, digits, '-' and '_'.
+        repositories:
+          items:
+            type: string
+            maxLength: 200
+            minLength: 1
+          type: array
+          maxItems: 10
+          title: Repositories
+          description: owner/name of the repositories to read. Empty means every repository
+            of the flow's projects. Each one must belong to the flow's projects.
+        min_count:
+          type: integer
+          maximum: 50.0
+          minimum: 1.0
+          title: Min Count
+          description: The check matches when at least this many items are found.
+          default: 1
+        max_items:
+          type: integer
+          maximum: 50.0
+          minimum: 1.0
+          title: Max Items
+          description: Most items passed to the run; the rest set truncated.
+          default: 25
+        type:
+          type: string
+          const: issues
+          title: Type
+        labels:
+          $ref: '#/components/schemas/PrecheckLabelFilter'
+        milestone:
+          anyOf:
+          - type: string
+            maxLength: 200
+            minLength: 1
+          - type: 'null'
+          title: Milestone
+        unassigned:
+          type: boolean
+          title: Unassigned
+          default: false
+        order_by_labels:
+          items:
+            type: string
+            maxLength: 200
+            minLength: 1
+          type: array
+          maxItems: 20
+          title: Order By Labels
+          description: Order matched issues by the first of these labels they carry
+            (for example P0, P1, P2), then oldest first.
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - type
+      title: IssuesCheck
+      description: Open issues (not pull requests) matching labels and a milestone.
     JiraManualWebhook:
       properties:
         organization_id:
@@ -53963,6 +54342,79 @@ components:
       - username
       - password
       title: OnboardingRequest
+    OpenPullRequestsCheck:
+      properties:
+        id:
+          type: string
+          pattern: ^[a-z0-9][a-z0-9_-]{0,39}$
+          title: Id
+          description: Name of the check in the decision document, for example 'stale_prs'.
+            Lower case letters, digits, '-' and '_'.
+        repositories:
+          items:
+            type: string
+            maxLength: 200
+            minLength: 1
+          type: array
+          maxItems: 10
+          title: Repositories
+          description: owner/name of the repositories to read. Empty means every repository
+            of the flow's projects. Each one must belong to the flow's projects.
+        min_count:
+          type: integer
+          maximum: 50.0
+          minimum: 1.0
+          title: Min Count
+          description: The check matches when at least this many items are found.
+          default: 1
+        max_items:
+          type: integer
+          maximum: 50.0
+          minimum: 1.0
+          title: Max Items
+          description: Most items passed to the run; the rest set truncated.
+          default: 25
+        type:
+          type: string
+          const: open_pull_requests
+          title: Type
+        authors:
+          $ref: '#/components/schemas/PrecheckAuthorFilter'
+        labels:
+          $ref: '#/components/schemas/PrecheckLabelFilter'
+        include_drafts:
+          type: boolean
+          title: Include Drafts
+          default: false
+        needs_any:
+          items:
+            type: string
+            enum:
+            - failing_checks
+            - merge_conflict
+            - unresolved_review_threads
+            - changes_requested
+          type: array
+          title: Needs Any
+          description: Keep a pull request only when it has at least one of these
+            reasons. Empty keeps every open pull request the filters allow.
+        idle_hours:
+          anyOf:
+          - type: number
+            maximum: 8760.0
+            exclusiveMinimum: 0.0
+          - type: 'null'
+          title: Idle Hours
+          description: Keep a pull request only when it was not updated for N hours.
+        exclude:
+          $ref: '#/components/schemas/PullRequestExclusions'
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - type
+      title: OpenPullRequestsCheck
+      description: Open pull requests that need attention and nobody owns.
     OperatorNoteAckRequest:
       properties:
         note_ids:
@@ -55550,6 +56002,121 @@ components:
       - created_at
       title: PolicyVersionMetadata
       description: Metadata for a policy version (without full snapshot data).
+    PrecheckAuthorFilter:
+      properties:
+        include:
+          items:
+            type: string
+            maxLength: 200
+            minLength: 1
+          type: array
+          maxItems: 20
+          title: Include
+          description: Only these authors; empty means every author.
+        exclude:
+          items:
+            type: string
+            maxLength: 200
+            minLength: 1
+          type: array
+          maxItems: 20
+          title: Exclude
+          description: Never these.
+      additionalProperties: false
+      type: object
+      title: PrecheckAuthorFilter
+      description: Author logins to keep or drop.
+    PrecheckEvaluateRequest:
+      properties:
+        precheck:
+          anyOf:
+          - $ref: '#/components/schemas/FlowPrecheck'
+          - type: 'null'
+      type: object
+      title: PrecheckEvaluateRequest
+      description: Optional draft to evaluate instead of the stored pre-check.
+    PrecheckEvaluateResponse:
+      properties:
+        action:
+          type: string
+          title: Action
+          description: run, skip or fail.
+        summary:
+          type: string
+          title: Summary
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+        failure_category:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Failure Category
+        error_message:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Message
+        document:
+          additionalProperties: true
+          type: object
+          title: Document
+          description: The decision document a run would receive at trigger_event.payload.precheck.
+      type: object
+      required:
+      - action
+      - summary
+      - document
+      title: PrecheckEvaluateResponse
+      description: The decision a pre-check would make now; nothing was recorded.
+    PrecheckLabelFilter:
+      properties:
+        any:
+          items:
+            type: string
+            maxLength: 200
+            minLength: 1
+          type: array
+          maxItems: 20
+          title: Any
+          description: At least one of these labels.
+        all:
+          items:
+            type: string
+            maxLength: 200
+            minLength: 1
+          type: array
+          maxItems: 20
+          title: All
+          description: Every one of these.
+        none:
+          items:
+            type: string
+            maxLength: 200
+            minLength: 1
+          type: array
+          maxItems: 20
+          title: None
+          description: None of these.
+      additionalProperties: false
+      type: object
+      title: PrecheckLabelFilter
+      description: Label conditions; every non-empty list must hold.
+    PrecheckSinceHours:
+      properties:
+        hours:
+          type: number
+          maximum: 8760.0
+          exclusiveMinimum: 0.0
+          title: Hours
+      additionalProperties: false
+      type: object
+      required:
+      - hours
+      title: PrecheckSinceHours
+      description: A fixed look-back window.
     PriceCatalogInfo:
       properties:
         source_url:
@@ -56116,6 +56683,42 @@ components:
       - destination_count
       title: PullRequestDestination
       description: One confirmed pull request and the number of published targets.
+    PullRequestExclusions:
+      properties:
+        approved_and_mergeable:
+          type: boolean
+          title: Approved And Mergeable
+          description: Leave out a pull request that is approved and mergeable.
+          default: true
+        active_execution:
+          type: boolean
+          title: Active Execution
+          description: Leave out a pull request a non-terminal Preloop execution is
+            bound to (it triggered the run, or the run publishes to it).
+          default: true
+        claim_labels:
+          items:
+            type: string
+            maxLength: 200
+            minLength: 1
+          type: array
+          maxItems: 20
+          title: Claim Labels
+          description: Labels that mean someone owns the pull request right now.
+        claim_max_age_hours:
+          anyOf:
+          - type: number
+            maximum: 8760.0
+            exclusiveMinimum: 0.0
+          - type: 'null'
+          title: Claim Max Age Hours
+          description: 'A claim label applied longer ago than this is stale and ignored,
+            as is one whose application is not among the pull request''s last 100
+            label events. Unset: a claim label never goes stale.'
+      additionalProperties: false
+      type: object
+      title: PullRequestExclusions
+      description: Pull requests the check leaves out even when they need attention.
     PullRequestItem:
       properties:
         number:

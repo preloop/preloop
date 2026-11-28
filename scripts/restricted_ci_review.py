@@ -24,6 +24,7 @@ TERMINAL = {
     "ABORTED",
     "CANCELLED",
     "CANCELED",
+    "SKIPPED",
 }
 CORRELATION = (
     "flow_id",
