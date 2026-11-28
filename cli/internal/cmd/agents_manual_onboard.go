@@ -695,7 +695,7 @@ func prepareManualStep(in *manualEnrollmentInputs) (step *manualStep, done bool,
 			DiscoveredConfig: in.Plan.SanitizedDiscovered,
 			ManagedConfig:    managedConfig,
 			BackupMetadata:   backupMetadata,
-			ValidationResult: map[string]interface{}{"manual_apply": true},
+			ValidationResult: map[string]interface{}{"manual_apply": true, "model_routing": in.Plan.ManagedModelAlias != ""},
 			RestoreAvailable: backupState != nil,
 		}.withDeviceLink(in.Client, agent),
 	)

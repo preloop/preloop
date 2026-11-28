@@ -145,13 +145,39 @@ export function sessionTools(
       tools.set(id, tool);
     });
   }
+  // A native hook row carries no tool_use id, while the gateway saw the same
+  // call as a tool_use in the model's response. Without pairing, one call
+  // counted twice: once from the request, once from the hook (#2588).
+  const claimed = new Set<string>();
+  const pairNative = (name: string | undefined, at: string): string | null => {
+    if (!name) return null;
+    const when = parseUtc(at);
+    let best: SessionTool | null = null;
+    for (const tool of tools.values()) {
+      if (!tool.callId || claimed.has(tool.id) || tool.name !== name) continue;
+      const started = parseUtc(tool.timestamp);
+      if (when !== null && started !== null && started > when) continue;
+      if (
+        !best ||
+        (parseUtc(best.timestamp) ?? -Infinity) < (started ?? -Infinity)
+      )
+        best = tool;
+    }
+    return best?.id ?? null;
+  };
   activity.forEach((item, index) => {
     if (item.activity_type !== 'tool_call') return;
     const m = record(item.metadata),
       callId = typeof m?.tool_call_id === 'string' ? m.tool_call_id : undefined;
+    const paired =
+      !callId && m?.origin === 'native_hook'
+        ? pairNative(item.tool_name || undefined, item.timestamp)
+        : null;
     const id = callId
       ? `tool:${callId}`
-      : `native:${item.activity_id || `${item.timestamp}:${index}`}`;
+      : (paired ??
+        `native:${item.activity_id || `${item.timestamp}:${index}`}`);
+    claimed.add(id);
     const tool = tools.get(id) ?? {
       id,
       callId,

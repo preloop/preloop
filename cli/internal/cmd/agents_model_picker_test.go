@@ -637,3 +637,39 @@ func TestSelectedNormalizedAccountModelPreservesSourceProvider(t *testing.T) {
 		}
 	}
 }
+
+func TestReadOnlyCatalogModelsExcludedFromOnboarding(t *testing.T) {
+	for _, flag := range []string{"read_only", "is_shared", "is_built_in"} {
+		t.Run(flag, func(t *testing.T) {
+			row := map[string]any{
+				"id":               "inherited",
+				"provider_name":    "anthropic",
+				"model_identifier": "claude-sonnet-4-5",
+				"has_api_key":      true,
+				flag:               true,
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewEncoder(w).Encode([]any{row})
+			}))
+			defer server.Close()
+			client := api.NewClientWithToken(server.URL, "test")
+			if got := listGatewayModelChoices(client, nil, io.Discard); len(got) != 0 {
+				t.Error("read-only model offered as an account credential")
+			}
+			upstream := &managedGatewayUpstream{ProviderName: "anthropic", ModelIdentifier: "claude-sonnet-4-5", ManagedModelAlias: "anthropic/claude-sonnet-4-5"}
+			choices := listGatewayModelChoices(client, upstream, io.Discard)
+			if len(choices) != 1 || choices[0].Model != nil {
+				t.Error("inference attached to a read-only row")
+			}
+			var rows []aiModelResponse
+			if err := client.Get(api.RESTPrefix+"/ai-models", &rows); err != nil {
+				t.Fatal(err)
+			}
+			parsed := &openClawParsedConfig{ProviderName: "anthropic", ModelID: upstream.ModelIdentifier}
+			if findReusableManagedGatewayAIModel(rows, upstream) != nil ||
+				findReusableAIModel(rows, parsed, upstream.ManagedModelAlias) != nil {
+				t.Error("apply would update a read-only row")
+			}
+		})
+	}
+}

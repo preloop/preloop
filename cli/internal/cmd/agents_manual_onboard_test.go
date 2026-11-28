@@ -39,6 +39,7 @@ type manualRigServer struct {
 	probeBody       string
 	probeCalls      int
 	probeKeys       []string
+	identityKeys    []string
 	// reportStatus, when set, is the status the discovery report gets.
 	reportStatus int
 	// onMutation, when set, is called before each request that is not a GET.
@@ -156,6 +157,16 @@ func (r *manualRigServer) handle(w http.ResponseWriter, req *http.Request) {
 			}
 		}
 		reply(404, map[string]interface{}{"detail": "not found"})
+	case req.Method == http.MethodGet && path == prefix+"/agents/enrollment/identity":
+		r.identityKeys = append(r.identityKeys, strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer "))
+		switch req.Header.Get("Authorization") {
+		case "Bearer agt_SYNTHETICCONSOLE":
+			reply(200, map[string]string{"agent_id": "agent-1"})
+		case "Bearer agt_SYNTHETICOTHER":
+			reply(200, map[string]string{"agent_id": "agent-2"})
+		default:
+			reply(401, map[string]string{"detail": "invalid credential"})
+		}
 	case req.Method == http.MethodGet && path == prefix+"/agents":
 		items := []map[string]interface{}{}
 		for _, agent := range r.agents {
@@ -808,6 +819,8 @@ func TestResumeAcceptsAnotherKeyOnlyWhenARealRequestProvesIt(t *testing.T) {
 		t.Fatal("expected a pending setup")
 	}
 	state, _ := loadManualResumeState(home.agent)
+	delete(rig.enrollments[state.EnrollmentID], "validation_result") // Created before model_routing was recorded.
+
 	const consoleKey = "agt_SYNTHETICCONSOLE00000000000000000000000002"
 	applyRigResult(t, home, func(text string) string { return strings.ReplaceAll(text, syntheticAgentKey, consoleKey) })
 
@@ -875,6 +888,8 @@ func TestSideFileOnlySetupStillProbesAndCancelRestoresTheConfig(t *testing.T) {
 		t.Fatalf("the writable settings file should have been written:\n%s", output)
 	}
 	state, _ := loadManualResumeState(home.agent)
+
+	delete(rig.enrollments[state.EnrollmentID], "validation_result") // Legacy side-file-only handoff.
 
 	var resumed bytes.Buffer
 	if err := resumeManualEnrollment(rig.client(), state, manualResumeOptions{}, &resumed); err != nil {
@@ -1029,5 +1044,161 @@ func TestManualReonboardReportsUnwritableExistingGate(t *testing.T) {
 	after, err := os.ReadFile(hookPath)
 	if err != nil || string(after) != original {
 		t.Fatalf("unwritable hook changed: %v", err)
+	}
+}
+
+func TestResumeMCPOnlyWithReplacementKey(t *testing.T) {
+	keys := map[string]string{
+		"console":             "agt_SYNTHETICCONSOLE",
+		"older pending setup": "agt_SYNTHETICCONSOLE",
+		"another agent":       "agt_SYNTHETICOTHER",
+		"revoked":             "agt_SYNTHETICREVOKED",
+	}
+	for name, key := range keys {
+		t.Run(name, func(t *testing.T) {
+			rig := newManualRigServer(t)
+			home := newManualRigHome(t)
+			if name == "older pending setup" {
+				// A pre-existing URL alone never meant this plan owned model traffic.
+				mustWriteRecoveryFile(t, home.settings, fmt.Sprintf(`{"env":{"ANTHROPIC_BASE_URL":%q,"ANTHROPIC_API_KEY":"previous-key"}}`, rig.server.URL+"/anthropic"))
+			}
+			home.lockSettings(t)
+			_, _ = runManualRigOnboard(t, rig, home.agent, managedEnrollmentOptions{NoModelRouting: true})
+			state, err := loadManualResumeState(home.agent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if name == "older pending setup" {
+				delete(rig.enrollments[state.EnrollmentID], "validation_result")
+			}
+
+			applyRigResult(t, home, func(s string) string { return strings.ReplaceAll(s, syntheticAgentKey, key) })
+			var out bytes.Buffer
+			err = resumeManualEnrollment(rig.client(), state, manualResumeOptions{SkipLiveValidate: true}, &out)
+			valid := key == "agt_SYNTHETICCONSOLE"
+			if (err == nil) != valid || rig.probeCalls != 0 || strings.Contains(out.String(), key) {
+				t.Fatalf("replacement key validation, got success=%t, model probes=%d", err == nil, rig.probeCalls)
+			}
+			updates := rig.sent(http.MethodPost, "/validate")
+			if !valid {
+				if len(updates) != 0 {
+					t.Fatal("invalid key completed the enrollment")
+				}
+				return
+			}
+			if len(updates) != 1 || updates[0]["status"] != "applied" || !strings.Contains(out.String(), "MCP only") {
+				t.Fatal("expected a completed MCP-only enrollment")
+			}
+		})
+	}
+}
+
+// Resume must authenticate the credential actually installed in each handed-over
+// file, even if the main settings were writable and their key has been revoked.
+func TestSideFileOnlyMCPReplacement(t *testing.T) {
+	for _, role := range []string{writeRoleUserConfig, writeRoleControl} {
+		for _, tc := range []struct {
+			name  string
+			key   string
+			valid bool
+		}{
+			{"same agent", "agt_SYNTHETICCONSOLE", true},
+			{"another agent", "agt_SYNTHETICOTHER", false},
+			{"left unapplied", "", true},
+		} {
+			t.Run(role+"/"+tc.name, func(t *testing.T) {
+				rig := newManualRigServer(t)
+				home := newManualRigHome(t)
+				target := claudeUserConfigPath(home.agent)
+				if role == writeRoleControl {
+					target = claudeControlConfigPath()
+				}
+				mustWriteRecoveryFile(t, target, "{}")
+				target, err := filepath.EvalSymlinks(target)
+				if err != nil {
+					t.Fatal(err)
+				}
+				open := openForAppendProbe
+				t.Cleanup(stubWriteProbes(func(path string) error {
+					if path == target {
+						return os.ErrPermission
+					}
+					return open(path)
+				}, nil))
+				_, err = runManualRigOnboard(t, rig, home.agent, managedEnrollmentOptions{NoModelRouting: true})
+				var pending *manualApplyPendingError
+				if !errors.As(err, &pending) {
+					t.Fatal("expected a side-file-only handoff")
+				}
+				state, err := loadManualResumeState(home.agent)
+				if err != nil {
+					t.Fatal(err)
+				}
+				files, err := filepath.Glob(filepath.Join(state.BundleDir, "*.merge.json"))
+				if err != nil || len(files) != 1 {
+					t.Fatal("expected just the side-file merge in the bundle")
+				}
+				if tc.key != "" {
+					data, err := os.ReadFile(files[0])
+					if err != nil {
+						t.Fatal(err)
+					}
+					applied := strings.ReplaceAll(string(data), syntheticAgentKey, tc.key)
+					applied = strings.ReplaceAll(applied, claudeAPIKeyFingerprint(syntheticAgentKey), claudeAPIKeyFingerprint(tc.key))
+					mustWriteRecoveryFile(t, target, applied)
+				}
+				var out bytes.Buffer
+				err = resumeManualEnrollment(rig.client(), state, manualResumeOptions{}, &out)
+				if (err == nil) != tc.valid || (len(rig.sent(http.MethodPost, "/validate")) == 1) != tc.valid || rig.probeCalls != 0 {
+					t.Fatalf("unexpected enrollment result: success=%t, model probes=%d", err == nil, rig.probeCalls)
+				}
+				if tc.key == "" {
+					if len(rig.identityKeys) != 0 {
+						t.Fatal("no replacement was installed")
+					}
+					return
+				}
+				if len(rig.identityKeys) != 1 || rig.identityKeys[0] != tc.key {
+					t.Fatal("resume did not authenticate the installed side-file key")
+				}
+				if strings.Contains(out.String(), tc.key) || (tc.valid && strings.Contains(out.String(), "stays off")) {
+					t.Fatal("unexpected side-file verification output")
+				}
+			})
+		}
+	}
+}
+
+func TestManualClaudeAPIKeyConfigSelectsProbedModel(t *testing.T) {
+	rig := newManualRigServer(t)
+	home := newManualRigHome(t)
+	home.lockSettings(t)
+	_, _ = runManualRigOnboard(t, rig, home.agent, managedEnrollmentOptions{})
+	applyRigResult(t, home, func(s string) string { return s })
+	doc, err := loadJSONDocument(home.settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selector := lookupString(doc, "model")
+	alias := lookupString(doc, "env", "ANTHROPIC_CUSTOM_MODEL_OPTION")
+	if selector != "sonnet" || alias != "anthropic/claude-sonnet-4-5" || lookupString(doc, "env", "ANTHROPIC_DEFAULT_SONNET_MODEL") != alias {
+		t.Fatal("the client can resolve sonnet to a model other than the probed alias")
+	}
+}
+
+func TestLegacyManualResumeRejectsUnsupportedAgent(t *testing.T) {
+	rig := newManualRigServer(t)
+	home := newManualRigHome(t)
+	home.lockSettings(t)
+	_, _ = runManualRigOnboard(t, rig, home.agent, managedEnrollmentOptions{})
+	state, err := loadManualResumeState(home.agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delete(rig.enrollments[state.EnrollmentID], "validation_result")
+	state.AgentName = "OpenCode"
+	err = resumeManualEnrollment(rig.client(), state, manualResumeOptions{}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "manual resume is not supported") || len(rig.sent(http.MethodPost, "/validate")) != 0 {
+		t.Fatal("a setup without a manual adapter must remain pending")
 	}
 }

@@ -75,6 +75,12 @@ class EnrollmentExchangeResponse(BaseModel):
     apps: list[EnrollmentAppCredential]
 
 
+class EnrollmentIdentity(BaseModel):
+    """The agent bound to the authenticated durable credential."""
+
+    agent_id: UUID
+
+
 class EnrollmentApplyResponse(BaseModel):
     """Acknowledgment of local config apply, without runtime validation claims."""
 

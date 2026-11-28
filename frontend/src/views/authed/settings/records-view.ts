@@ -1310,7 +1310,10 @@ ${offlineAuditCommand(range)}</pre>
         <sl-dialog
           label="Place legal hold"
           ?open=${this.placeOpen}
-          @sl-after-hide=${() => {
+          @sl-after-hide=${(event: Event) => {
+            // A nested sl-select closing its listbox bubbles sl-after-hide
+            // too; only the dialog's own hide closes the dialog (#2587).
+            if (event.target !== event.currentTarget) return;
             this.placeOpen = false;
           }}
         >
@@ -1379,7 +1382,8 @@ ${offlineAuditCommand(range)}</pre>
         <sl-dialog
           label="Release legal hold"
           ?open=${this.releaseTarget !== null}
-          @sl-after-hide=${() => {
+          @sl-after-hide=${(event: Event) => {
+            if (event.target !== event.currentTarget) return;
             if (!this.releasing) this.releaseTarget = null;
           }}
         >

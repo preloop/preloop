@@ -952,3 +952,92 @@ def test_permission_check_files_approval_on_local_origin_session(
         )
     assert response.status_code == 200, response.text
     assert decide.await_args.kwargs["runtime_session_id"] == UUID(str(recorded.id))
+
+
+def _managed_agent_identity(agent_permission: Any) -> Any:
+    import uuid
+
+    return agent_permission.PermissionIdentity(
+        account_id=str(uuid.uuid4()),
+        user_id=uuid.uuid4(),
+        api_key_id=uuid.uuid4(),
+        managed_agent_id=uuid.uuid4(),
+        runtime_session_id=None,
+        managed_agent_name="Agent",
+    )
+
+
+def test_host_profile_hook_links_verified_execution_and_parks(client):
+    """#2597: an onboarded hook in a host-profile run parks its execution."""
+    import uuid
+
+    from preloop.api.endpoints import agent_permission
+
+    identity = _managed_agent_identity(agent_permission)
+    execution_id, flow_id = uuid.uuid4(), uuid.uuid4()
+    decide = AsyncMock(return_value=("park", "Paused for approval", "req-1", False))
+    verify = patch(
+        "preloop.services.native_flow_park.verified_host_execution",
+        return_value={"execution_id": execution_id, "flow_id": flow_id},
+    )
+    with (
+        patch.object(
+            agent_permission,
+            "_resolve_permission_identity",
+            lambda _token, **_kwargs: identity,
+        ),
+        patch.object(agent_permission, "request_agent_permission", decide),
+        verify as verified,
+    ):
+        response = _post_permission_check(
+            client,
+            "agent-token",
+            {
+                "source": "claude_code",
+                "tool_name": "Bash",
+                "tool_input": {"command": "grep -qx Hello greeting.txt"},
+                "session_id": "ses_synthetic",
+                "flow_execution_id": str(execution_id),
+            },
+        )
+    assert response.status_code == 200, response.text
+    assert response.json()["parked"] is True
+    assert verified.call_args.kwargs["user_id"] == identity.user_id
+    assert verified.call_args.kwargs["managed_agent_id"] == identity.managed_agent_id
+    assert decide.await_args.kwargs["flow_execution_id"] == execution_id
+    assert decide.await_args.kwargs["flow_id"] == flow_id
+
+
+def test_host_profile_hook_ignores_unverified_execution(client):
+    """A reported id that does not verify never links or parks anything."""
+    import uuid
+
+    from preloop.api.endpoints import agent_permission
+
+    identity = _managed_agent_identity(agent_permission)
+    decide = AsyncMock(return_value=("deny", "Approval required", "req-2", False))
+    with (
+        patch.object(
+            agent_permission,
+            "_resolve_permission_identity",
+            lambda _token, **_kwargs: identity,
+        ),
+        patch.object(agent_permission, "request_agent_permission", decide),
+        patch(
+            "preloop.services.native_flow_park.verified_host_execution",
+            return_value=None,
+        ),
+    ):
+        response = _post_permission_check(
+            client,
+            "agent-token",
+            {
+                "source": "claude_code",
+                "tool_name": "Bash",
+                "tool_input": {"command": "rm -rf build"},
+                "session_id": "ses_synthetic",
+                "flow_execution_id": str(uuid.uuid4()),
+            },
+        )
+    assert response.status_code == 200, response.text
+    assert decide.await_args.kwargs["flow_execution_id"] is None

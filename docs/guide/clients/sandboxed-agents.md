@@ -333,7 +333,7 @@ After `preloop agents reconnect "Claude Code" --from-local`, run the resume comm
 
 If you skip the real request (`--skip-live-validate`) on an ordinary, writable onboarding with a subscription login, the result does not read `Onboarded`. It reads `Configured Claude Code; the subscription login was NOT verified`, with the command to verify it: `preloop agents validate "Claude Code" --live`.
 
-A manual resume run with `--skip-live-validate` checks the file but makes no request, so it does not print `Onboarded` either. It prints `Configured Claude Code; the change is in place but the route and any subscription login behind it were NOT verified`, with the same `validate --live` command.
+On a plan with model routing, manual resume with `--skip-live-validate` checks the file but makes no model request, so it does not print `Onboarded` either. It prints `Configured Claude Code; the change is in place but the route and any subscription login behind it were NOT verified`, with the same `validate --live` command.
 
 See also [subscription recovery](subscription-recovery.md).
 
@@ -358,7 +358,7 @@ While the setup waits, the agent's page shows **Waiting for local configuration*
 Below the credentials card, **Set up manually** shows the instructions directly, with the placeholder `<AGENT_KEY>` where the key goes. Preloop does not keep the key, so it cannot show the one the CLI printed. The panel can issue a new key, shown once and filled into the instructions while you stay on the page.
 
 !!! note "Which key a pending setup accepts"
-    `preloop agents onboard --resume` expects the key the CLI printed for that setup. A different key for the same agent, such as one issued from the console panel, is accepted only when the real request made by resume succeeds with it. With `--skip-live-validate`, or for an agent with no model route, nothing can prove a different key, and resume reports that the key in place is not the one issued for this setup. If you lost the printed key, issue one in the console and resume without skipping the request, or cancel the setup and onboard again.
+    You can apply the printed key or issue a replacement for the pending agent in the console. On an MCP-only plan, resume authenticates the installed replacement key with Preloop and checks its agent ID. On a plan with model routing, resume must make a successful gateway request with the replacement key, so leave live validation enabled.
 
 ## Expiry and cancel
 
@@ -454,7 +454,7 @@ If you used the environment-variable form, also remove `ANTHROPIC_BASE_URL` and 
 | `the file ends early; a closing quote, } or ] is missing` | The paste was cut off | Paste the whole block, or copy the complete result file |
 | `env.ANTHROPIC_BASE_URL is missing` (or another key) | That key from the block is not in the file resume read | Check that you edited the file the container mounts, and that the container sees the new content (see the single-file bind mount note) |
 | `... still holds the placeholder <AGENT_KEY>; put the agent key there` | The block was copied from the console, which shows a placeholder | Put in the key the CLI printed |
-| `... does not hold the key issued for this setup` | The file holds a different key: from an earlier run, or issued from the console | Put in the key printed by this setup (it is in the saved instructions), or a key issued in the console and resume without `--skip-live-validate` |
+| `... does not hold the key issued for this setup` | The file holds a different key: from an earlier run, or issued from the console | Put in the key printed by this setup (it is in the saved instructions), or a key issued for this agent in the console. Leave live validation enabled for model routing |
 | `... is still present; remove it` | A key listed under `Remove these keys if present` is still in the file | Delete it |
 | `the pending setup for ... expired and Preloop removed its key` | The setup waited longer than the expiry time | Run `preloop agents onboard` again and apply the new block. The old key no longer works |
 | `no manual setup is recorded on this machine for ...` | `~/.preloop` is not writable or not persistent, so the resume state is gone | Pass `--resume-token <token>`, or re-run `preloop agents onboard "<agent>"` |

@@ -434,14 +434,26 @@ func diagnoseJSONSyntax(data []byte) *jsonSyntaxProblem {
 // expectedValueMatches compares one expected leaf with what the file holds.
 // A placeholder stands for the agent key, checked by hash so the key itself
 // is never stored.
-func expectedValueMatches(expected, actual interface{}, tokenSHA256 string) bool {
+func expectedValueMatches(expected, actual interface{}, tokenSHA256, keyTail string) bool {
+	if items, ok := expected.([]interface{}); ok {
+		values, ok := actual.([]interface{})
+		if !ok || len(items) != len(values) {
+			return false
+		}
+		for i, item := range items {
+			if !expectedValueMatches(item, values[i], tokenSHA256, keyTail) {
+				return false
+			}
+		}
+		return true
+	}
 	expectedText, isText := expected.(string)
 	if !isText {
 		return configValuesEqual(expected, actual)
 	}
 	if strings.Contains(expectedText, manualAgentKeyTailPlaceholder) {
-		_, ok := actual.(string)
-		return ok
+		value, ok := actual.(string)
+		return ok && keyTail != "" && value == strings.ReplaceAll(expectedText, manualAgentKeyTailPlaceholder, keyTail)
 	}
 	if !strings.Contains(expectedText, manualAgentKeyPlaceholder) {
 		return configValuesEqual(expected, actual)
@@ -464,7 +476,7 @@ func expectedValueMatches(expected, actual interface{}, tokenSHA256 string) bool
 
 // missingMergeKeys lists what of expected is absent from or different in
 // actual, as dotted paths with a reason.
-func missingMergeKeys(expected, actual map[string]interface{}, prefix string, tokenSHA256 string) []string {
+func missingMergeKeys(expected, actual map[string]interface{}, prefix, tokenSHA256, keyTail string) []string {
 	var problems []string
 	keys := make([]string, 0, len(expected))
 	for key := range expected {
@@ -485,10 +497,10 @@ func missingMergeKeys(expected, actual map[string]interface{}, prefix string, to
 				problems = append(problems, path+" should be an object")
 				continue
 			}
-			problems = append(problems, missingMergeKeys(wantMap, haveMap, path+".", tokenSHA256)...)
+			problems = append(problems, missingMergeKeys(wantMap, haveMap, path+".", tokenSHA256, keyTail)...)
 			continue
 		}
-		if expectedValueMatches(want, have, tokenSHA256) {
+		if expectedValueMatches(want, have, tokenSHA256, keyTail) {
 			continue
 		}
 		if text, ok := want.(string); ok && strings.Contains(text, manualAgentKeyPlaceholder) {
@@ -533,12 +545,28 @@ func lookupDottedPath(doc map[string]interface{}, path string) bool {
 
 // manualFileCheck is the result of reading one file back.
 type manualFileCheck struct {
+	Document map[string]interface{}
 	File     manualFileChange
 	Path     string
 	Problems []string
 }
 
 func (c manualFileCheck) ok() bool { return len(c.Problems) == 0 }
+
+// sideFileBearer reads only credential fields populated by this handoff.
+func (file manualFileChange) sideFileBearer(doc map[string]interface{}) string {
+	switch file.Role {
+	case writeRoleUserConfig:
+		if manualMCPBearer(file.Merge) == manualAgentKeyPlaceholder {
+			return manualMCPBearer(doc)
+		}
+	case writeRoleControl:
+		if lookupString(file.Merge, "control", "bearer_token") == manualAgentKeyPlaceholder {
+			return lookupString(doc, "control", "bearer_token")
+		}
+	}
+	return ""
+}
 
 // verifyManualFile reads path and reports exactly what of file's change is
 // not in place. path may differ from file.Path when the user points resume
@@ -572,7 +600,9 @@ func verifyManualFile(file manualFileChange, path string, tokenSHA256 string) ma
 			return check
 		}
 	}
-	check.Problems = append(check.Problems, missingMergeKeys(file.Merge, doc, "", tokenSHA256)...)
+	check.Document = doc
+	keyTail := claudeAPIKeyFingerprint(file.sideFileBearer(doc))
+	check.Problems = append(check.Problems, missingMergeKeys(file.Merge, doc, "", tokenSHA256, keyTail)...)
 	for _, removed := range file.Remove {
 		if lookupDottedPath(doc, removed) {
 			check.Problems = append(check.Problems, removed+" is still present; remove it")
@@ -590,7 +620,7 @@ func verifyManualEnv(env map[string]string, getenv func(string) string, tokenSHA
 			problems = append(problems, key+" is not set in this environment")
 			continue
 		}
-		if !expectedValueMatches(env[key], actual, tokenSHA256) {
+		if !expectedValueMatches(env[key], actual, tokenSHA256, "") {
 			if strings.Contains(env[key], manualAgentKeyPlaceholder) {
 				problems = append(problems, key+" does not hold the key issued for this setup")
 			} else {

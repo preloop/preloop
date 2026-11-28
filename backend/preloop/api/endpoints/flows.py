@@ -407,6 +407,58 @@ def _reject_invalid_platform_review(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+def _reject_unrunnable_read_only_review(
+    *,
+    git_clone_config: Any,
+    agent_type: Any,
+    agent_config: Any,
+    runner_pool: Any,
+    allowed_mcp_servers: Any = None,
+    allowed_mcp_tools: Any = None,
+) -> None:
+    """Refuse a read-only review whose executor could never run it.
+
+    Admission checks the executor on every execution; saving a flow that
+    would always fail there only moves the error to the first run. The
+    repository shape is checked by the flow schema itself.
+
+    Raises:
+        HTTPException: 422 with the executor restriction.
+    """
+    from types import SimpleNamespace
+
+    from preloop.services.read_only_review import (
+        read_only_review,
+        validate_read_only_executor,
+    )
+
+    config = (
+        git_clone_config.model_dump()
+        if hasattr(git_clone_config, "model_dump")
+        else git_clone_config
+    )
+    if not isinstance(config, dict) or not read_only_review(config):
+        return
+    raw_agent_config = (
+        agent_config.model_dump()
+        if hasattr(agent_config, "model_dump")
+        else agent_config
+    )
+    try:
+        validate_read_only_executor(
+            SimpleNamespace(
+                git_clone_config=config,
+                agent_type=getattr(agent_type, "value", agent_type),
+                agent_config=raw_agent_config,
+                runner_pool=runner_pool,
+            )
+        )
+        if allowed_mcp_servers or allowed_mcp_tools:
+            raise ValueError("Read-only review requires no MCP tools or servers")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 def _reject_unusable_runner_pin(
     agent_config: Any, *, db: Optional[Session], current_user: Any
 ) -> None:
@@ -546,6 +598,14 @@ def create_flow(
         trigger_event_types=flow_in.trigger_event_types,
         trigger_project_ids=flow_in.trigger_project_ids,
         webhook_config=flow_in.webhook_config,
+    )
+    _reject_unrunnable_read_only_review(
+        git_clone_config=flow_in.git_clone_config,
+        agent_type=flow_in.agent_type,
+        agent_config=flow_in.agent_config,
+        runner_pool=flow_in.runner_pool,
+        allowed_mcp_servers=flow_in.allowed_mcp_servers,
+        allowed_mcp_tools=flow_in.allowed_mcp_tools,
     )
     _stamp_platform_review(flow_in.git_clone_config, None)
     _reject_host_exec_flow(
@@ -4354,48 +4414,13 @@ def rotate_flow_webhook_secret(
     return rotated
 
 
-@router.put(
-    "/flows/{flow_id}",
-    response_model=schemas.FlowResponse,
-    responses=CONDITIONAL_RESPONSES,
-)
-@require_permission("edit_flows")
-def update_flow(
-    *,
-    db: Session = Depends(get_db),
-    flow_id: uuid.UUID,
-    flow_in: schemas.FlowUpdate,
-    current_user: User = Depends(get_current_active_user),
-    if_match: Optional[str] = Header(
-        default=None, alias="If-Match", description=IF_MATCH_DESCRIPTION
-    ),
-    response: Response = None,  # type: ignore[assignment]
-):
-    """Update a flow.
+def prepare_flow_update(
+    *, db: Session, flow: models.Flow, flow_in: schemas.FlowUpdate, current_user: User
+) -> None:
+    """Validate and normalize an update against the caller's locked flow.
 
-    Top-level fields that are sent replace the stored value; fields that are
-    omitted are kept. A nested object that is sent (``agent_config``,
-    ``git_clone_config``, ``webhook_config``, ``result_schema``,
-    ``custom_commands``, ``schedule_config``, ``notifications``) replaces the
-    stored object whole, except that omitted webhook secrets are kept and the
-    run-limit fields merge into ``agent_config``.
-
-    With ``If-Match`` the update is conditional: it is applied only when the
-    flow is still at that revision, checked under the row lock, and refused
-    with 412 otherwise. The response's ``ETag`` is the new revision.
+    Only the input model is modified. Callers decide whether to persist it.
     """
-    ensure_permission_in_oss(db, current_user, "edit_flows")
-    condition = if_match_condition(if_match)
-    # Settings saves preserve omitted credentials from the current locked row,
-    # so a concurrent rotation cannot be undone by a stale ORM snapshot. The
-    # same lock makes the If-Match check and the write one atomic step.
-    flow = crud_flow.get(
-        db=db, id=flow_id, account_id=current_user.account_id, for_update=True
-    )
-    if not flow:
-        raise HTTPException(status_code=404, detail="Flow not found")
-    require_flow_revision(condition, flow)
-
     from preloop.services.flow_conversations import interactive_settings
 
     try:
@@ -4454,7 +4479,7 @@ def update_flow(
         existing_in_account = crud_flow.get_by_name_and_account(
             db, name=flow_in.name, account_id=current_user.account_id
         )
-        if existing_in_account and str(existing_in_account.id) != str(flow_id):
+        if existing_in_account and str(existing_in_account.id) != str(flow.id):
             raise HTTPException(
                 status_code=400,
                 detail=f"A flow with name '{flow_in.name}' already exists in your account",
@@ -4600,6 +4625,20 @@ def update_flow(
         ),
     )
 
+    def _after_save(field: str) -> Any:
+        if field in flow_in.model_fields_set:
+            return getattr(flow_in, field)
+        return getattr(flow, field)
+
+    _reject_unrunnable_read_only_review(
+        git_clone_config=_after_save("git_clone_config"),
+        agent_type=_after_save("agent_type"),
+        agent_config=_after_save("agent_config"),
+        runner_pool=_after_save("runner_pool"),
+        allowed_mcp_servers=_after_save("allowed_mcp_servers"),
+        allowed_mcp_tools=_after_save("allowed_mcp_tools"),
+    )
+
     _stamp_platform_review(flow_in.git_clone_config, flow.git_clone_config)
 
     if flow_in.agent_config is not None:
@@ -4676,6 +4715,51 @@ def update_flow(
         ),
     )
 
+
+@router.put(
+    "/flows/{flow_id}",
+    response_model=schemas.FlowResponse,
+    responses=CONDITIONAL_RESPONSES,
+)
+@require_permission("edit_flows")
+def update_flow(
+    *,
+    db: Session = Depends(get_db),
+    flow_id: uuid.UUID,
+    flow_in: schemas.FlowUpdate,
+    current_user: User = Depends(get_current_active_user),
+    if_match: Optional[str] = Header(
+        default=None, alias="If-Match", description=IF_MATCH_DESCRIPTION
+    ),
+    response: Response = None,  # type: ignore[assignment]
+):
+    """Update a flow.
+
+    Top-level fields that are sent replace the stored value; fields that are
+    omitted are kept. A nested object that is sent (``agent_config``,
+    ``git_clone_config``, ``webhook_config``, ``result_schema``,
+    ``custom_commands``, ``schedule_config``, ``notifications``) replaces the
+    stored object whole, except that omitted webhook secrets are kept and the
+    run-limit fields merge into ``agent_config``.
+
+    With ``If-Match`` the update is conditional: it is applied only when the
+    flow is still at that revision, checked under the row lock, and refused
+    with 412 otherwise. The response's ``ETag`` is the new revision.
+    """
+    ensure_permission_in_oss(db, current_user, "edit_flows")
+    condition = if_match_condition(if_match)
+    # Settings saves preserve omitted credentials from the current locked row,
+    # so a concurrent rotation cannot be undone by a stale ORM snapshot. The
+    # same lock makes the If-Match check and the write one atomic step.
+    flow = crud_flow.get(
+        db=db, id=flow_id, account_id=current_user.account_id, for_update=True
+    )
+    if not flow:
+        raise HTTPException(status_code=404, detail="Flow not found")
+    require_flow_revision(condition, flow)
+
+    prepare_flow_update(db=db, flow=flow, flow_in=flow_in, current_user=current_user)
+    existing_secret = (flow.webhook_config or {}).get("webhook_secret")
     old_enabled = flow.is_enabled
     from preloop.services.flow_result_schema import ResultSchemaError
 

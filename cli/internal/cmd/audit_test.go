@@ -464,3 +464,67 @@ func TestAuditVerifyReportsUnwalkedCheckpointsHonestly(t *testing.T) {
 		t.Fatalf("signature should still verify: %#v", checked)
 	}
 }
+
+func TestAuditVerifyBrokenWalkGivesNoIntegrityAssurance(t *testing.T) {
+	chain := newFakeChain(t, 6)
+	chain.entries[1].Payload["status"] = "failure"
+	chain.addCheckpoint(t, 5, chain.entries[4].RowHash)
+	pointCLIAt(t, chain.serve(t).URL)
+
+	out, err := runAudit(t)
+
+	if err == nil {
+		t.Fatalf("a broken chain exited zero:\n%s", out)
+	}
+	if strings.Contains(out, "were not reordered, removed or edited") {
+		t.Fatalf("a failed walk printed the integrity assurance: %q", out)
+	}
+	if strings.Contains(out, "Checkpoint at sequence 5: verified") {
+		t.Fatalf("an anchor past the break printed as verified: %q", out)
+	}
+	if !strings.Contains(out, "Checkpoint at sequence 5: signature valid, rows not checked") {
+		t.Fatalf("output = %q", out)
+	}
+	if !strings.Contains(out, "Rows past the break were not checked") {
+		t.Fatalf("output = %q", out)
+	}
+}
+
+func TestAuditVerifyCheckpointMismatchDoesNotClaimARowEdit(t *testing.T) {
+	chain := newFakeChain(t, 6)
+	chain.addCheckpoint(t, 5, "cc"+strings.Repeat("dd", 31))
+	pointCLIAt(t, chain.serve(t).URL)
+
+	out, err := runAudit(t)
+
+	if err == nil {
+		t.Fatalf("a contradicted checkpoint passed:\n%s", out)
+	}
+	if strings.Contains(out, "Rows past the break were not checked") ||
+		strings.Contains(out, "were not reordered, removed or edited") {
+		t.Fatalf("checkpoint-only failure worded as a walk break: %q", out)
+	}
+	if !strings.Contains(out, "checkpoint at sequence 5 could not be") {
+		t.Fatalf("output = %q", out)
+	}
+}
+
+func TestAuditVerifyUnwalkedCheckpointIsNotPrintedAsVerified(t *testing.T) {
+	chain := newFakeChain(t, 6)
+	chain.addCheckpoint(t, 6, chain.entries[5].RowHash)
+	pointCLIAt(t, chain.serve(t).URL)
+	auditEndSeq = 3
+
+	out, err := runAudit(t)
+
+	if err != nil {
+		t.Fatalf("verify failed: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "Checkpoint at sequence 6: verified") {
+		t.Fatalf("an unwalked anchor printed as verified: %q", out)
+	}
+	if !strings.Contains(out, "signature valid, rows not checked") ||
+		!strings.Contains(out, "outside the walked range") {
+		t.Fatalf("output = %q", out)
+	}
+}

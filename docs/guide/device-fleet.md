@@ -108,9 +108,9 @@ Each rule has its own channels:
 - **Attention**: a finding on the Attention page. It does not send a message.
 - **Email** and **push**: sent to eligible owners and admins, honoring their
   notification preferences.
-- **Webhook**: the fleet provider's existing compatibility path uses the default
-  approval workflow's webhook. The `fleet.finding` catalogue filter does not
-  change that routing; see [outbound webhooks](webhooks.md).
+- **Webhook**: each open, resolve and recovery transition goes to every account
+  endpoint subscribed to `fleet.finding`, and to the default approval
+  workflow's webhook; see [outbound webhooks](webhooks.md).
 
 ## What this page can and cannot prove
 

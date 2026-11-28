@@ -67,6 +67,7 @@ import type {
   RuntimeSessionActivityItem,
   RuntimeSessionArtifactDescriptor,
   RuntimeSessionCacheSummary,
+  SubscriptionUsageSummary,
   RuntimeSessionRequestItem,
   RuntimeSessionSummary,
   SimilarSessionsResponse,
@@ -588,6 +589,14 @@ export class PreloopSessionObserver extends LitElement {
   // page (it covers the session, not the page), so the latest response wins.
   @state()
   private requestCacheSummary: Record<string, RuntimeSessionCacheSummary> = {};
+
+  // Subscription workload and its API-equivalent estimate per session id,
+  // whole-session like the cache rollup (#2592).
+  @state()
+  private requestSubscriptionUsage: Record<
+    string,
+    SubscriptionUsageSummary | null
+  > = {};
 
   @state()
   private budgetDialogSession: ObservedSession | null = null;
@@ -2004,6 +2013,10 @@ export class PreloopSessionObserver extends LitElement {
       this.requestFailedCount = {
         ...this.requestFailedCount,
         [sessionId]: response.failed_count,
+      };
+      this.requestSubscriptionUsage = {
+        ...this.requestSubscriptionUsage,
+        [sessionId]: response.subscription_usage ?? null,
       };
       if (response.cache_summary) {
         this.requestCacheSummary = {
@@ -3752,6 +3765,11 @@ export class PreloopSessionObserver extends LitElement {
                   .cacheSummary=${
                     this.activeSessionId
                       ? this.requestCacheSummary[this.activeSessionId]
+                      : undefined
+                  }
+                  .subscriptionUsage=${
+                    this.activeSessionId
+                      ? this.requestSubscriptionUsage[this.activeSessionId]
                       : undefined
                   }
                   .loading=${

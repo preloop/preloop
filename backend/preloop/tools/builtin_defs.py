@@ -1221,6 +1221,15 @@ BUILTIN_TOOL_ANNOTATIONS: Dict[str, Dict[str, Any]] = {
     "run_flow": _annotations(
         "Run flow", read_only=False, open_world=True, destructive=True
     ),
+    "inspect_flows": _annotations(
+        "Inspect project flows", read_only=True, open_world=False
+    ),
+    "propose_flow_change": _annotations(
+        "Propose flow change", read_only=False, open_world=False, idempotent=True
+    ),
+    "get_flow_change_proposal": _annotations(
+        "Read flow change proposal", read_only=True, open_world=False
+    ),
     "get_execution": _annotations(
         "Get flow execution", read_only=True, open_world=False
     ),

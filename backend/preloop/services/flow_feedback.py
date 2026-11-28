@@ -76,7 +76,61 @@ def _repository_identity(provider: Any, repository: dict[str, Any]) -> Any:
     return repository.get("id")
 
 
+def payload_repository(provider: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    """The webhook object that carries the provider repository identity.
+
+    GitLab issue, note and merge request hooks send both ``project`` (with the
+    numeric id) and a legacy ``repository`` object (name and URLs, no id).
+    Preferring ``repository`` there loses the identity threads are keyed on,
+    so GitLab reads ``project`` first.
+
+    Args:
+        provider: The code host name (``github``, ``gitlab``, ``bitbucket``).
+        payload: The webhook or trigger payload.
+
+    Returns:
+        The repository-shaped object, or an empty dict when none is present.
+    """
+    repository = payload.get("repository")
+    project = payload.get("project")
+    if provider == "gitlab" and isinstance(project, dict) and project.get("id"):
+        return project
+    if isinstance(repository, dict) and repository:
+        return repository
+    return project if isinstance(project, dict) else {}
+
+
 CODE_HOSTS = frozenset({"github", "gitlab", "bitbucket"})
+
+
+def _synced_repository(
+    db: Session, flow: Any, details: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Repository identity from the trigger's synced project, if any.
+
+    Manual and dispatched runs on a code host can carry a payload without a
+    repository id; the synced project stores the provider id as identifier.
+    """
+    from preloop.models.crud import crud_project
+
+    project_id = details.get("project_id")
+    if not project_id or not flow.account_id:
+        return None
+    try:
+        project = crud_project.get(
+            db, id=str(project_id), account_id=str(flow.account_id)
+        )
+    except Exception:  # noqa: BLE001 - a malformed id only means "no identity"
+        logger.debug("Synced project lookup failed for feedback binding")
+        return None
+    identifier = getattr(project, "identifier", None) if project else None
+    if not identifier:
+        return None
+    return {
+        "id": str(identifier),
+        "uuid": str(identifier),
+        "full_name": str(getattr(project, "slug", None) or ""),
+    }
 
 
 def bound_repository(
@@ -165,9 +219,9 @@ def register_thread(
         # permission to spend repair budgets on its historical PR backlog.
         return None
     payload = details.get("payload") or {}
-    repository = payload.get("repository") or payload.get("project") or {}
     tracker_id = details.get("tracker_id") or flow.trigger_event_source
     provider = details.get("source")
+    repository = payload_repository(provider, payload)
     trigger_source, trigger_tracker_id = provider, tracker_id
     keyed_repository = repository
     if provider not in CODE_HOSTS:
@@ -179,6 +233,10 @@ def register_thread(
             # against the Jira project and drop the binding.
             provider, tracker_id, keyed_repository = bound
     repository_id = _repository_identity(provider, keyed_repository)
+    if not repository_id and provider in CODE_HOSTS and provider != "bitbucket":
+        synced = _synced_repository(db, flow, details)
+        if synced is not None:
+            repository_id = synced["id"]
     parsed = urlparse(pr_url)
     parts = parsed.path.rstrip("/").split("/")
     try:
@@ -410,8 +468,8 @@ def ingest_feedback(db: Session, event: dict[str, Any]) -> bool:
     if event.get("type") not in FEEDBACK_TYPES:
         return False
     payload = event.get("payload") or {}
-    repo = payload.get("repository") or payload.get("project") or {}
     provider = str(event.get("source") or "").lower()
+    repo = payload_repository(provider, payload)
     repo_id = _repository_identity(provider, repo)
     if not repo_id or not event.get("account_id") or not event.get("tracker_id"):
         return False
