@@ -105,7 +105,9 @@ class FakeReader:
         self, repository: str, *, since: datetime, branches: Sequence[str], limit: int
     ) -> ReadPage:
         items = tuple(r for r in self.runs if r.created_at and r.created_at >= since)
-        return await self._answer(ReadPage(items=items), kind="runs", since=since)
+        return await self._answer(
+            ReadPage(items=items), kind="runs", since=since, limit=limit
+        )
 
     async def list_issues(
         self,
@@ -342,6 +344,16 @@ class TestOpenPullRequests:
         ]
         assert numbers == [2]
 
+    async def test_a_claim_of_unknown_age_is_stale_when_ages_count(
+        self, facts
+    ) -> None:
+        claimed = pr(1, labels=("in-progress",), label_applied_at={})
+        reader = FakeReader(prs=[claimed])
+        aged = {"exclude": {"claim_labels": ["in-progress"], "claim_max_age_hours": 6}}
+        assert (await run(_prs_check(**aged), reader)).action == "run"
+        forever = {"exclude": {"claim_labels": ["in-progress"]}}
+        assert (await run(_prs_check(**forever), reader)).action == "skip"
+
     async def test_needs_any_idle_hours_authors_labels_drafts(self, facts) -> None:
         prs = [
             pr(1),  # failing checks, idle 5h: kept
@@ -453,6 +465,27 @@ class TestFailedCiRuns:
             reader,
         )
         assert outcome.action == "run"
+
+    async def test_a_match_behind_other_workflows_is_found(self, facts) -> None:
+        reader = FakeReader(
+            runs=[failed_run(1, 0.2, "Docs"), failed_run(2, 0.5, "CI")]
+        )
+        outcome = await run(
+            {
+                "checks": [
+                    {
+                        "id": "n",
+                        "type": "failed_ci_runs",
+                        "workflows": ["CI"],
+                        "max_items": 1,
+                    }
+                ]
+            },
+            reader,
+        )
+        assert outcome.action == "run"
+        assert [i["id"] for i in outcome.document["checks"]["n"]["items"]] == [2]
+        assert reader.calls[0]["limit"] == 100
 
     async def test_workflow_filter(self, facts) -> None:
         reader = FakeReader(runs=[failed_run(1, 0.5, "Docs")])

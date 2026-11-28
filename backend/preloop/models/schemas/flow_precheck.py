@@ -89,8 +89,9 @@ class PullRequestExclusions(_Strict):
     claim_max_age_hours: Optional[Hours] = Field(
         default=None,
         description=(
-            "A claim label applied longer ago than this is stale and ignored. "
-            "Unset: a claim label never goes stale."
+            "A claim label applied longer ago than this is stale and ignored, "
+            "as is one whose application is not among the pull request's "
+            "last 100 label events. Unset: a claim label never goes stale."
         ),
     )
 

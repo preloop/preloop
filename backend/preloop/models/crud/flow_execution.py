@@ -2297,7 +2297,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
     STATUS_SKIPPED = "SKIPPED"
 
     def last_non_skipped(self, db: Session, *, flow_id: Any) -> Optional[FlowExecution]:
-        """Newest execution of the flow that a pre-check did not skip.
+        """Newest execution of the flow that a pre-check neither skipped nor failed.
 
         The cursor ``since: last_run`` and ``max_skip_hours`` read: a skip
         must not move it, or work that arrived during a quiet period would
@@ -2309,8 +2309,11 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
 
         Returns:
             The execution, or None when every execution so far was skipped
-            (or there is none).
+            or failed in its pre-check (or there is none).
         """
+        decision = FlowExecution.trigger_event_details["payload"]["precheck"][
+            "decision"
+        ].astext
         return (
             db.query(FlowExecution)
             .options(
@@ -2324,6 +2327,13 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             .filter(
                 FlowExecution.flow_id == flow_id,
                 FlowExecution.status != self.STATUS_SKIPPED,
+                # A pre-check failure read nothing from the tracker either:
+                # it must not move the cursor, or the window it failed to read
+                # would be skipped by the next successful evaluation.
+                or_(
+                    decision.is_(None),
+                    decision != "fail",
+                ),
             )
             .order_by(FlowExecution.start_time.desc())
             .first()
@@ -3584,7 +3594,11 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             )
             # Skipped ticks in the window. Consecutive skips fold into one
             # row carrying skip_count, so the count is the sum of those, for
-            # the rows whose last skip falls in the window.
+            # the rows whose last skip falls in the window. A row is counted
+            # whole: the fold keeps a count, not each tick's time, so a row
+            # that started before the window also brings its earlier skips.
+            # Documented as such; an exact count would need a row per tick,
+            # which is what folding exists to avoid.
             skip_count = cast(
                 self.model.trigger_event_details["payload"]["precheck"][
                     "skip_count"

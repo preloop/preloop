@@ -12,6 +12,7 @@ from typing import Any, Dict, List
 from preloop.models.schemas.flow_precheck import FailedCiRunsCheck
 from preloop.services.flow_precheck import CheckContext, CheckResult, iso
 from preloop.services.flow_precheck_checks.common import folded, plural, result
+from preloop.services.flow_precheck_reader import FAILED_RUNS_SCAN
 
 
 def since_instant(check: FailedCiRunsCheck, ctx: CheckContext) -> datetime:
@@ -38,7 +39,9 @@ async def evaluate_failed_ci_runs(
             repo.slug,
             since=start,
             branches=check.branches,
-            limit=check.max_items,
+            # Scan a full page: the workflow filter below runs after the
+            # read, and max_items caps only what is passed to the run.
+            limit=FAILED_RUNS_SCAN,
         )
         more_upstream = more_upstream or page.truncated
         for run in page.items:

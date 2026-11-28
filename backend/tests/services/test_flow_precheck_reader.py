@@ -416,3 +416,48 @@ async def test_issues_skip_pull_requests_and_unknown_milestones() -> None:
         REPO, labels_all=["ready"], milestone=None, unassigned=True
     )
     assert [issue.number for issue in page.items] == [1]
+
+
+async def test_issues_are_read_past_the_first_page() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params["page"])
+        if page == 1:
+            rows = [
+                {"number": n, "title": "t", "labels": [{"name": "P3"}]}
+                for n in range(1, 101)
+            ]
+        else:
+            rows = [{"number": 101, "title": "t", "labels": [{"name": "P0"}]}]
+        return httpx.Response(200, json=rows)
+
+    recorder = Recorder(handler)
+    page = await _reader(recorder).list_issues(
+        REPO, labels_all=[], milestone=None, unassigned=False
+    )
+    assert len(page.items) == 101
+    assert page.items[-1].labels == ("P0",)
+    assert not page.truncated
+    assert len(recorder.requests) == 2
+
+
+async def test_issue_pages_are_capped() -> None:
+    rows = [{"number": n, "title": "t", "labels": []} for n in range(100)]
+    recorder = Recorder(lambda request: httpx.Response(200, json=rows))
+    page = await _reader(recorder).list_issues(
+        REPO, labels_all=[], milestone=None, unassigned=False
+    )
+    assert page.truncated
+    assert len(recorder.requests) == reader_module.MAX_ISSUE_PAGES
+
+
+async def test_failed_runs_scan_a_full_page() -> None:
+    recorder = Recorder(
+        lambda request: httpx.Response(200, json={"total_count": 0, "workflow_runs": []})
+    )
+    await _reader(recorder).list_failed_ci_runs(
+        REPO,
+        since=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        branches=[],
+        limit=reader_module.FAILED_RUNS_SCAN,
+    )
+    assert recorder.requests[0].url.params["per_page"] == "100"

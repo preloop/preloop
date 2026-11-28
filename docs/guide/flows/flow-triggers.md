@@ -295,7 +295,9 @@ a day, not 288. A skip sends no webhook, comment, commit status or alert,
 does not move `last_successful_scheduled_at`, and neither extends nor resets
 a failure streak. `GET /api/v1/flows/summary?include_stats=true&stats_since=...`
 reports `skipped_count` and `last_skipped_at` beside the window's `runs`,
-which no longer count skips.
+which no longer count skips. `skipped_count` sums the folded rows whose last
+skip falls in the window, each counted whole: a row that started folding
+before the window also contributes the skips it recorded before it.
 
 `POST /api/v1/flows/{id}/precheck/evaluate` is a dry run: it returns the
 decision without creating an execution. Send `{"precheck": {...}}` to try a

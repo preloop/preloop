@@ -64,9 +64,11 @@ def _claimed(pr: PullRequestState, check: OpenPullRequestsCheck, ctx: Any) -> bo
         if max_age is None:
             return True
         when = applied.get(label.casefold())
-        # A label whose application is not in the recent timeline is
-        # treated as fresh: leaving a pull request alone is the safe side.
-        if when is None or ctx.now - when < timedelta(hours=max_age):
+        # The reader returns the last 100 label events. A claim label whose
+        # application is older than all of them is treated as stale, as the
+        # schema documents: an unknown age must not hold a pull request
+        # forever.
+        if when is not None and ctx.now - when < timedelta(hours=max_age):
             return True
     return False
 

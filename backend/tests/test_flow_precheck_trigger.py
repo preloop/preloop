@@ -323,6 +323,38 @@ class TestScheduledTick:
         assert [call["since"] for call in fake.calls] == [expected, expected]
 
 
+    async def test_a_precheck_failure_does_not_move_the_cursor(
+        self, db_session, account, project, reader, downstream
+    ) -> None:
+        flow = make_flow(
+            db_session,
+            account,
+            project,
+            {"checks": [{"id": "new_failures", "type": "failed_ci_runs"}]},
+        )
+        crud_flow_execution.create(
+            db_session,
+            obj_in=FlowExecutionCreate(
+                flow_id=flow.id,
+                status="SUCCEEDED",
+                start_time=datetime(2026, 1, 1, 6, tzinfo=timezone.utc),
+                trigger_event_details={
+                    "source": "schedule",
+                    "payload": {"scheduled_at": "2026-01-01T06:00:00+00:00"},
+                },
+            ),
+        )
+        db_session.commit()
+        service = FlowTriggerService(db_session)
+        reader["r"] = FakeReader(error=PrecheckError("server_error", "502"))
+        assert await service.run_scheduled_tick(flow.id) == "precheck_failed"
+
+        fake = FakeReader()
+        reader["r"] = fake
+        await service.run_scheduled_tick(flow.id)
+        assert fake.calls[0]["since"] == datetime(2026, 1, 1, 6, tzinfo=timezone.utc)
+
+
 class TestStatusNeutrality:
     async def test_a_skip_is_neutral_and_not_a_success(
         self, db_session, account, project, reader, downstream

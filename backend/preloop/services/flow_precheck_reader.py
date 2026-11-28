@@ -46,6 +46,10 @@ DEFAULT_RATE_LIMIT_FLOOR = 200
 MAX_REQUEST_SECONDS = 10.0
 #: Pages of open pull requests read per repository (50 each).
 MAX_PULL_REQUEST_PAGES = 4
+#: Pages of open issues read per repository (100 each).
+MAX_ISSUE_PAGES = 5
+#: Failed workflow runs scanned per branch, before the check's own filters.
+FAILED_RUNS_SCAN = 100
 
 #: Causes a pre-check error can name. Stable strings: they appear in the
 #: execution's error message and in the decision document.
@@ -323,7 +327,7 @@ query($owner: String!, $name: String!, $cursor: String) {
         labels(first: 20) { nodes { name } }
         reviewThreads(first: 100) { nodes { isResolved } }
         commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
-        timelineItems(last: 20, itemTypes: [LABELED_EVENT]) {
+        timelineItems(last: 100, itemTypes: [LABELED_EVENT]) {
           nodes { ... on LabeledEvent { createdAt label { name } } }
         }
       }
@@ -790,18 +794,28 @@ class GitHubPrecheckReader:
                 if number is None:
                     return ReadPage(items=())
                 params["milestone"] = number
-            body = await self._get(
-                f"/repos/{repository}/issues",
-                params,
-                what=f"open issues of {repository}",
-            )
-            rows = body if isinstance(body, list) else []
-            items = [
-                _issue_from_row(repository, row)
-                for row in rows
-                if isinstance(row, dict) and "pull_request" not in row
-            ]
-            return ReadPage(items=tuple(items), truncated=len(rows) >= 100)
+            items: List[IssueState] = []
+            truncated = False
+            # Labels other than ``all`` are filtered by the check, so a
+            # matching issue can sit past the first page: read up to
+            # MAX_ISSUE_PAGES pages, each charged to the request budget.
+            for page in range(1, MAX_ISSUE_PAGES + 1):
+                body = await self._get(
+                    f"/repos/{repository}/issues",
+                    {**params, "page": page},
+                    what=f"open issues of {repository}",
+                )
+                rows = body if isinstance(body, list) else []
+                items.extend(
+                    _issue_from_row(repository, row)
+                    for row in rows
+                    if isinstance(row, dict) and "pull_request" not in row
+                )
+                if len(rows) < 100:
+                    break
+                if page == MAX_ISSUE_PAGES:
+                    truncated = True
+            return ReadPage(items=tuple(items), truncated=truncated)
 
         issues: ReadPage = await self._cached(
             self._cache_key(
