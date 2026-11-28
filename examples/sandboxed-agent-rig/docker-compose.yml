@@ -16,6 +16,9 @@ x-agent: &agent
     mock-anthropic:
       condition: service_healthy
   networks: [rig]
+  # The CLI's live model lookup must not reach the real provider.
+  extra_hosts:
+    - "api.anthropic.com:127.0.0.1"
 
 x-agent-env: &agent-env
   PRELOOP_URL: http://preloop:8000
