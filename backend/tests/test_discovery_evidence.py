@@ -638,3 +638,39 @@ def test_machine_evidence_is_recorded_once_with_legacy_service(
         evidence = observations.record.call_args.kwargs["evidence"]
         assert evidence["applications"][0]["config_scope"] == "managed_config"
         legacy_service.record.assert_not_called()
+
+
+@pytest.mark.parametrize("has_legacy_writer", [False, True])
+def test_future_core_report_is_rejected_before_recording(
+    has_legacy_writer: bool,
+) -> None:
+    """A future observation must never become the newest inventory for a device."""
+    from preloop.api.endpoints import agent_discovery
+
+    future = datetime.now(UTC) + timedelta(minutes=10)
+    payload = DiscoveryReportRequest.model_validate(
+        {
+            "workstation_fingerprint": "a" * 64,
+            "evidence": envelope(schema_version=4, started_at=future, ended_at=future),
+        }
+    )
+    with (
+        patch.object(agent_discovery, "get_plugin_manager") as manager,
+        patch.object(agent_discovery, "crud_discovery_observation") as observations,
+        patch.object(agent_discovery, "crud_discovered_extension"),
+        patch.object(agent_discovery, "crud_discovered_agent_candidate"),
+        patch.object(agent_discovery, "evaluate_fleet_findings"),
+    ):
+        manager.return_value.get_service.return_value = (
+            MagicMock() if has_legacy_writer else None
+        )
+        with pytest.raises(HTTPException) as exc:
+            agent_discovery.record_discovery_report(
+                MagicMock(),
+                payload,
+                SimpleNamespace(id=uuid4()),
+                SimpleNamespace(id=uuid4()),
+            )
+        assert exc.value.status_code == 422
+        assert exc.value.detail == "Collection window is in the future"
+        observations.record.assert_not_called()

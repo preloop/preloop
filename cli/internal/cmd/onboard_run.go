@@ -774,7 +774,7 @@ func (r *onboardRun) finish(plan onboardPlan, outcomes []agentOnboardingOutcome,
 	}
 	if state := r.runnerState(); applied > 0 && (state == capabilityStateOn || state == capabilityStateLocked) {
 		if err := r.setupRunner(); err != nil {
-			r.emit(stepEvent{Agent: machineStepName, Step: "runner", Status: stepStatusFailed, Detail: "runner not installed: " + firstErrorLine(err)})
+			r.emit(stepEvent{Agent: machineStepName, Step: "runner", Status: stepStatusFailed, Detail: "runner not ready: " + firstErrorLine(err)})
 		} else {
 			r.emit(stepEvent{Agent: machineStepName, Step: "runner", Status: stepStatusOK, Detail: "runner set up"})
 		}
