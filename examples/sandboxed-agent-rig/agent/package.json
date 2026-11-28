@@ -1,0 +1,8 @@
+{
+  "name": "preloop-sandboxed-agent-rig",
+  "private": true,
+  "description": "Hash-pinned Claude Code for the sandboxed agent rig image.",
+  "dependencies": {
+    "@anthropic-ai/claude-code": "2.1.332"
+  }
+}

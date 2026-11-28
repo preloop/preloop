@@ -67,8 +67,9 @@ registry, so that variant needs network access to it.
 ## What is real and what is mocked
 
 Real: the Preloop API, gateway and database from this checkout; the `preloop`
-CLI built from this checkout; Claude Code from npm; Docker's read-only bind
-mounts, uid mismatch and read-only root filesystem.
+CLI built from this checkout; Claude Code pinned by the lockfile beside the
+agent Dockerfile; Docker's read-only bind mounts, uid mismatch and read-only
+root filesystem.
 
 Mocked: the model provider. `mock/mock_anthropic.py` answers the Messages API
 (JSON and server-sent events) and rejects any credential containing the word
