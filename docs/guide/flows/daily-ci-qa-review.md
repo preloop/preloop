@@ -127,3 +127,84 @@ with a dedicated minimal-scope token (contents read/write, and actions
 read if the flow reads CI) when you do.
 A run whose agent writes `result.json` with `"status": "failure"` ends
 FAILED with the agent's summary as the error.
+
+## Deterministic CI collection
+
+Reading CI through the API turn by turn costs tokens and time, and the agent
+cannot easily see failing test ids. The repository ships
+`scripts/ci_health_collect.py` (standard library only) for the flow to run
+first. It reads CI and writes one compact JSON file for the agent:
+
+<!-- example: fragment -->
+```bash
+export GH_TOKEN="$PRELOOP_GIT_TOKEN_1"
+python3 scripts/ci_health_collect.py collect \
+  --github-repo owner/name \
+  --window-hours 24 \
+  --previous previous/result.json \
+  --out evidence/ci-health.json
+```
+
+- **Reads** completed GitHub Actions runs since the previous run's window
+  end, with a one-hour overlap so runs that were in progress are not
+  missed. Run ids already seen are skipped. Requests are sequential and
+  GET only. The collector stops, and marks the data partial, when
+  `X-RateLimit-Remaining` falls below `--min-remaining`, on `Retry-After`
+  or HTTP 429, on a refused token, or at `--max-calls`. Jobs and logs are
+  immutable, so they are cached under `--cache-dir`.
+- **Aggregates** per workflow and per job: success rate, reruns, p50/p95
+  queue wait and duration, runner minutes by OS, the slowest jobs, and
+  shard imbalance. Imbalance is the slowest shard over the mean shard, per
+  run, for job names such as `backend (2/4)`.
+- **Extracts failure signatures** from the logs of failed jobs, up to
+  `--max-logs`. It recognizes the pytest short summary, `go test`, vitest
+  and jest output, and JUnit XML (`--junit report.xml`). A job with no
+  recognized test failure is keyed by its job and first error annotation.
+  Each signature carries its test id, a normalized error class, the jobs,
+  commits and run links, and whether the same job also passed on the same
+  commit.
+- **GitLab CI** (optional, read-only): `--gitlab-project group/name`,
+  `--gitlab-api https://<host>/api/v4` and a token in `--gitlab-token-env`
+  (default `GITLAB_TOKEN`). Pipelines, jobs, retries and traces are
+  normalized to the same aggregates and signatures. Without a token,
+  GitLab sources are skipped.
+
+### Flake ledger and value summary
+
+The collector keeps its state under `ci_health_state` in the run's
+`result.json`. The next run receives that file as `previous/result.json`
+(schedule payload `previous_result_execution_id: last`), so the state
+persists with no extra storage. It is bounded to stay well inside the
+256 KiB previous-result limit. It holds:
+
+- `ledger`: one entry per signature, with `first_seen`, `last_seen`,
+  `failures`, `windows_seen`, `flaky_evidence` (failed and passed on the
+  same commit), recent `jobs`, `shas` and `runs`, and `passes_since_seen`.
+  The agent owns `status` (`new`, `open`, `tracked`, `resolved`), `issue`,
+  `pr` and `note`. A resolved signature that fails again becomes
+  `regressed`.
+- `trend`: one point per window (success rate, queue p95, runner minutes,
+  failures, slowest job).
+- `history`: one entry per run (pull request URL, change kind, tokens,
+  cost, estimated runner minutes saved per week, early stop).
+
+Once a week the output gains `value_summary`: runs and early stops, PRs
+opened and merged (states read from the forge), failures fixed, the runner
+minutes saved per week claimed by merged changes, tokens and cost, and
+cost per merged PR. Tokens and cost are only as complete as the runs that
+recorded them.
+
+The output also has `early_stop` and `changed_reasons`. When no job failed,
+no signature is new or regressed, no open signature went quiet and no
+summary is due, the agent can write a short report and exit.
+
+The agent ends by merging the state and its history entry into its result.
+Its ledger edits, written under `ci_health_state.ledger` in `result.json`,
+take precedence:
+
+<!-- example: fragment -->
+```bash
+python3 scripts/ci_health_collect.py finalize \
+  --collector evidence/ci-health.json --result result.json \
+  --entry '{"pull_request": null, "change": "none", "early_stop": true}'
+```

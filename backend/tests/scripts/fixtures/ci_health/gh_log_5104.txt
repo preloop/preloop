@@ -1,0 +1,5 @@
+2026-11-28T03:04:00.0000000Z === RUN   TestRunnerHeartbeat
+2026-11-28T03:04:01.0000000Z --- FAIL: TestRunnerHeartbeat (1.02s)
+2026-11-28T03:04:01.0000000Z     heartbeat_test.go:41: expected 2 beats, got 1
+2026-11-28T03:04:02.0000000Z FAIL	example.com/cli/internal/runner	3.412s
+2026-11-28T03:04:02.0000000Z ##[error]Process completed with exit code 1.
