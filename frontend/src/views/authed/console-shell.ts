@@ -55,6 +55,7 @@ const NAV_PERMISSIONS: Record<string, string[]> = {
   '/console/flows': ['view_flows'],
   '/console/settings/runners': ['view_flows'],
   '/console/settings/device-fleet': ['view_device_fleet'],
+  '/console/settings/compliance': ['view_agents'],
   '/console/settings/webhooks': ['view_policies'],
   '/console/settings/inference-hooks': ['manage_policies'],
   '/console/tools': ['view_tools', 'view_policies'],
@@ -1506,6 +1507,10 @@ export class ConsoleShell extends LitElement {
                                   >`
                                 )
                               : nothing,
+                            this._renderNavLink(
+                              '/console/settings/compliance',
+                              html`<span class="nav-row">Compliance</span>`
+                            ),
                           ])}
                           ${this._renderNavGroup('Developers', [
                             this._ciSetupAvailable

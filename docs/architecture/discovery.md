@@ -305,7 +305,11 @@ bounded descriptions and invocation.
 `discovered_extension` stores presence per account, device, profile and agent;
 `extension_approval` stores account-wide decisions independently of
 inventory retention, and `extension_approval_pin` pins a decision to reviewed
-content hashes. CRUD owns reconciliation, approval joins and the single
+content hashes. Every change to either (approve, unapprove, bulk decision,
+pin, unpin) also appends an `extension_decision_event` row with the replaced
+state and the decider, and writes an `extension_approval` audit row after
+commit, so the current row can be overwritten without losing who decided
+what. CRUD owns reconciliation, approval joins and the single
 `effective_state` derivation (`content_changed` when a pinned approval meets an
 unpinned hash). Only complete
 app scans prove absence; older reports cannot replace newer inventory. The
