@@ -2,6 +2,7 @@
 
 import logging
 import os
+from functools import cache
 from typing import Any, Dict, List, Optional, Union
 from uuid import UUID
 
@@ -541,16 +542,12 @@ def get_accessible_projects(
         db, account_id=str(current_user.account_id), project_ids=project_ids
     )
 
-    # Apply TrackerScopeRule filtering
-    filtered_projects = []
-    for project in all_projects:
-        tracker = project.organization.tracker
-
-        # Use CRUD layer to get scope rules for this tracker
+    @cache
+    def tracker_scope(tracker_id: UUID) -> tuple[set[str], set[str], set[str]]:
+        """Read and index the shared scope once per tracker for this request."""
         rules = crud_tracker_scope_rule.get_by_tracker(
-            db, tracker_id=tracker.id, account_id=current_user.account_id
+            db, tracker_id=str(tracker_id), account_id=current_user.account_id
         )
-
         # Build rule sets (same logic as scanner/core.py)
         org_inclusions = {
             r.identifier
@@ -568,6 +565,14 @@ def get_accessible_projects(
             if r.scope_type == "PROJECT" and r.rule_type == "EXCLUDE"
         }
 
+        return org_inclusions, project_inclusions, project_exclusions
+
+    filtered_projects = []
+    for project in all_projects:
+        tracker = project.organization.tracker
+        org_inclusions, project_inclusions, project_exclusions = tracker_scope(
+            tracker.id
+        )
         # Check organization inclusion (required)
         if project.organization.identifier not in org_inclusions:
             logger.debug(
