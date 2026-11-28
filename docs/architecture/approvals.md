@@ -170,10 +170,15 @@ Gemini, OpenCode) continue the same session; others restart with the answer in
 own Claude Code, Codex, Copilot or Cursor CLI on the runner host) has no
 container checkpoint and the launch refuses `_resume` for it, so its park
 resumes as a fresh run of the task: the continuation omits `_resume`, carries
-the answer, records `_answers.restarted_fresh`, and its prompt says the
-checkout is fresh. The agent is told this when it parks (`resume_mode:
-fresh_run` on the `parked_for_human` result, and in the native hook's deny
-reason) instead of being promised its session back. Parking stops the runner
+the answer, records `_answers.restarted_fresh` and `_answers.resume_mode`, and
+its prompt says how the run restarts. The agent is told this when it parks,
+instead of being promised its session back: the `parked_for_human` result
+carries `resume_mode` (`native_session`, `fresh_checkout`,
+`authorized_directory` or `authorized_directory_dirty_ok`), and the native
+hook's deny reason uses the same wording. A host profile that works in an
+authorized directory reuses it as it is; without `allow_dirty` the agent is
+told to commit or stash before stopping, because the runner refuses a dirty
+directory (`workspace_dirty`). Parking stops the runner
 job, and the runner then reports `complete` with `STOPPED`; that report only
 releases the lease of a parked, resuming or about-to-park row
 (`crud_flow_execution.holds_park`) and never ends the run. No harness can
