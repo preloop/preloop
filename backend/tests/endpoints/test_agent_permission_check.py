@@ -1003,6 +1003,7 @@ def test_host_profile_hook_links_verified_execution_and_parks(client):
     assert response.status_code == 200, response.text
     assert response.json()["parked"] is True
     assert verified.call_args.kwargs["user_id"] == identity.user_id
+    assert verified.call_args.kwargs["managed_agent_id"] == identity.managed_agent_id
     assert decide.await_args.kwargs["flow_execution_id"] == execution_id
     assert decide.await_args.kwargs["flow_id"] == flow_id
 

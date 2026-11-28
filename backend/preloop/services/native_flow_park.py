@@ -110,54 +110,61 @@ def park_marker(execution_id: Any, tool_name: str, tool_input: Any) -> Dict[str,
 
 
 def parked_message(
-    request_id: Any, expires_at: Optional[datetime], *, restarts_fresh: bool = False
+    request_id: Any,
+    expires_at: Optional[datetime],
+    *,
+    resume_mode: str = "native_session",
 ) -> str:
     """Hook reason telling the agent the run is paused, not refused.
 
     Args:
         request_id: The approval request.
         expires_at: End of the decision window.
-        restarts_fresh: A host profile: approval starts a fresh run of the
-            task rather than restoring this session.
+        resume_mode: ``approval_park.RESUME_*``. Anything but
+            ``native_session`` (a host profile) means approval starts a
+            fresh run of the task rather than restoring this session.
 
     Returns:
         The deny reason.
     """
+    from preloop.services.approval_park import RESUME_NATIVE, fresh_run_note
+
     deadline = (
         f" (decision window closes {expires_at.isoformat()})" if expires_at else ""
     )
     approved = (
-        "If it is approved a fresh run of this task starts in a fresh checkout "
-        "and the command may run once there"
-        if restarts_fresh
+        "If it is approved a fresh run of this task starts and the command may "
+        "run once there"
+        if resume_mode != RESUME_NATIVE
         else "If it is approved the run resumes and the command may run once"
     )
+    note = f" {fresh_run_note(resume_mode)}" if resume_mode != RESUME_NATIVE else ""
     return (
         f"Preloop requires human approval for this command (approval request "
         f"{request_id}){deadline}. The command did not run and this execution is "
         f"being paused: stop now and do not retry it. {approved}; if it is "
         "refused or the window closes, the run ends and nothing more is "
-        "published."
+        f"published.{note}"
     )
 
 
-def restarts_fresh(execution_id: Any) -> bool:
-    """True when a park of this execution resumes as a fresh run.
+def resume_mode(execution_id: Any) -> str:
+    """How a park of this execution resumes (``approval_park.RESUME_*``).
 
     Args:
         execution_id: The parked execution.
 
     Returns:
-        True for host-profile runs.
+        The mode; ``native_session`` when it cannot be read.
     """
-    from preloop.services.approval_park import execution_restarts_fresh
+    from preloop.services.approval_park import RESUME_NATIVE, execution_resume_mode
 
     try:
         with _session_factory()() as db:
-            return execution_restarts_fresh(db, execution_id)
+            return execution_resume_mode(db, execution_id)
     except Exception:
         logger.debug("Could not read the park mode of execution %s", execution_id)
-        return False
+        return RESUME_NATIVE
 
 
 def _session_factory() -> Any:
@@ -188,7 +195,11 @@ def pending_park_reason(execution_id: Any) -> Optional[str]:
 
 
 def verified_host_execution(
-    *, account_id: Any, user_id: Any, execution_id: Any
+    *,
+    account_id: Any,
+    user_id: Any,
+    execution_id: Any,
+    managed_agent_id: Any = None,
 ) -> Optional[Dict[str, uuid.UUID]]:
     """Verify an execution id a managed-agent hook reported for its session.
 
@@ -200,26 +211,42 @@ def verified_host_execution(
 
     The id is accepted only for a live execution of a flow in the caller's
     account that is leased, as a host-exec job, to a runner the same user
-    registered: the process that set the variable.
+    registered: the process that set the variable. The onboarded hook's
+    durable managed-agent credential carries no user, so the owner is read
+    from the managed agent (``owner_user_id``).
 
     Args:
         account_id: Caller's account.
-        user_id: User the managed-agent credential belongs to.
+        user_id: User the credential belongs to, when it has one.
         execution_id: Execution id the hook reported.
+        managed_agent_id: Managed agent the credential authenticates as.
 
     Returns:
         ``{"execution_id", "flow_id"}``, or None when unverified.
     """
-    from preloop.models.crud import crud_flow, crud_flow_execution, crud_flow_runner
+    from preloop.models.crud import (
+        crud_flow,
+        crud_flow_execution,
+        crud_flow_runner,
+        crud_managed_agent,
+    )
 
     try:
         execution_uuid = uuid.UUID(str(execution_id))
         account_uuid = uuid.UUID(str(account_id))
     except (TypeError, ValueError):
         return None
-    if user_id is None:
-        return None
     with _session_factory()() as db:
+        owners = {str(user_id)} if user_id is not None else set()
+        if managed_agent_id is not None:
+            agent = crud_managed_agent.get(
+                db, id=managed_agent_id, account_id=str(account_uuid)
+            )
+            owner = getattr(agent, "owner_user_id", None) if agent else None
+            if owner is not None:
+                owners.add(str(owner))
+        if not owners:
+            return None
         execution = crud_flow_execution.get(db, id=execution_uuid)
         if execution is None or (
             str(execution.status or "").upper()
@@ -239,7 +266,7 @@ def verified_host_execution(
         if (
             runner is None
             or runner.account_id != account_uuid
-            or str(runner.registered_by_user_id) != str(user_id)
+            or str(runner.registered_by_user_id) not in owners
         ):
             return None
         return {"execution_id": execution_uuid, "flow_id": flow.id}

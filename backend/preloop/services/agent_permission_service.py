@@ -1008,13 +1008,13 @@ async def request_agent_permission(
             )
         )
         if parked:
-            fresh = await run_db_off_loop(
-                lambda: native_flow_park.restarts_fresh(flow_execution_id)
+            mode = await run_db_off_loop(
+                lambda: native_flow_park.resume_mode(flow_execution_id)
             )
             return (
                 "park",
                 native_flow_park.parked_message(
-                    request_id, expires_at, restarts_fresh=bool(fresh)
+                    request_id, expires_at, resume_mode=str(mode)
                 ),
                 request_id,
                 False,

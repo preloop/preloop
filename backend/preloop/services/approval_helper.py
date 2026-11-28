@@ -195,27 +195,27 @@ async def _park_execution(
         return False
 
 
-async def _park_restarts_fresh(execution_id: Any) -> bool:
-    """True when this run's park resumes as a fresh run (host profiles).
+async def _park_resume_mode(execution_id: Any) -> str:
+    """How this run's park resumes (``approval_park.RESUME_*``).
 
     Never raises: the payload then keeps the ordinary resume wording.
     """
     from preloop.api.loop_safety import run_db_off_loop
     from preloop.models.db.session import get_session_factory
-    from preloop.services.approval_park import execution_restarts_fresh
+    from preloop.services.approval_park import RESUME_NATIVE, execution_resume_mode
 
-    def _read() -> bool:
+    def _read() -> str:
         db = get_session_factory()()
         try:
-            return execution_restarts_fresh(db, execution_id)
+            return execution_resume_mode(db, execution_id)
         finally:
             db.close()
 
     try:
-        return bool(await run_db_off_loop(_read))
+        return str(await run_db_off_loop(_read))
     except Exception:
         logger.error("Could not read the park mode of execution %s", execution_id)
-        return False
+        return RESUME_NATIVE
 
 
 def _beyond_async_polling(window_seconds: int) -> bool:
@@ -265,7 +265,7 @@ async def _park_and_build_payload(
         expires_at=expires_at,
     ):
         return None
-    restarts_fresh = await _park_restarts_fresh(execution_id)
+    resume_mode = await _park_resume_mode(execution_id)
 
     from preloop.services.approval_park import park_pending_payload
     from preloop.services.ask_user_inband import approval_console_url
@@ -282,7 +282,7 @@ async def _park_and_build_payload(
         expires_at=expires_at,
         console_url=approval_console_url(base_url, approval_request_id),
         question=arguments.get("question") if isinstance(arguments, dict) else None,
-        restarts_fresh=restarts_fresh,
+        resume_mode=resume_mode,
     )
 
 

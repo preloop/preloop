@@ -186,7 +186,9 @@ def test_parked_on_host_profile() -> None:
 def test_host_profile_resume_restarts_fresh_with_the_answer() -> None:
     parked = _parked(_resume={"execution_id": "earlier"}, payload={"x": 1})
     answer = _answer()
-    details = approval_park.build_resume_details(parked, answer, restart_fresh=True)
+    details = approval_park.build_resume_details(
+        parked, answer, resume_mode=approval_park.RESUME_FRESH_CHECKOUT
+    )
     assert "_resume" not in details
     assert details["payload"]["answers"][answer["request_id"]]["status"] == "approved"
     chain = details[approval_park.ANSWERS_KEY]
@@ -336,10 +338,10 @@ def test_park_messages_state_the_fresh_run_up_front() -> None:
             tool_name="request_approval",
             expires_at=None,
             console_url="https://preloop.example.com/console/approval/r",
-            restarts_fresh=True,
+            resume_mode=approval_park.RESUME_FRESH_CHECKOUT,
         )
     )
-    assert host["resume_mode"] == "fresh_run"
+    assert host["resume_mode"] == "fresh_checkout"
     assert "fresh run" in host["message"]
     container = json.loads(
         approval_park.park_pending_payload(
@@ -350,16 +352,91 @@ def test_park_messages_state_the_fresh_run_up_front() -> None:
         )
     )
     assert container["resume_mode"] == "native_session"
-    native = native_flow_park.parked_message("r", None, restarts_fresh=True)
+    native = native_flow_park.parked_message(
+        "r", None, resume_mode=approval_park.RESUME_FRESH_CHECKOUT
+    )
     assert "fresh run" in native and "nothing more is published" in native
 
 
-def test_execution_restarts_fresh_reads_the_flow(db_session, test_user) -> None:
+def test_execution_resume_mode_reads_the_flow(db_session, test_user) -> None:
     host = _execution(db_session, _flow(db_session, test_user.account_id))
     container = _execution(
         db_session,
         _flow(db_session, test_user.account_id, agent_type="codex", agent_config={}),
     )
-    assert approval_park.execution_restarts_fresh(db_session, host.id) is True
-    assert approval_park.execution_restarts_fresh(db_session, container.id) is False
-    assert approval_park.execution_restarts_fresh(db_session, uuid.uuid4()) is False
+    mode = approval_park.execution_resume_mode
+    assert mode(db_session, host.id) == approval_park.RESUME_FRESH_CHECKOUT
+    assert mode(db_session, container.id) == approval_park.RESUME_NATIVE
+    assert mode(db_session, uuid.uuid4()) == approval_park.RESUME_NATIVE
+
+
+def test_matrix_cell_pinning_a_hosted_harness_resumes_natively() -> None:
+    host_default = SimpleNamespace(
+        agent_type="claude_code", agent_config={}, ai_model_id=None
+    )
+    cell = _parked(_matrix={"agent_type": "codex", "ai_model_id": str(uuid.uuid4())})
+    assert not approval_park.parked_on_host_profile(host_default, cell)
+
+
+@pytest.mark.parametrize(
+    ("workspace", "mode", "phrase"),
+    [
+        (None, approval_park.RESUME_FRESH_CHECKOUT, "fresh checkout"),
+        (
+            {"kind": "authorized_directory", "id": "repo"},
+            approval_park.RESUME_SAME_DIRECTORY,
+            "workspace_dirty",
+        ),
+        (
+            {"kind": "authorized_directory", "id": "repo", "allow_dirty": True},
+            approval_park.RESUME_SAME_DIRECTORY_DIRTY_OK,
+            "uncommitted changes included",
+        ),
+    ],
+)
+def test_host_resume_wording_matches_the_workspace_mode(
+    workspace: Any, mode: str, phrase: str
+) -> None:
+    config: dict[str, Any] = {"host_exec_profile": "local"}
+    if workspace is not None:
+        config["workspace"] = workspace
+    flow = SimpleNamespace(agent_type="claude_code", agent_config=config)
+    assert approval_park.park_resume_mode(flow, _parked()) == mode
+    assert phrase in native_flow_park.parked_message("r", None, resume_mode=mode)
+    prompt = approval_park.build_resume_details(
+        _parked(), _answer(), resume_mode=mode
+    )[approval_park.ANSWERS_PROMPT_KEY]
+    expected = "fresh checkout" if workspace is None else "same authorized directory"
+    assert expected in prompt
+
+
+def test_verified_host_execution_accepts_a_durable_agent_credential(
+    db_session, test_user, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The onboarded hook's credential has no user; the agent owner counts."""
+    monkeypatch.setattr(
+        native_flow_park, "_session_factory", lambda: _SessionFactory(db_session)
+    )
+    execution = _leased_host_execution(db_session, test_user)
+    agent = SimpleNamespace(owner_user_id=test_user.id)
+    monkeypatch.setattr(
+        "preloop.models.crud.crud_managed_agent.get",
+        lambda _db, id, account_id=None: agent,
+    )
+    linked = native_flow_park.verified_host_execution(
+        account_id=test_user.account_id,
+        user_id=None,
+        execution_id=str(execution.id),
+        managed_agent_id=uuid.uuid4(),
+    )
+    assert linked == {"execution_id": execution.id, "flow_id": execution.flow_id}
+    agent.owner_user_id = uuid.uuid4()
+    assert (
+        native_flow_park.verified_host_execution(
+            account_id=test_user.account_id,
+            user_id=None,
+            execution_id=str(execution.id),
+            managed_agent_id=uuid.uuid4(),
+        )
+        is None
+    )

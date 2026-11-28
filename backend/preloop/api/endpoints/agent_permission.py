@@ -1056,6 +1056,7 @@ async def _agent_permission_check(
                 account_id=identity.account_id,
                 user_id=identity.user_id,
                 execution_id=payload.flow_execution_id,
+                managed_agent_id=identity.managed_agent_id,
             )
         )
         if linked is not None:
