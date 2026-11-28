@@ -1363,6 +1363,7 @@ describe('AuditView', () => {
         .map((call) => call.args[0] as string)
         .find((url) => url.startsWith('/api/v1/exports/asset-register'));
       expect(requested).to.contain('format=csv');
+      expect(requested).to.contain('include_manifest=false');
       expect(clickedAnchors[0].download).to.equal(
         'preloop-asset-register-2026-03-15.csv'
       );

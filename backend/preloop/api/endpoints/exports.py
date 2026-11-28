@@ -143,6 +143,9 @@ def _respond(export: DoraExport, *, include_manifest: bool = True) -> Response:
 @require_permission(EXPORT_PERMISSION)
 def export_asset_register(
     format: str = Query("csv", description="csv or json"),
+    include_manifest: bool = Query(
+        True, description="Include the full base64 manifest in CSV response headers"
+    ),
     db: Session = Depends(get_db_session),
     current_user: models.User = Depends(get_current_active_user),
     account: models.Account = Depends(get_account_for_user),
@@ -167,7 +170,7 @@ def export_asset_register(
         export=export,
         action=AUDIT_ACTION_ASSET_EXPORT,
     )
-    return _respond(export)
+    return _respond(export, include_manifest=include_manifest)
 
 
 @router.get("/incident-candidates")

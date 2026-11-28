@@ -134,10 +134,13 @@ class TestAssetRegisterEndpoint:
 
 
 class TestIncidentCandidatesEndpoint:
-    def test_console_csv_uses_compact_headers(self, client: TestClient) -> None:
+    @pytest.mark.parametrize("url", [ASSET_URL, INCIDENT_URL])
+    def test_console_csv_uses_compact_headers(
+        self, client: TestClient, url: str
+    ) -> None:
         """Serve the same CSV and digest within a proxy's response header budget."""
-        full = client.get(INCIDENT_URL)
-        compact = client.get(INCIDENT_URL, params={"include_manifest": "false"})
+        full = client.get(url)
+        compact = client.get(url, params={"include_manifest": "false"})
         assert compact.status_code == 200
         assert compact.content == full.content
         assert (

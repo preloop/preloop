@@ -9998,6 +9998,15 @@ paths:
           default: csv
           title: Format
         description: csv or json
+      - name: include_manifest
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: Include the full base64 manifest in CSV response headers
+          default: true
+          title: Include Manifest
+        description: Include the full base64 manifest in CSV response headers
       responses:
         '200':
           description: Successful Response

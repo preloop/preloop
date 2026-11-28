@@ -785,8 +785,10 @@ In the console, the Agents toolbar's **Extensions** entry lists distinct extensi
 with device counts and versions seen. A managed agent's detail page has an
 **Extensions** tab (`?tab=extensions`) with the same list filtered to that agent's kind (for
 example `claude_code`) across the account, not to one device, and the count in
-its tab label after first opening. Select individual identities or **Select all**
-in the filtered inventory, then use **Approve selected** or **Mark unapproved**.
+its tab label after first opening. Select individual identities or choose
+**Select all N shown** to select the loaded results. Use **Load more** before
+selecting all to include further pages. Choose **Approve selected** or **Mark
+unapproved** to review the decision.
 The confirmation states the account-wide count. Bulk decisions preserve existing
 pins and version constraints. Device detail shows the approval controls beside
 each installation. **Details** contains its profile, source and project hashes,

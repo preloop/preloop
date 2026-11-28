@@ -131,8 +131,8 @@ the body, so it travels in response headers:
 - `X-Preloop-Members-Digest`: the manifest's members digest
 - `X-Preloop-Export-Manifest`: the whole manifest, base64 of its canonical JSON
 
-The console requests `include_manifest=false` for the incident candidates CSV
-so its headers fit through a reverse proxy. The export and members digests are
+The console requests `include_manifest=false` for both CSV downloads
+so their headers fit through a reverse proxy. The export and members digests are
 still returned. API and CLI downloads include the full manifest by default.
 
 The CLI recomputes the digest from what actually landed and warns if it does

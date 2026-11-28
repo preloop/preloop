@@ -1710,11 +1710,13 @@ export class AuditView extends AuthedElement {
     if (this._exporting) return;
     this._exporting = kind;
     try {
-      const params = new URLSearchParams({ format: 'csv' });
+      const params = new URLSearchParams({
+        format: 'csv',
+        include_manifest: 'false',
+      });
       let path = REST_API_PREFIX + '/exports/asset-register';
       if (kind === 'incidents') {
         path = REST_API_PREFIX + '/exports/incident-candidates';
-        params.set('include_manifest', 'false');
         if (this._startDate) params.set('from', this._startDate);
         if (this._throughDate)
           params.set('to', shiftUtcDate(this._throughDate, 1));
