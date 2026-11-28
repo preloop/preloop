@@ -53,6 +53,9 @@ MAX_TREND_ENTRIES = 84
 MAX_HISTORY_ENTRIES = 60
 MAX_RECENT = 3
 MAX_SEEN_RUNS = 600
+MAX_PENDING_RUNS = 300
+# A run still unfinished after this long is given up on (stuck or queued).
+PENDING_MAX_HOURS = 24
 # Re-read this much before the previous window end, so a run that was still
 # in progress at the last collection is picked up once it completes.
 OVERLAP = timedelta(hours=1)
@@ -226,17 +229,28 @@ class Client:
             path.write_bytes(body)
         return body
 
-    def get_json(self, url: str, cache: bool = False) -> Any:
+    def get_json(self, url: str, cache: bool = False, required: bool = False) -> Any:
         """GET and decode JSON.
 
         Args:
             url: Absolute URL.
             cache: Whether the response is immutable and may be cached.
+            required: The resource must exist (a listing). A 404 there means
+                a wrong repository name or a token without access, not
+                "nothing to report".
 
         Returns:
-            The decoded document, or None for a missing resource.
+            The decoded document, or None for a missing optional resource.
+
+        Raises:
+            StopFetchingError: A required resource answered 404/410.
         """
         body = self.get(url, cache=cache)
+        if body is None and required:
+            raise StopFetchingError(
+                "HTTP 404 on a listing: check the repository name and that "
+                "the token can read it"
+            )
         return None if body is None else json.loads(body)
 
 
@@ -533,6 +547,25 @@ def _conclusion(value: str | None) -> str:
     return value or "unknown"
 
 
+def _pages(fetch: Callable[[int], list[Any]], limit: int = 20) -> list[Any]:
+    """Read a paginated listing of 100 items per page.
+
+    Args:
+        fetch: Returns the items of one page, numbered from 1.
+        limit: Page ceiling (2000 items), against a runaway listing.
+
+    Returns:
+        All items.
+    """
+    items: list[Any] = []
+    for page in range(1, limit + 1):
+        batch = fetch(page)
+        items.extend(batch)
+        if len(batch) < 100:
+            break
+    return items
+
+
 class GitHubSource:
     """GitHub Actions adapter.
 
@@ -552,7 +585,7 @@ class GitHubSource:
         self.api = api.rstrip("/")
 
     def runs(self, since: datetime, until: datetime) -> Iterator[dict[str, Any]]:
-        """Yield completed workflow runs created in the window.
+        """Yield workflow runs created in the window, in any status.
 
         Args:
             since: Window start.
@@ -565,10 +598,10 @@ class GitHubSource:
         page = 1
         while True:
             url = (
-                f"{self.api}/repos/{self.repo}/actions/runs?status=completed"
-                f"&created={created}&per_page=100&page={page}"
+                f"{self.api}/repos/{self.repo}/actions/runs"
+                f"?created={created}&per_page=100&page={page}"
             )
-            data = self.client.get_json(url) or {}
+            data = self.client.get_json(url, required=True) or {}
             items = data.get("workflow_runs") or []
             yield from items
             if len(items) < 100:
@@ -584,13 +617,20 @@ class GitHubSource:
         Returns:
             Normalized jobs, earlier attempts included.
         """
-        url = (
+        base = (
             f"{self.api}/repos/{self.repo}/actions/runs/{run['id']}/jobs"
             "?filter=all&per_page=100"
         )
-        data = self.client.get_json(url, cache=True) or {}
+        raw_jobs = _pages(
+            lambda page: (
+                (self.client.get_json(f"{base}&page={page}", cache=True) or {}).get(
+                    "jobs"
+                )
+                or []
+            )
+        )
         jobs = []
-        for raw in data.get("jobs") or []:
+        for raw in raw_jobs:
             jobs.append(
                 Job(
                     provider=self.provider,
@@ -612,6 +652,31 @@ class GitHubSource:
                 )
             )
         return jobs
+
+    def finished(self, run: dict[str, Any]) -> bool:
+        """Whether a run has finished.
+
+        Args:
+            run: A raw run object.
+
+        Returns:
+            True once the run is completed.
+        """
+        return run.get("status") == "completed"
+
+    def run(self, run_id: str) -> dict[str, Any] | None:
+        """Re-read one run, to pick up a run that was still in progress.
+
+        Args:
+            run_id: The run id.
+
+        Returns:
+            The raw run, or None when it was deleted.
+        """
+        data = self.client.get_json(
+            f"{self.api}/repos/{self.repo}/actions/runs/{run_id}"
+        )
+        return data if isinstance(data, dict) else None
 
     def log(self, job: Job) -> str | None:
         """Fetch a failed job's log.
@@ -649,7 +714,7 @@ class GitHubSource:
                 item.get("merged_at"),
                 item.get("body"),
             )
-            for item in self.client.get_json(url) or []
+            for item in self.client.get_json(url, required=True) or []
             if ((item.get("head") or {}).get("ref") or "").startswith(prefix)
         ]
 
@@ -674,7 +739,7 @@ class GitLabSource:
         self.encoded = urllib.parse.quote(project, safe="")
 
     def runs(self, since: datetime, until: datetime) -> Iterator[dict[str, Any]]:
-        """Yield finished pipelines updated in the window.
+        """Yield pipelines updated in the window, in any status.
 
         Args:
             since: Window start.
@@ -691,10 +756,8 @@ class GitLabSource:
                 f"{self.api}/projects/{self.encoded}/pipelines?updated_after={after}"
                 f"&updated_before={before}&per_page=100&page={page}"
             )
-            items = self.client.get_json(url) or []
-            for item in items:
-                if item.get("status") in ("success", "failed", "canceled"):
-                    yield item
+            items = self.client.get_json(url, required=True) or []
+            yield from items
             if len(items) < 100:
                 return
             page += 1
@@ -708,11 +771,13 @@ class GitLabSource:
         Returns:
             Normalized jobs. Retries of one job get increasing attempts.
         """
-        url = (
+        base = (
             f"{self.api}/projects/{self.encoded}/pipelines/{run['id']}/jobs"
             "?include_retried=true&per_page=100"
         )
-        raw_jobs = self.client.get_json(url, cache=True) or []
+        raw_jobs = _pages(
+            lambda page: self.client.get_json(f"{base}&page={page}", cache=True) or []
+        )
         raw_jobs = sorted(raw_jobs, key=lambda item: item.get("id", 0))
         attempts: dict[str, int] = {}
         jobs = []
@@ -740,6 +805,31 @@ class GitLabSource:
                 )
             )
         return jobs
+
+    def finished(self, run: dict[str, Any]) -> bool:
+        """Whether a pipeline has finished.
+
+        Args:
+            run: A raw pipeline object.
+
+        Returns:
+            True for success, failed, canceled and skipped pipelines.
+        """
+        return run.get("status") in ("success", "failed", "canceled", "skipped")
+
+    def run(self, run_id: str) -> dict[str, Any] | None:
+        """Re-read one pipeline that was still running.
+
+        Args:
+            run_id: The pipeline id.
+
+        Returns:
+            The raw pipeline, or None when it was deleted.
+        """
+        data = self.client.get_json(
+            f"{self.api}/projects/{self.encoded}/pipelines/{run_id}"
+        )
+        return data if isinstance(data, dict) else None
 
     def log(self, job: Job) -> str | None:
         """Fetch a failed job's trace.
@@ -774,7 +864,7 @@ class GitLabSource:
                 item.get("merged_at"),
                 item.get("description"),
             )
-            for item in self.client.get_json(url) or []
+            for item in self.client.get_json(url, required=True) or []
             if (item.get("source_branch") or "").startswith(prefix)
         ]
 
@@ -1100,11 +1190,24 @@ def bound_ledger(
     return dict(ordered[:MAX_LEDGER_ENTRIES])
 
 
+def dump_result(document: dict[str, Any]) -> str:
+    """Serialize a result the way :func:`finalize` writes it.
+
+    Args:
+        document: The document.
+
+    Returns:
+        The JSON text.
+    """
+    return json.dumps(document, indent=2, sort_keys=True) + "\n"
+
+
 def fit_state(state: dict[str, Any]) -> dict[str, Any]:
     """Shrink the persisted state until it fits STATE_BUDGET_BYTES.
 
-    Notes are truncated first, then the oldest trend points and the
-    stalest ledger entries are dropped.
+    Size is measured as :func:`finalize` writes it (``indent=2``). Notes are
+    truncated first; then the oldest trend points, history entries, seen
+    and pending runs, and finally the stalest ledger entries are dropped.
 
     Args:
         state: The state, modified in place.
@@ -1117,12 +1220,29 @@ def fit_state(state: dict[str, Any]) -> dict[str, Any]:
             entry["note"] = entry["note"][:MAX_NOTE_CHARS]
 
     def size() -> int:
-        return len(json.dumps(state, separators=(",", ":")))
+        return len(dump_result(state))
 
     while size() > STATE_BUDGET_BYTES:
         ledger = state.get("ledger") or {}
-        if len(state.get("trend") or []) > 12:
-            state["trend"] = state["trend"][len(state["trend"]) // 4 :]
+        trimmable = [
+            name
+            for name, floor in (
+                ("trend", 12),
+                ("history", 8),
+                ("seen_runs", 0),
+                ("pending_runs", 0),
+            )
+            if len(state.get(name) or []) > floor
+        ]
+        if trimmable:
+            name = trimmable[0]
+            items = state[name]
+            if isinstance(items, dict):
+                keys = list(items)[: max(1, len(items) // 4)]
+                for key in keys:
+                    del items[key]
+            else:
+                state[name] = items[max(1, len(items) // 4) :]
         elif ledger:
             stalest = min(ledger, key=lambda k: ledger[k].get("last_seen") or "")
             del ledger[stalest]
@@ -1281,6 +1401,11 @@ def collect(
     since = max(prev_end - OVERLAP, earliest) if prev_end else earliest
     seen_before = set(previous.get("seen_runs") or [])
     seen_now: list[str] = []
+    # Runs still in progress at the last collection: re-read by id, so a run
+    # longer than the overlap is never lost.
+    pending_before: dict[str, dict[str, Any]] = dict(previous.get("pending_runs") or {})
+    pending_now: dict[str, dict[str, Any]] = {}
+    pending_dropped = 0
     jobs: list[Job] = []
     runs_read = 0
     logs_read = 0
@@ -1295,15 +1420,17 @@ def collect(
             "runs": 0,
             "partial": False,
         }
+        prefix = f"{source.provider}:{source.repo}:"
         try:
-            for run in source.runs(since, now):
-                # Run and pipeline ids are unique per provider instance.
-                run_key = f"{source.provider[:2]}{run['id']}"
-                if run_key in seen_before:
-                    runs_skipped += 1
-                    continue
-                # GitLab filters on updated_at, GitHub on created_at; the
-                # later of the two decides whether the overlap can repeat it.
+
+            def process(
+                run: dict[str, Any],
+                run_key: str,
+                source: Any = source,
+                row: dict[str, Any] = row,
+            ) -> None:
+                nonlocal runs_read, logs_read, logs_skipped
+                # The overlap can return a run again; remember the recent ones.
                 stamp = parse_time(run.get("updated_at") or run.get("created_at"))
                 if stamp is None or stamp >= now - 2 * OVERLAP:
                     seen_now.append(run_key)
@@ -1323,7 +1450,39 @@ def collect(
                             _with_job(sig, job) for sig in extract_signatures(text)
                         ]
                 jobs.extend(run_jobs)
+
+            done: set[str] = set()
+            for run_key, info in list(pending_before.items()):
+                if not run_key.startswith(prefix):
+                    continue
+                del pending_before[run_key]
+                run = source.run(run_key[len(prefix) :])
+                if run is None:
+                    continue
+                if source.finished(run):
+                    process(run, run_key)
+                    done.add(run_key)
+                elif (parse_time(info.get("created_at")) or now) >= now - timedelta(
+                    hours=PENDING_MAX_HOURS
+                ):
+                    pending_now[run_key] = info
+                else:
+                    pending_dropped += 1
+            for run in source.runs(since, now):
+                run_key = f"{prefix}{run['id']}"
+                if run_key in seen_before or run_key in done:
+                    runs_skipped += 1
+                    continue
+                if run_key in pending_now:
+                    continue
+                if not source.finished(run):
+                    pending_now[run_key] = {"created_at": run.get("created_at")}
+                    continue
+                process(run, run_key)
         except StopFetchingError as stop:
+            # Pending runs this source did not get to stay pending.
+            for run_key in [k for k in pending_before if k.startswith(prefix)]:
+                pending_now[run_key] = pending_before.pop(run_key)
             row["partial"] = True
             row["reason"] = str(stop)
             partial_reasons.append(f"{source.provider}:{source.repo}: {stop}")
@@ -1409,6 +1568,8 @@ def collect(
             "jobs_read": len(jobs),
             "logs_read": logs_read,
             "runs_skipped_already_seen": runs_skipped,
+            "runs_pending": len(pending_now),
+            "pending_dropped": pending_dropped,
             "partial": bool(partial_reasons),
             "partial_reasons": partial_reasons,
         },
@@ -1429,6 +1590,7 @@ def collect(
                 "window_end": iso(now),
                 # Only runs the next overlap can return again need remembering.
                 "seen_runs": seen_now[-MAX_SEEN_RUNS:],
+                "pending_runs": dict(list(pending_now.items())[-MAX_PENDING_RUNS:]),
                 "gaps": (
                     list(previous.get("gaps") or [])
                     + (
@@ -1522,7 +1684,7 @@ def finalize(
         -MAX_HISTORY_ENTRIES:
     ]
     result[STATE_KEY] = fit_state(state)
-    result_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+    result_path.write_text(dump_result(result))
     return result
 
 

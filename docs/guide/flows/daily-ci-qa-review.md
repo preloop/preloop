@@ -132,8 +132,10 @@ FAILED with the agent's summary as the error.
 
 Reading CI through the API turn by turn costs tokens and time, and the agent
 cannot easily see failing test ids. The repository ships
-`scripts/ci_health_collect.py` (standard library only) for the flow to run
-first. It reads CI and writes one compact JSON file for the agent:
+`scripts/ci_health_collect.py` (standard library only), which reads CI and
+writes one compact JSON file for the agent. The preset's prompt does not
+call it yet; to adopt it, replace step 1 of your flow's prompt with this
+command and have the agent read the output:
 
 <!-- example: fragment -->
 ```bash
@@ -142,15 +144,19 @@ python3 scripts/ci_health_collect.py collect \
   --github-repo owner/name \
   --window-hours 24 \
   --previous previous/result.json \
+  --flow-branch-prefix preloop/<flow name slug>- \
   --out evidence/ci-health.json
 ```
 
-- **Reads** completed GitHub Actions runs since the previous run's window
-  end, with a one-hour overlap so runs that were in progress are not
-  missed. Run ids already seen are skipped. Requests are sequential and
-  GET only. The collector stops, and marks the data partial, when
-  `X-RateLimit-Remaining` falls below `--min-remaining`, on `Retry-After`
-  or HTTP 429, on a refused token, or at `--max-calls`. Jobs and logs are
+- **Reads** GitHub Actions runs created since the previous run's window
+  end, with a one-hour overlap; run ids already seen are skipped. A run
+  still in progress is remembered and re-read by id on later collections
+  until it finishes (given up after 24 hours), however long it runs.
+  Requests are sequential and GET only. The collector stops, and marks the
+  data partial, when `X-RateLimit-Remaining` falls below `--min-remaining`,
+  on `Retry-After` or HTTP 429, on a refused token, on a 404 from a listing
+  (a wrong repository name or a token without access), or at
+  `--max-calls`. It exits 2 when no source could be read. Jobs and logs are
   immutable, so they are cached under `--cache-dir`.
 - **Aggregates** per workflow and per job: success rate, reruns, p50/p95
   queue wait and duration, runner minutes by OS, the slowest jobs, and

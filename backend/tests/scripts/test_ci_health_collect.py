@@ -74,6 +74,8 @@ class FakeApi:
             return f"gh_jobs_{parts[-2]}.json"
         if path.endswith("/actions/runs"):
             return "gh_runs_page1.json"
+        if parts[-2] == "runs" and parts[-1].isdigit():
+            return f"gh_run_{parts[-1]}.json"
         if "/actions/jobs/" in path:
             return f"gh_log_{parts[-2]}.txt"
         if path.endswith("/pulls"):
@@ -280,6 +282,122 @@ def test_network_error_marks_the_source_partial(
     assert "network error" in out["window"]["partial_reasons"][0]
 
 
+def _listing(*runs: dict[str, Any]) -> tuple[int, dict[str, str], bytes]:
+    return 200, {}, json.dumps({"workflow_runs": list(runs)}).encode()
+
+
+def test_long_running_run_is_read_once_it_completes() -> None:
+    """A run older than the overlap and still running is re-read by id."""
+    fixture = json.loads((FIXTURES / "gh_run_1002.json").read_text())
+    running = {
+        **fixture,
+        "status": "in_progress",
+        "created_at": chc.iso(NOW - timedelta(hours=3)),
+    }
+    first = chc.collect(
+        [github(FakeApi(overrides={"/actions/runs?": _listing(running)}))],
+        {},
+        NOW,
+        24,
+    )
+    state = first[chc.STATE_KEY]
+    assert first["window"]["runs_read"] == 0
+    assert list(state["pending_runs"]) == [f"github:{REPO}:1002"]
+    # Two hours later the run is outside the listing window but completed.
+    api = FakeApi(overrides={"/actions/runs?": _listing()})
+    second = chc.collect([github(api)], state, NOW + timedelta(hours=2), 24)
+    assert second["window"]["runs_read"] == 1
+    assert second["totals"]["failures"] == 1
+    assert second[chc.STATE_KEY]["pending_runs"] == {}
+    assert any(u.endswith("/actions/runs/1002") for u in api.urls)
+
+
+def test_stale_pending_runs_are_dropped() -> None:
+    """A run unfinished for over a day is given up, not polled forever."""
+    previous = {
+        "window_end": chc.iso(NOW - timedelta(hours=2)),
+        "pending_runs": {
+            f"github:{REPO}:1002": {"created_at": chc.iso(NOW - timedelta(days=2))}
+        },
+    }
+    stuck = {"status": "queued", "id": 1002}
+    api = FakeApi(
+        overrides={
+            "/actions/runs/1002": (200, {}, json.dumps(stuck).encode()),
+            "/actions/runs?": _listing(),
+        }
+    )
+    out = chc.collect([github(api)], previous, NOW, 24)
+    assert out[chc.STATE_KEY]["pending_runs"] == {}
+    assert out["window"]["pending_dropped"] == 1
+
+
+def test_missing_repository_is_not_reported_as_quiet(tmp_path: Path) -> None:
+    """A 404 on the run listing is partial and exits 2, not an empty success."""
+    api = FakeApi(overrides={"/actions/runs?": (404, {}, b"")})
+    out = chc.collect([github(api)], {}, NOW, 24)
+    assert out["window"]["partial"]
+    assert "404 on a listing" in out["window"]["partial_reasons"][0]
+    code = chc.main(
+        [
+            "collect",
+            "--github-repo",
+            REPO,
+            "--previous",
+            "",
+            "--cache-dir",
+            "",
+            "--out",
+            str(tmp_path / "o.json"),
+            "--now",
+            chc.iso(NOW),
+        ],
+        transport=api,
+    )
+    assert code == 2
+
+
+def test_job_listings_are_paginated() -> None:
+    """A run with more than 100 jobs is read in full."""
+    template = json.loads((FIXTURES / "gh_jobs_1002.json").read_text())["jobs"][0]
+    pages = {
+        "page=1": [{**template, "id": i, "name": f"job {i}"} for i in range(100)],
+        "page=2": [{**template, "id": 100, "name": "job 100", "conclusion": "failure"}],
+    }
+    run = json.loads((FIXTURES / "gh_run_1002.json").read_text())
+
+    def transport(
+        url: str, headers: dict[str, str]
+    ) -> tuple[int, dict[str, str], bytes]:
+        if "/actions/runs?" in url:
+            return _listing(run)
+        if "/jobs?" in url:
+            page = "page=2" if "page=2" in url else "page=1"
+            return 200, {}, json.dumps({"jobs": pages[page]}).encode()
+        return 404, {}, b""
+
+    out = chc.collect([github(transport)], {}, NOW, 24)  # type: ignore[arg-type]
+    assert out["totals"]["jobs"] == 101
+    assert out["totals"]["failures"] == 1
+
+
+def test_run_ids_are_keyed_by_provider_and_repository() -> None:
+    """Two repositories with the same run ids are both read, then both skipped."""
+    api = FakeApi()
+    other = chc.GitHubSource(chc.Client(api, {}), "example-org/other-repo")
+    first = chc.collect([github(api), other], {}, NOW, 24)
+    assert first["window"]["runs_read"] == 6
+    state = first[chc.STATE_KEY]
+    second = chc.collect(
+        [github(FakeApi()), chc.GitHubSource(chc.Client(FakeApi(), {}), other.repo)],
+        state,
+        NOW + timedelta(hours=1),
+        24,
+    )
+    assert second["window"]["runs_read"] == 0
+    assert second["window"]["runs_skipped_already_seen"] == 6
+
+
 # --------------------------------------------------------------------- gitlab
 
 
@@ -366,6 +484,22 @@ def test_state_fits_the_previous_result_budget(output: dict[str, Any]) -> None:
     assert len(json.dumps(state)) < chc.STATE_BUDGET_BYTES
 
 
+def test_large_history_is_trimmed_as_finalize_writes_it(
+    tmp_path: Path, output: dict[str, Any]
+) -> None:
+    """History and seen runs shrink too; the written file meets the budget."""
+    output[chc.STATE_KEY]["ledger"] = {}
+    output[chc.STATE_KEY]["history"] = [{"change": "h" * 4000}] * 60
+    output[chc.STATE_KEY]["seen_runs"] = ["x" * 200] * 600
+    collector = tmp_path / "c.json"
+    collector.write_text(json.dumps(output))
+    result = tmp_path / "result.json"
+    chc.finalize(collector, result, {"change": "e" * 2000}, NOW)
+    state = json.loads(result.read_text())[chc.STATE_KEY]
+    assert len(chc.dump_result(state)) <= chc.STATE_BUDGET_BYTES
+    assert state["history"][-1]["change"] == "e" * 2000
+
+
 def test_oversized_state_is_trimmed_to_the_budget() -> None:
     """Long agent notes and a huge ledger cannot overflow the next run."""
     state = {
@@ -380,7 +514,7 @@ def test_oversized_state_is_trimmed_to_the_budget() -> None:
         },
     }
     chc.fit_state(state)
-    assert len(json.dumps(state, separators=(",", ":"))) <= chc.STATE_BUDGET_BYTES
+    assert len(chc.dump_result(state)) <= chc.STATE_BUDGET_BYTES
     assert all(len(e["note"]) <= chc.MAX_NOTE_CHARS for e in state["ledger"].values())
     assert state["ledger"]
 
