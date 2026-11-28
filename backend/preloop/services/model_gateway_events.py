@@ -252,9 +252,11 @@ def _redact_assignment(match: re.Match[str]) -> str:
 # One word in lower case or with a leading capital, optionally joined by
 # hyphens: ``authentication``, ``Token``, ``token-based``. That is prose.
 _PROSE_WORDS = re.compile(r"^[A-Za-z][a-z]*(?:-[A-Za-z][a-z]*)*$")
-# Base64 padding or a trailing ``+`` / ``/`` that the closing ``\b`` left out
-# of the match, as in ``bearer abcdefgh=``.
-_TOKEN_TAIL = re.compile(r"[=+/]+(?=$|[\s\"',;)\]}])")
+# Token punctuation the closing ``\b`` left out of the match, as in
+# ``bearer abcdefgh=`` or ``bearer abcdefgh~``. Whatever follows it (a
+# period, a backtick, a quote) does not matter. A period alone does not
+# count, so ``bearer authentication.`` stays prose.
+_TOKEN_TAIL = re.compile(r"[=+/~]")
 
 
 def _redact_bearer_value(match: re.Match[str]) -> str:
@@ -263,7 +265,7 @@ def _redact_bearer_value(match: re.Match[str]) -> str:
     ``bearer authentication`` and ``Bearer token-based`` are prose. A value
     with a digit, an inner capital, or a ``.``, ``_``, ``~``, ``+``, ``/``
     or ``=`` is token-shaped and is masked, including a trailing ``=``,
-    ``+`` or ``/`` that ends the value (``bearer abcdefgh=``). An ``Authorization: Bearer``
+    ``+``, ``/`` or ``~`` that ends the value (``bearer abcdefgh=.``). An ``Authorization: Bearer``
     header is masked by its own rule before this one runs, whatever the
     value looks like.
 

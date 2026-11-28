@@ -1199,8 +1199,8 @@ names are `private_key`, `authorization_bearer`, `bearer_token`,
 followed by an ordinary word is prose and is left as written:
 `bearer authentication`, `Bearer Token`, `bearer token-based`. A value after
 a bare `bearer` is masked when it has a digit, an inner capital, or one of
-`. _ ~ + / =`, including a trailing `=`, `+` or `/` at the end of the value
-(`bearer abcdefgh=`). A sentence-final period does not count. Ruleset
+`. _ ~ + / =`, including a trailing `=`, `+`, `/` or `~` at the end of the value
+(`bearer abcdefgh=`), whatever follows it. A sentence-final period does not count. Ruleset
 `2026-11-19` masked any word of eight or more letters
 there; records written under it are not rewritten.
 

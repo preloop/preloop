@@ -248,6 +248,11 @@ _CASES: list[tuple[str, str, list[tuple[str, int]]]] = [
     ("bearer abcdefgh=", f"bearer {_REDACTED}=", [("bearer_token", 1)]),
     ("bearer abcdefgh+/ end", f"bearer {_REDACTED}+/ end", [("bearer_token", 1)]),
     ('"bearer abcdefgh=="', f'"bearer {_REDACTED}=="', [("bearer_token", 1)]),
+    ("bearer abcdefgh=.", f"bearer {_REDACTED}=.", [("bearer_token", 1)]),
+    ("`bearer abcdefgh=`", f"`bearer {_REDACTED}=`", [("bearer_token", 1)]),
+    ("bearer abcdefgh~", f"bearer {_REDACTED}~", [("bearer_token", 1)]),
+    ("bearer abcdefgh/:", f"bearer {_REDACTED}/:", [("bearer_token", 1)]),
+    ("`bearer authentication`", "`bearer authentication`", []),
     # A sentence-final period stays prose.
     ("Use bearer authentication.", "Use bearer authentication.", []),
     (f"Bearer {_JWT}", f"Bearer {_REDACTED}", [("bearer_token", 1)]),
