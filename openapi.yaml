@@ -58979,6 +58979,9 @@ components:
           - type: number
           - type: 'null'
           title: Api Equivalent Cost
+          description: 'Subscription requests only: an ESTIMATE of what the call would
+            cost at pay-per-use API prices. Never a billed amount; null for metered
+            or unpriced requests.'
         endpoint:
           anyOf:
           - type: string
@@ -64986,7 +64989,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;

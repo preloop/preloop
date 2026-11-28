@@ -141,7 +141,7 @@ func runEvidenceVerify(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if !report.SignatureOK {
+	if !report.SignatureOK || !report.ContentOK {
 		report.Proves = unverifiedProvenance(report)
 	}
 	if evidenceJSON {
@@ -332,6 +332,10 @@ func printEvidenceVerify(cmd *cobra.Command, report evidenceVerifyReport) {
 // unverifiedProvenance is what a run shows when the signature did not verify:
 // at most that the bytes agree with themselves, never where they came from.
 func unverifiedProvenance(report evidenceVerifyReport) string {
+	if !report.ContentOK && report.SignatureOK {
+		return "the signature over the manifest verifies, but the member bytes do " +
+			"not match that manifest, so the archive was altered after it was built."
+	}
 	if !report.ContentOK {
 		return "nothing: the contents did not verify and the signature did not verify."
 	}

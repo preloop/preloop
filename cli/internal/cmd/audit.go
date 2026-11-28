@@ -402,11 +402,13 @@ func printAuditVerify(cmd *cobra.Command, status chainStatus, report auditVerify
 		switch {
 		case checkpointFails(checked):
 			state = "FAILED"
-		case report.Status == "broken" && !checked.MatchesLocalRow:
-			// A good signature over a sequence the failed walk never reached
-			// says nothing about the rows: do not print it as "verified".
+		case !checked.MatchesLocalRow:
+			// A good signature over a sequence this walk never reached says
+			// nothing about the rows: do not print it as "verified".
 			state = "signature valid, rows not checked"
-			detail = "the walk stopped at the break, so this anchor was not held against any row"
+			if walkBroke(report) {
+				detail = "the walk stopped at the break, so this anchor was not held against any row"
+			}
 		}
 		fmt.Fprintf(out, "Checkpoint at sequence %d: %s (key %s)\n", checked.Seq, state, checked.KeyID)
 		if detail != "" {
@@ -434,9 +436,21 @@ func printAuditVerify(cmd *cobra.Command, status chainStatus, report auditVerify
 		fmt.Fprintln(out, "\nThis shows the rows were not reordered, removed or edited after sealing.")
 		fmt.Fprintln(out, "It does not show they were true when they were written.")
 	case "broken":
-		fmt.Fprintln(out, "\nThe chain does not verify: a row at or before the break was edited, removed")
-		fmt.Fprintln(out, "or reordered after sealing. Rows past the break were not checked.")
+		if walkBroke(report) {
+			fmt.Fprintln(out, "\nThe chain does not verify: a row at or before the break was edited, removed")
+			fmt.Fprintln(out, "or reordered after sealing. Rows past the break were not checked.")
+		} else {
+			fmt.Fprintf(out, "\nThe chain does not verify: the checkpoint at sequence %d could not be\n",
+				breakSeq(report.FirstBreak))
+			fmt.Fprintln(out, "verified against the rows served now. That is not a passing result.")
+		}
 	}
+}
+
+// walkBroke reports whether the hash walk itself broke, as opposed to a
+// checkpoint that failed against a walk that completed.
+func walkBroke(report auditVerifyReport) bool {
+	return report.FirstBreak != nil && report.FirstBreak.Kind != "checkpoint_mismatch"
 }
 
 func runAuditKeys(cmd *cobra.Command, args []string) error {

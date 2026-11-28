@@ -1165,10 +1165,14 @@ class RuntimeSessionRequestItem(BaseModel):
     completion_tokens: int = 0
     total_tokens: int = 0
     estimated_cost: float = 0.0
-    #: Subscription request only: an ESTIMATE of what the call would cost at
-    #: pay-per-use API prices. Not billed; null when not a subscription call
-    #: or not priced (#2592).
-    api_equivalent_cost: Optional[float] = None
+    api_equivalent_cost: Optional[float] = Field(
+        None,
+        description=(
+            "Subscription requests only: an ESTIMATE of what the call would "
+            "cost at pay-per-use API prices. Never a billed amount; null for "
+            "metered or unpriced requests."
+        ),
+    )
     endpoint: Optional[str] = None
     #: Credential class that authorized the request (``api_key``,
     #: ``oauth_mcp_token`` or ``user_token``). API consumers can tell a

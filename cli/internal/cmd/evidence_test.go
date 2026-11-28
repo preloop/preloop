@@ -408,3 +408,26 @@ func TestEvidenceVerifyPointsAnUnsignedPackAtItsReceipt(t *testing.T) {
 		t.Fatalf("output = %q", out)
 	}
 }
+
+func TestEvidenceVerifyReportsAlteredMembersUnderAValidSignature(t *testing.T) {
+	public, private, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The manifest digests "x" but the archive holds "y"; the signature over
+	// the manifest still verifies.
+	path := writeTemp(t, "export.tar.gz", signedExport(t, private, "x", "y"))
+	pointCLIAt(t, serveKeys(t, public, nil).URL)
+
+	out, verifyErr := runEvidence(t, path)
+
+	if verifyErr == nil {
+		t.Fatalf("an altered export passed:\n%s", out)
+	}
+	if strings.Contains(out, "the one Preloop built") {
+		t.Fatalf("provenance claimed for altered members: %q", out)
+	}
+	if !strings.Contains(out, "archive was altered") {
+		t.Fatalf("output = %q", out)
+	}
+}

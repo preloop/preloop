@@ -20,6 +20,14 @@ export type RequestTimelineSort =
 type ThresholdMode = 'tokens' | 'usd';
 
 /**
+ * What the session cache hit ratio divides by (#2591). Other surfaces divide
+ * by every prompt token, cache writes included, so each says which it uses.
+ */
+export const CACHE_HIT_RATIO_BASIS =
+  'Cache reads divided by cache reads plus uncached input. Cache writes are ' +
+  'not in the denominator, so this is higher than a share of all prompt tokens.';
+
+/**
  * Unified per-request session timeline.
  *
  * Renders ALL gateway requests for a session as one sorted stream sourced from
@@ -28,14 +36,6 @@ type ThresholdMode = 'tokens' | 'usd';
  * cost. Provides sort, a cost/token threshold filter, and a failed-only
  * toggle. This replaces the sparse captured-event timeline.
  */
-/**
- * What the session cache hit ratio divides by (#2591). Other surfaces divide
- * by every prompt token, cache writes included, so each says which it uses.
- */
-export const CACHE_HIT_RATIO_BASIS =
-  'Cache reads divided by cache reads plus uncached input. Cache writes are ' +
-  'not in the denominator, so this is higher than a share of all prompt tokens.';
-
 @customElement('session-request-timeline')
 export class SessionRequestTimeline extends LitElement {
   @property({ type: Array })
@@ -422,14 +422,6 @@ export class SessionRequestTimeline extends LitElement {
   }
 
   /**
-   * Session-level cache rollup.
-   *
-   * Ratio and cached/uncached totals are over the covered requests only, and
-   * the coverage note says so whenever any request lacked a provider cache
-   * split. Savings are rendered only when the backend supplied an exact
-   * catalog-priced figure; otherwise the reason is shown instead of a number.
-   */
-  /**
    * The session's API-equivalent estimate for its subscription requests.
    * Spend stays $0; the estimate is labelled and kept apart from it, and is
    * a lower bound when some requests carry no price (#2592).
@@ -460,6 +452,14 @@ export class SessionRequestTimeline extends LitElement {
     </div>`;
   }
 
+  /**
+   * Session-level cache rollup.
+   *
+   * Ratio and cached/uncached totals are over the covered requests only, and
+   * the coverage note says so whenever any request lacked a provider cache
+   * split. Savings are rendered only when the backend supplied an exact
+   * catalog-priced figure; otherwise the reason is shown instead of a number.
+   */
   private renderCacheSummary() {
     const summary = this.cacheSummary;
     if (!summary || !summary.requests_with_cache_data) return nothing;
