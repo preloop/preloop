@@ -312,6 +312,27 @@ def test_long_running_run_is_read_once_it_completes() -> None:
     assert any(u.endswith("/actions/runs/1002") for u in api.urls)
 
 
+def test_pending_run_survives_a_stop_while_it_is_read() -> None:
+    """Back-off during a pending run's read keeps it pending for next time."""
+    previous = {
+        "window_end": chc.iso(NOW - timedelta(hours=2)),
+        "value_summary_at": chc.iso(NOW),
+        "pending_runs": {
+            f"github:{REPO}:1002": {"created_at": chc.iso(NOW - timedelta(hours=3))}
+        },
+    }
+    api = FakeApi(overrides={"/logs": (429, {"retry-after": "60"}, b"")})
+    out = chc.collect([github(api)], previous, NOW, 24)
+    state = out[chc.STATE_KEY]
+    assert out["window"]["partial"]
+    assert out["window"]["runs_read"] == 0
+    assert f"github:{REPO}:1002" in state["pending_runs"]
+    assert f"github:{REPO}:1002" not in state["seen_runs"]
+    again = chc.collect([github(FakeApi())], state, NOW + timedelta(hours=2), 24)
+    assert again["totals"]["failures"] >= 1
+    assert f"github:{REPO}:1002" not in again[chc.STATE_KEY]["pending_runs"]
+
+
 def test_stale_pending_runs_are_dropped() -> None:
     """A run unfinished for over a day is given up, not polled forever."""
     previous = {

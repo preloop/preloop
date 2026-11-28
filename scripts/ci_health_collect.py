@@ -1430,13 +1430,7 @@ def collect(
                 row: dict[str, Any] = row,
             ) -> None:
                 nonlocal runs_read, logs_read, logs_skipped
-                # The overlap can return a run again; remember the recent ones.
-                stamp = parse_time(run.get("updated_at") or run.get("created_at"))
-                if stamp is None or stamp >= now - 2 * OVERLAP:
-                    seen_now.append(run_key)
                 run_jobs = source.jobs(run)
-                runs_read += 1
-                row["runs"] += 1
                 for job in run_jobs:
                     if job.conclusion != "failure":
                         continue
@@ -1450,19 +1444,27 @@ def collect(
                             _with_job(sig, job) for sig in extract_signatures(text)
                         ]
                 jobs.extend(run_jobs)
+                runs_read += 1
+                row["runs"] += 1
+                # Seen only once fully read: a stop mid-run re-reads it next
+                # time. The overlap can return a run again; remember it.
+                stamp = parse_time(run.get("updated_at") or run.get("created_at"))
+                if stamp is None or stamp >= now - 2 * OVERLAP:
+                    seen_now.append(run_key)
 
             done: set[str] = set()
             for run_key, info in list(pending_before.items()):
                 if not run_key.startswith(prefix):
                     continue
-                del pending_before[run_key]
+                # Removed only once handled: a stop mid-read keeps it pending.
                 run = source.run(run_key[len(prefix) :])
-                if run is None:
-                    continue
-                if source.finished(run):
+                if run is not None and source.finished(run):
                     process(run, run_key)
                     done.add(run_key)
-                elif (parse_time(info.get("created_at")) or now) >= now - timedelta(
+                del pending_before[run_key]
+                if run is None or run_key in done:
+                    continue
+                if (parse_time(info.get("created_at")) or now) >= now - timedelta(
                     hours=PENDING_MAX_HOURS
                 ):
                     pending_now[run_key] = info
