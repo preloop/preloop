@@ -1,8 +1,9 @@
 """Installed extensions, account-wide approvals and their content pins."""
 
 import hashlib
+import logging
 from datetime import UTC, datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
@@ -11,7 +12,11 @@ from sqlalchemy.orm import Session
 from preloop.api.auth.jwt import get_current_active_user
 from preloop.api.common import get_account_for_user
 from preloop.models import models
-from preloop.models.crud import crud_discovered_extension, crud_extension_approval
+from preloop.models.crud import (
+    crud_discovered_extension,
+    crud_extension_approval,
+    crud_extension_decision_event,
+)
 from preloop.models.crud.extension_approval import PinConflictError, PinStateError
 from preloop.models.db.session import get_db_session
 from preloop.schemas.agent_discovery import AGENT_KIND_PATTERN, HEX_SHA256_PATTERN
@@ -23,6 +28,8 @@ from preloop.schemas.discovered_extension import (
     ExtensionApprovalList,
     ExtensionApprovalSummary,
     ExtensionApprovalUpdate,
+    ExtensionDecisionList,
+    ExtensionStateCounts,
     ExtensionKind,
     ExtensionPinCreate,
     ExtensionPinSummary,
@@ -31,8 +38,10 @@ from preloop.schemas.discovered_extension import (
     SourceKind,
 )
 from preloop.services.fleet_findings import evaluate_fleet_findings
+from preloop.utils.audit import log_config_change
 from preloop.utils.permissions import ensure_permission_in_oss, require_permission
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -48,6 +57,63 @@ def count_extensions(
     return {
         "count": crud_discovered_extension.count_for_account(db, account_id=account.id)
     }
+
+
+@router.get(
+    "/agents/discovery-extensions/state-counts", response_model=ExtensionStateCounts
+)
+@require_permission("view_agents")
+def count_extensions_by_state(
+    account: Annotated[models.Account, Depends(get_account_for_user)],
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> ExtensionStateCounts:
+    """Count present extension identities by their account decision."""
+    ensure_permission_in_oss(db, current_user, "view_agents")
+    return ExtensionStateCounts.model_validate(
+        crud_discovered_extension.count_by_decision(db, account_id=account.id)
+    )
+
+
+@router.get("/agents/extension-decisions", response_model=ExtensionDecisionList)
+@require_permission("view_agents")
+def list_extension_decisions(
+    account: Annotated[models.Account, Depends(get_account_for_user)],
+    limit: int = Query(default=50, ge=1, le=500),
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> ExtensionDecisionList:
+    """Return recent approve, unapprove and pin changes, newest first."""
+    ensure_permission_in_oss(db, current_user, "view_agents")
+    return ExtensionDecisionList.model_validate(
+        {
+            "items": crud_extension_decision_event.list_recent(
+                db, account_id=account.id, limit=limit
+            )
+        }
+    )
+
+
+def _audit_decision(
+    db: Session,
+    user: models.User,
+    action: str,
+    identity: dict[str, Any],
+    old_state: str | None,
+    new_value: dict[str, Any],
+) -> None:
+    """Write an ``extension_approval`` audit row; a failure never fails the call."""
+    try:
+        log_config_change(
+            db,
+            user=user,
+            config_type="extension_approval",
+            action=action,
+            old_value={**identity, "approval_state": old_state},
+            new_value={**identity, **new_value},
+        )
+    except Exception:
+        logger.warning("Extension decision audit row was not written", exc_info=True)
 
 
 @router.get("/agents/discovery-extensions", response_model=DiscoveredExtensionList)
@@ -215,10 +281,22 @@ def bulk_set_approvals(
 ) -> dict[str, int]:
     """Apply account-wide name decisions and evaluate findings once after commit."""
     ensure_permission_in_oss(db, current_user, "manage_agents")
+    previous = crud_extension_approval.states_for(
+        db, account_id=account.id, identities=payload.extensions
+    )
     count = crud_extension_approval.set_bulk_state(
         db, account_id=account.id, decided_by_user_id=current_user.id, payload=payload
     )
     db.commit()
+    for item in dict.fromkeys(payload.extensions):
+        _audit_decision(
+            db,
+            current_user,
+            "updated",
+            item.model_dump(),
+            previous.get((item.agent_kind, item.extension_kind, item.extension_id)),
+            {"approval_state": payload.approval_state},
+        )
     evaluate_fleet_findings(db, account_id=account.id)
     return {"count": count}
 
@@ -243,6 +321,13 @@ def set_approval(
         raise HTTPException(
             status_code=422, detail="Extension identifier exceeds 128 bytes"
         )
+    identity = {
+        "agent_kind": agent_kind,
+        "extension_kind": extension_kind,
+        "extension_id": extension_id,
+    }
+    existing = crud_extension_approval.get(db, account_id=account.id, **identity)
+    old_state = existing.approval_state if existing is not None else None
     try:
         row = crud_extension_approval.set_state(
             db,
@@ -260,8 +345,29 @@ def set_approval(
         crud_extension_approval.summary(db, [row])[0]
     )
     db.commit()
+    _audit_decision(
+        db,
+        current_user,
+        "updated",
+        identity,
+        old_state,
+        {
+            "approval_state": payload.approval_state,
+            "version_constraint": payload.version_constraint,
+            "note": payload.note,
+        },
+    )
     evaluate_fleet_findings(db, account_id=account.id)
     return result
+
+
+def _identity(approval: models.ExtensionApproval) -> dict[str, Any]:
+    """The natural key of an approval, for audit rows."""
+    return {
+        "agent_kind": approval.agent_kind,
+        "extension_kind": approval.extension_kind,
+        "extension_id": approval.extension_id,
+    }
 
 
 def _approval_or_404(
@@ -326,6 +432,14 @@ def add_pin(
         next(item for item in pins[approval.id] if item["id"] == pin.id)
     )
     db.commit()
+    _audit_decision(
+        db,
+        current_user,
+        "pin_added",
+        _identity(approval),
+        approval.approval_state,
+        {"approval_state": approval.approval_state, "content_hash": pin.content_hash},
+    )
     evaluate_fleet_findings(db, account_id=account.id)
     return result
 
@@ -349,7 +463,17 @@ def delete_pin(
     """Unpin a hash; deleting the last pin returns to a name approval."""
     ensure_permission_in_oss(db, current_user, "manage_agents")
     approval = _approval_or_404(db, account, agent_kind, extension_kind, extension_id)
-    if not crud_extension_approval.delete_pin(db, approval=approval, pin_id=pin_id):
+    if not crud_extension_approval.delete_pin(
+        db, approval=approval, pin_id=pin_id, removed_by_user_id=current_user.id
+    ):
         raise HTTPException(status_code=404, detail="Pin not found")
     db.commit()
+    _audit_decision(
+        db,
+        current_user,
+        "pin_removed",
+        _identity(approval),
+        approval.approval_state,
+        {"approval_state": approval.approval_state, "pin_id": str(pin_id)},
+    )
     evaluate_fleet_findings(db, account_id=account.id)

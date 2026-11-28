@@ -400,3 +400,37 @@ class ExtensionPolicyFile(BaseModel):
     account_ref: str = Field(pattern=r"^[0-9a-f]{16}$")
     generated_at: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
     entries: list[ExtensionPolicyEntry]
+
+
+class ExtensionStateCounts(BaseModel):
+    """Present extension identities counted by their account decision."""
+
+    approved: int
+    unapproved: int
+    unknown: int
+    total: int
+
+
+class ExtensionDecisionEvent(BaseModel):
+    """One recorded change to an account extension decision."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    created_at: datetime
+    agent_kind: str
+    extension_kind: str
+    extension_id: str
+    action: Literal["state_changed", "pin_added", "pin_removed"]
+    previous_state: str | None
+    new_state: str | None
+    content_hash: str | None
+    note: str | None
+    decided_by_user_id: UUID | None
+    decided_by: str | None
+
+
+class ExtensionDecisionList(BaseModel):
+    """Recent decisions, newest first."""
+
+    items: list[ExtensionDecisionEvent]

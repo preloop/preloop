@@ -533,6 +533,7 @@ export class LitApp extends LitElement {
           { path: 'settings/runners', component: 'runners-view' },
           { path: 'settings/device-fleet', redirect: '/console' },
           { path: 'settings/webhooks', component: 'webhooks-view' },
+          { path: 'settings/compliance', component: 'compliance-view' },
           {
             path: 'settings/api-keys/:keyId',
             component: 'api-key-view',

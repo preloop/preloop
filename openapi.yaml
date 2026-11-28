@@ -2308,6 +2308,68 @@ paths:
       security:
       - bearerAuth: []
       x-restricted-ci: deny
+  /api/v1/agents/discovery-extensions/state-counts:
+    get:
+      tags:
+      - Agent discovery
+      summary: Count Extensions By State
+      description: Count present extension identities by their account decision.
+      operationId: count_extensions_by_state_api_v1_agents_discovery_extensions_state_counts_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExtensionStateCounts'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/agents/extension-decisions:
+    get:
+      tags:
+      - Agent discovery
+      summary: List Extension Decisions
+      description: Return recent approve, unapprove and pin changes, newest first.
+      operationId: list_extension_decisions_api_v1_agents_extension_decisions_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 500
+          minimum: 1
+          default: 50
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExtensionDecisionList'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/agents/discovery-extensions:
     get:
       tags:
@@ -43764,6 +43826,91 @@ components:
       - completeness
       title: ExtensionCoverage
       description: Latest safe coverage metadata reported by one device.
+    ExtensionDecisionEvent:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        agent_kind:
+          type: string
+          title: Agent Kind
+        extension_kind:
+          type: string
+          title: Extension Kind
+        extension_id:
+          type: string
+          title: Extension Id
+        action:
+          type: string
+          enum:
+          - state_changed
+          - pin_added
+          - pin_removed
+          title: Action
+        previous_state:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Previous State
+        new_state:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: New State
+        content_hash:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Content Hash
+        note:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Note
+        decided_by_user_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Decided By User Id
+        decided_by:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Decided By
+      type: object
+      required:
+      - id
+      - created_at
+      - agent_kind
+      - extension_kind
+      - extension_id
+      - action
+      - previous_state
+      - new_state
+      - content_hash
+      - note
+      - decided_by_user_id
+      - decided_by
+      title: ExtensionDecisionEvent
+      description: One recorded change to an account extension decision.
+    ExtensionDecisionList:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/ExtensionDecisionEvent'
+          type: array
+          title: Items
+      type: object
+      required:
+      - items
+      title: ExtensionDecisionList
+      description: Recent decisions, newest first.
     ExtensionDetails:
       properties:
         name:
@@ -44132,6 +44279,28 @@ components:
       - entries
       title: ExtensionPolicyFile
       description: Account policy a device can evaluate without uploading inventory.
+    ExtensionStateCounts:
+      properties:
+        approved:
+          type: integer
+          title: Approved
+        unapproved:
+          type: integer
+          title: Unapproved
+        unknown:
+          type: integer
+          title: Unknown
+        total:
+          type: integer
+          title: Total
+      type: object
+      required:
+      - approved
+      - unapproved
+      - unknown
+      - total
+      title: ExtensionStateCounts
+      description: Present extension identities counted by their account decision.
     ExternalApprovalResult:
       properties:
         external_reference:
@@ -66030,7 +66199,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;

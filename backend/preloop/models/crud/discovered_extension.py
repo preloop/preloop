@@ -252,6 +252,38 @@ class CRUDDiscoveredExtension:
         )
         return int(db.scalar(select(func.count()).select_from(identities)) or 0)
 
+    def count_by_decision(self, db: Session, *, account_id: UUID) -> dict[str, int]:
+        """Count distinct present identities by account decision.
+
+        An identity with no decision row counts as ``unknown``.
+
+        Args:
+            db: Active session.
+            account_id: Account to count.
+
+        Returns:
+            ``approved``, ``unapproved``, ``unknown`` and ``total`` counts.
+        """
+        model, approval = models.DiscoveredExtension, models.ExtensionApproval
+        identities = (
+            select(
+                model.agent_kind,
+                model.extension_kind,
+                model.extension_id,
+                func.coalesce(approval.approval_state, "unknown").label("state"),
+            )
+            .outerjoin(approval, approval_join())
+            .where(model.account_id == account_id, model.present.is_(True))
+            .distinct()
+            .subquery()
+        )
+        counts = {"approved": 0, "unapproved": 0, "unknown": 0}
+        for state, count in db.execute(
+            select(identities.c.state, func.count()).group_by(identities.c.state)
+        ).all():
+            counts[str(state)] = int(count)
+        return {**counts, "total": sum(counts.values())}
+
     def list_for_device(
         self, db: Session, *, account_id: UUID, fingerprint: str, **filters: Any
     ) -> tuple[list[dict[str, Any]], str | None]:

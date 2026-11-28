@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import case, exists, func, literal, select
+from sqlalchemy import case, exists, func, literal, select, tuple_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -18,10 +18,12 @@ from preloop.models import models
 from preloop.schemas.discovered_extension import (
     BulkExtensionApproval,
     ExtensionApprovalUpdate,
+    ExtensionIdentity,
     ExtensionPinCreate,
 )
 
 from .expected_device import crud_expected_device
+from .extension_decision_event import crud_extension_decision_event
 
 
 def encode_cursor(values: list[str]) -> str:
@@ -131,11 +133,24 @@ class CRUDExtensionApproval:
                 extension_id=extension_id,
             )
             db.add(row)
+        previous_state = row.approval_state
         for key, value in payload.model_dump(exclude={"pin"}).items():
             setattr(row, key, value)
         row.decided_by_user_id = decided_by_user_id
         row.decided_at = datetime.now(UTC)
         db.flush()
+        crud_extension_decision_event.record(
+            db,
+            account_id=account_id,
+            agent_kind=agent_kind,
+            extension_kind=extension_kind,
+            extension_id=extension_id,
+            action="state_changed",
+            decided_by_user_id=decided_by_user_id,
+            previous_state=previous_state,
+            new_state=row.approval_state,
+            note=row.note,
+        )
         if payload.pin is not None and not self._has_pin(
             db, approval_id=row.id, content_hash=payload.pin.content_hash
         ):
@@ -144,6 +159,36 @@ class CRUDExtensionApproval:
                 db, approval=row, pin=payload.pin, pinned_by_user_id=decided_by_user_id
             )
         return row
+
+    def states_for(
+        self,
+        db: Session,
+        *,
+        account_id: UUID,
+        identities: Iterable[ExtensionIdentity],
+    ) -> dict[tuple[str, str, str], str]:
+        """Return the stored state per ``(agent, kind, id)``; absent keys are new."""
+        keys = [
+            (item.agent_kind, item.extension_kind, item.extension_id)
+            for item in identities
+        ]
+        if not keys:
+            return {}
+        model = models.ExtensionApproval
+        rows = db.execute(
+            select(
+                model.agent_kind,
+                model.extension_kind,
+                model.extension_id,
+                model.approval_state,
+            ).where(
+                model.account_id == account_id,
+                tuple_(model.agent_kind, model.extension_kind, model.extension_id).in_(
+                    keys
+                ),
+            )
+        ).all()
+        return {(a, k, i): state for a, k, i, state in rows}
 
     def set_bulk_state(
         self,
@@ -156,6 +201,7 @@ class CRUDExtensionApproval:
         """Apply one state to distinct names, retaining constraints, notes and pins."""
         crud_expected_device.lock_account(db, account_id=account_id)
         identities = dict.fromkeys(payload.extensions)
+        previous = self.states_for(db, account_id=account_id, identities=identities)
         decision = {
             "approval_state": payload.approval_state,
             "decided_by_user_id": decided_by_user_id,
@@ -173,6 +219,20 @@ class CRUDExtensionApproval:
                 set_={**decision, "updated_at": func.now()},
             )
         )
+        for item in identities:
+            crud_extension_decision_event.record(
+                db,
+                account_id=account_id,
+                agent_kind=item.agent_kind,
+                extension_kind=item.extension_kind,
+                extension_id=item.extension_id,
+                action="state_changed",
+                decided_by_user_id=decided_by_user_id,
+                previous_state=previous.get(
+                    (item.agent_kind, item.extension_kind, item.extension_id)
+                ),
+                new_state=payload.approval_state,
+            )
         return len(identities)
 
     def _has_pin(self, db: Session, *, approval_id: UUID, content_hash: str) -> bool:
@@ -229,10 +289,38 @@ class CRUDExtensionApproval:
         )
         db.add(row)
         db.flush()
+        self._record_pin(db, approval, "pin_added", pin.content_hash, pinned_by_user_id)
         return row
 
+    def _record_pin(
+        self,
+        db: Session,
+        approval: models.ExtensionApproval,
+        action: str,
+        content_hash: str,
+        user_id: UUID | None,
+    ) -> None:
+        """Append a pin change to the decision history."""
+        crud_extension_decision_event.record(
+            db,
+            account_id=approval.account_id,
+            agent_kind=approval.agent_kind,
+            extension_kind=approval.extension_kind,
+            extension_id=approval.extension_id,
+            action=action,
+            decided_by_user_id=user_id,
+            previous_state=approval.approval_state,
+            new_state=approval.approval_state,
+            content_hash=content_hash,
+        )
+
     def delete_pin(
-        self, db: Session, *, approval: models.ExtensionApproval, pin_id: UUID
+        self,
+        db: Session,
+        *,
+        approval: models.ExtensionApproval,
+        pin_id: UUID,
+        removed_by_user_id: UUID | None = None,
     ) -> bool:
         """Delete a pin only through its own approval; False when not found."""
         model = models.ExtensionApprovalPin
@@ -241,8 +329,10 @@ class CRUDExtensionApproval:
         )
         if row is None:
             return False
+        content_hash = row.content_hash
         db.delete(row)
         db.flush()
+        self._record_pin(db, approval, "pin_removed", content_hash, removed_by_user_id)
         return True
 
     def pins_for(

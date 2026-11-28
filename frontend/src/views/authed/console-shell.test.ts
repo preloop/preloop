@@ -1419,8 +1419,17 @@ describe('ConsoleShell', () => {
     const labels = Array.from(
       el.shadowRoot?.querySelectorAll('li.nav-group-label') ?? []
     ).map((label) => label.textContent?.trim());
-    // No user or team management in the default stub: no people heading.
-    expect(labels).to.deep.equal(['Account', 'Developers', 'Personal']);
+    // No user or team management in the default stub. Compliance is core,
+    // so the people heading stays with that one link under it.
+    expect(labels).to.deep.equal([
+      'Account',
+      'People & access',
+      'Developers',
+      'Personal',
+    ]);
+    expect(
+      el.shadowRoot?.querySelector('a[href="/console/settings/compliance"]')
+    ).to.exist;
     expect(
       el.shadowRoot?.querySelector('a[href="/console/settings/api-keys"]')
         ?.textContent

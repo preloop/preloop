@@ -713,4 +713,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert definition.down_revision == flow_proposal.revision
     flow_state = script.get_revision("20270105_flow_state")
     assert flow_state.down_revision == definition.revision
-    assert script.get_heads() == [flow_state.revision]
+    decisions = script.get_revision("20270106_extension_decisions")
+    assert decisions.down_revision == flow_state.revision
+    assert script.get_heads() == [decisions.revision]
