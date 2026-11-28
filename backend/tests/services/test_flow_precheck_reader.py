@@ -309,14 +309,14 @@ async def test_the_result_cache_shares_one_fetch() -> None:
     assert len(recorder.requests) == 1
 
 
-async def test_the_cache_is_scoped_by_credential() -> None:
+async def test_the_cache_is_scoped_by_tracker() -> None:
     recorder = Recorder(lambda request: _graphql_pages([_pr_node(1)])(request))
     await _reader(recorder).list_open_pull_requests_with_state(
         REPO, include_drafts=True
     )
     other = GitHubPrecheckReader(
-        token="another-token",
-        tracker_id="tracker-1",
+        token="test-token",
+        tracker_id="tracker-2",
         budget=PrecheckBudget(),
         transport=recorder.transport,
     )

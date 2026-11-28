@@ -21,7 +21,6 @@ headers; it is never part of a result, an error message or a log line.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -388,13 +387,10 @@ class GitHubPrecheckReader:
         self._transport = transport
         self._floor = rate_limit_floor
         self._cache_ttl = cache_ttl_seconds() if cache_ttl is None else cache_ttl
-        # Keys are scoped by tracker and by a digest of the credential, so a
-        # rotated or different credential never reads another one's answer.
-        self._scope = (
-            self._tracker_id
-            + ":"
-            + hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
-        )
+        # Keys are scoped by tracker: a tracker row belongs to one account and
+        # holds one credential, so two accounts never share an answer. The
+        # credential itself is never part of a key.
+        self._scope = "tracker:" + self._tracker_id
 
     # -- transport -----------------------------------------------------------
 
