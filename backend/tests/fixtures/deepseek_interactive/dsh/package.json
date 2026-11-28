@@ -1,0 +1,8 @@
+{
+  "name": "preloop-deepseek-interactive-dsh",
+  "private": true,
+  "description": "Hash-pinned DeepSeek dsh for the interactive conversation fixture image.",
+  "dependencies": {
+    "@deepseek-ai/dsh": "0.1.5-rc.2"
+  }
+}

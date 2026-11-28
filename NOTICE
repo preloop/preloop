@@ -17,5 +17,8 @@ This product includes software and text from third parties:
   omits disabled update_plan guidance as the pinned CLI does.
 - Secret detection rules from gitleaks/gitleaks config/gitleaks.toml (MIT),
   tag v8.30.1, https://github.com/gitleaks/gitleaks. Copyright 2019 Zachary
-  Rice. Copied unmodified to cli/internal/redact/gitleaks.toml, license text
-  in LICENSE.gitleaks beside it.
+  Rice. Copied to cli/internal/redact/gitleaks.toml, license text in
+  LICENSE.gitleaks beside it. The gcp-api-key allowlist is the upstream
+  example list with one byte of each example written as a hex escape, so the
+  file does not contain a Google API key. The patterns still match those
+  examples.
