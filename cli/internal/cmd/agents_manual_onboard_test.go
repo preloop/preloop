@@ -39,6 +39,7 @@ type manualRigServer struct {
 	probeBody       string
 	probeCalls      int
 	probeKeys       []string
+	identityKeys    []string
 	// reportStatus, when set, is the status the discovery report gets.
 	reportStatus int
 	// onMutation, when set, is called before each request that is not a GET.
@@ -157,6 +158,7 @@ func (r *manualRigServer) handle(w http.ResponseWriter, req *http.Request) {
 		}
 		reply(404, map[string]interface{}{"detail": "not found"})
 	case req.Method == http.MethodGet && path == prefix+"/agents/enrollment/identity":
+		r.identityKeys = append(r.identityKeys, strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer "))
 		switch req.Header.Get("Authorization") {
 		case "Bearer agt_SYNTHETICCONSOLE":
 			reply(200, map[string]string{"agent_id": "agent-1"})
@@ -1088,6 +1090,82 @@ func TestResumeMCPOnlyWithReplacementKey(t *testing.T) {
 				t.Fatal("expected a completed MCP-only enrollment")
 			}
 		})
+	}
+}
+
+// Resume must authenticate the credential actually installed in each handed-over
+// file, even if the main settings were writable and their key has been revoked.
+func TestSideFileOnlyMCPReplacement(t *testing.T) {
+	for _, role := range []string{writeRoleUserConfig, writeRoleControl} {
+		for _, tc := range []struct {
+			name  string
+			key   string
+			valid bool
+		}{
+			{"same agent", "agt_SYNTHETICCONSOLE", true},
+			{"another agent", "agt_SYNTHETICOTHER", false},
+			{"left unapplied", "", true},
+		} {
+			t.Run(role+"/"+tc.name, func(t *testing.T) {
+				rig := newManualRigServer(t)
+				home := newManualRigHome(t)
+				target := claudeUserConfigPath(home.agent)
+				if role == writeRoleControl {
+					target = claudeControlConfigPath()
+				}
+				mustWriteRecoveryFile(t, target, "{}")
+				target, err := filepath.EvalSymlinks(target)
+				if err != nil {
+					t.Fatal(err)
+				}
+				open := openForAppendProbe
+				t.Cleanup(stubWriteProbes(func(path string) error {
+					if path == target {
+						return os.ErrPermission
+					}
+					return open(path)
+				}, nil))
+				_, err = runManualRigOnboard(t, rig, home.agent, managedEnrollmentOptions{NoModelRouting: true})
+				var pending *manualApplyPendingError
+				if !errors.As(err, &pending) {
+					t.Fatal("expected a side-file-only handoff")
+				}
+				state, err := loadManualResumeState(home.agent)
+				if err != nil {
+					t.Fatal(err)
+				}
+				files, err := filepath.Glob(filepath.Join(state.BundleDir, "*.merge.json"))
+				if err != nil || len(files) != 1 {
+					t.Fatal("expected just the side-file merge in the bundle")
+				}
+				if tc.key != "" {
+					data, err := os.ReadFile(files[0])
+					if err != nil {
+						t.Fatal(err)
+					}
+					applied := strings.ReplaceAll(string(data), syntheticAgentKey, tc.key)
+					applied = strings.ReplaceAll(applied, claudeAPIKeyFingerprint(syntheticAgentKey), claudeAPIKeyFingerprint(tc.key))
+					mustWriteRecoveryFile(t, target, applied)
+				}
+				var out bytes.Buffer
+				err = resumeManualEnrollment(rig.client(), state, manualResumeOptions{}, &out)
+				if (err == nil) != tc.valid || (len(rig.sent(http.MethodPost, "/validate")) == 1) != tc.valid || rig.probeCalls != 0 {
+					t.Fatalf("unexpected enrollment result: success=%t, model probes=%d", err == nil, rig.probeCalls)
+				}
+				if tc.key == "" {
+					if len(rig.identityKeys) != 0 {
+						t.Fatal("no replacement was installed")
+					}
+					return
+				}
+				if len(rig.identityKeys) != 1 || rig.identityKeys[0] != tc.key {
+					t.Fatal("resume did not authenticate the installed side-file key")
+				}
+				if strings.Contains(out.String(), tc.key) || (tc.valid && strings.Contains(out.String(), "stays off")) {
+					t.Fatal("unexpected side-file verification output")
+				}
+			})
+		}
 	}
 }
 

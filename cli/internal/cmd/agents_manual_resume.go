@@ -128,9 +128,10 @@ func resumeManualEnrollment(
 	// first check quietly against the issued key, then against any key.
 	otherKey := false
 	own := manualOwnConfig{Path: state.ConfigPath, Format: manualConfigFormat(agent)}
-	effective, problems := checkManualChangeInPlace(plan, opts, state.TokenSHA256, own, io.Discard)
-	if problems > 0 && state.TokenSHA256 != "" {
-		if _, lenient := checkManualChangeInPlace(plan, opts, "", own, io.Discard); lenient == 0 {
+	required := plan.fileForRole(writeRoleConfig)
+	_, problems := checkManualConfigInPlace(plan, opts, state.TokenSHA256, own, io.Discard)
+	if problems > 0 && required != nil && state.TokenSHA256 != "" {
+		if _, lenient := checkManualConfigInPlace(plan, opts, "", own, io.Discard); lenient == 0 {
 			otherKey = true
 		}
 	}
@@ -138,7 +139,8 @@ func resumeManualEnrollment(
 	if otherKey {
 		checkSHA = ""
 	}
-	effective, problems = checkManualChangeInPlace(plan, opts, checkSHA, own, output)
+	effective, problems := checkManualConfigInPlace(plan, opts, checkSHA, own, output)
+	replacements := checkManualSideFiles(plan, state.TokenSHA256, output)
 	if otherKey {
 		printManualLine(output, "  The key in place is not the one this setup printed; it is accepted only if the real request below succeeds with it.")
 	}
@@ -188,15 +190,28 @@ func resumeManualEnrollment(
 	}
 
 	if otherKey && !routesModel {
-		if err := verifyManualMCPKey(client, state.AgentID, plan, effective); err != nil {
-			printManualLine(output, "✗ The replacement MCP key could not be verified: %s. The setup is still pending.", err)
+		token := manualMCPBearer(effective)
+		keyProblems := missingMergeKeys(required.Merge, effective, "", sha256Hex(token), claudeAPIKeyFingerprint(token))
+		if token == "" || len(keyProblems) > 0 {
+			printManualLine(output, "✗ Use the same replacement MCP key throughout the required configuration. The setup is still pending.")
 			return &manualNotAppliedError{Agent: displayName, Problems: 1}
 		}
-		printManualLine(output, "  ✓ Replacement MCP key verified for this agent.")
+		if !containsString(replacements, token) {
+			replacements = append(replacements, token)
+		}
 	} else if otherKey && status != "validated" {
 		printManualLine(output, "✗ %s is NOT onboarded: the key in place is not the one issued for this setup, and no real request was made to prove it works.", displayName)
 		printManualLine(output, "  Put the key the CLI printed in place, or rerun without --skip-live-validate.")
 		return &manualNotAppliedError{Agent: displayName, Problems: 1}
+	}
+	for _, token := range replacements {
+		if err := verifyManualAgentKey(client, state.AgentID, token); err != nil {
+			printManualLine(output, "✗ The replacement MCP key could not be verified: %s. The setup is still pending.", err)
+			return &manualNotAppliedError{Agent: displayName, Problems: 1}
+		}
+	}
+	if len(replacements) > 0 {
+		printManualLine(output, "  ✓ Replacement MCP key verified for this agent.")
 	}
 	request := map[string]interface{}{"status": status, "validation_result": validationResult}
 	var updated managedAgentEnrollmentSummary
@@ -250,18 +265,20 @@ func manualPlanRoutesModel(agent AgentConfig, enrollment *managedAgentEnrollment
 	return planned["gateway_provider_ok"] == true
 }
 
-// verifyManualMCPKey checks the key in the applied MCP entry against the
-// authenticated CLI instance. File contents never choose the destination.
-func verifyManualMCPKey(client *api.Client, agentID string, plan *manualApplyPlan, effective map[string]interface{}) error {
-	server, _ := asObjectMap(lookupMCPServerContainer(effective)["preloop"])
+// manualMCPBearer reads the credential used by the managed HTTP MCP server.
+func manualMCPBearer(doc map[string]interface{}) string {
+	server, _ := asObjectMap(lookupMCPServerContainer(doc)["preloop"])
 	header := firstNonEmptyString(lookupString(server, "headers", "Authorization"), lookupString(server, "http_headers", "Authorization"))
 	token, ok := strings.CutPrefix(header, "Bearer ")
-	if !ok || strings.TrimSpace(token) == "" {
-		return errors.New("the managed MCP entry needs a bearer key")
+	if !ok {
+		return ""
 	}
-	if file := plan.fileForRole(writeRoleConfig); file != nil && len(missingMergeKeys(file.Merge, effective, "", sha256Hex(token))) != 0 {
-		return errors.New("use the same replacement key throughout the required configuration")
-	}
+	return strings.TrimSpace(token)
+}
+
+// verifyManualAgentKey authenticates against the CLI instance. File contents
+// never choose the destination for an installed credential.
+func verifyManualAgentKey(client *api.Client, agentID, token string) error {
 	var identity struct {
 		AgentID string `json:"agent_id"`
 	}
@@ -291,9 +308,6 @@ func manualEffectiveLabel(plan *manualApplyPlan, opts manualResumeOptions) strin
 	return "-"
 }
 
-// checkManualChangeInPlace prints what it checked and every problem found.
-// It returns the effective configuration document and the number of
-// problems in the required change.
 // manualOwnConfig is the agent's main configuration file, which onboarding
 // wrote itself when only side files had to be handed over.
 type manualOwnConfig struct {
@@ -301,7 +315,9 @@ type manualOwnConfig struct {
 	Format string
 }
 
-func checkManualChangeInPlace(
+// checkManualConfigInPlace checks the required change and returns the document
+// from which a live request can be made.
+func checkManualConfigInPlace(
 	plan *manualApplyPlan,
 	opts manualResumeOptions,
 	tokenSHA256 string,
@@ -354,7 +370,7 @@ func checkManualChangeInPlace(
 		check := verifyManualFile(*configFile, path, tokenSHA256)
 		if check.ok() {
 			printManualLine(output, "  ✓ the change is in place")
-			effective = loadManualEffectiveDocument(*configFile, path)
+			effective = check.Document
 			break
 		}
 		// The user may have chosen the environment-variable form instead.
@@ -369,11 +385,23 @@ func checkManualChangeInPlace(
 		problems += len(check.Problems)
 	}
 
+	return effective, problems
+}
+
+// checkManualSideFiles reports optional changes and returns the distinct
+// replacement credentials actually installed in the handed-over files.
+func checkManualSideFiles(plan *manualApplyPlan, issuedSHA string, output io.Writer) []string {
+	var replacements []string
+
 	for _, file := range plan.Files {
 		if file.Role == writeRoleConfig {
 			continue
 		}
-		check := verifyManualFile(file, file.Path, tokenSHA256)
+		check := verifyManualFile(file, file.Path, "")
+		key := file.sideFileBearer(check.Document)
+		if key != "" && key != manualAgentKeyPlaceholder && sha256Hex(key) != issuedSHA && !containsString(replacements, key) {
+			replacements = append(replacements, key)
+		}
 		printManualLine(output, "Checking %s", file.Path)
 		if check.ok() {
 			printManualLine(output, "  ✓ the change is in place")
@@ -384,7 +412,7 @@ func checkManualChangeInPlace(
 		}
 		printManualLine(output, "  Optional: without it, %s stays off. Model routing does not depend on it.", manualSideFileFeature(file.Role))
 	}
-	return effective, problems
+	return replacements
 }
 
 func manualSideFileFeature(role string) string {
